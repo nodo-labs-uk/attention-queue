@@ -192,12 +192,19 @@ fn wrap(line: &str, width: usize, push: &mut impl FnMut(String)) {
     push(row);
 }
 
-/// Format characters that change how text reads or hide inside it: bidi
-/// controls, zero-width characters, line and paragraph separators, BOM, tags.
+/// Characters that read as nothing or as something else: format (bidi,
+/// zero-width, BOM, tags), line and paragraph separators, and every space but
+/// U+0020, by Unicode general category; plus the default-ignorable ones the
+/// categories miss (variation selectors, combining grapheme joiner, Hangul
+/// fillers) and the blank braille pattern.
 fn is_format(c: char) -> bool {
-    matches!(c as u32,
-        0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
-        | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
+    use unicode_properties::{GeneralCategory as G, UnicodeGeneralCategory};
+    match c.general_category() {
+        G::Format | G::LineSeparator | G::ParagraphSeparator => true,
+        G::SpaceSeparator => c != ' ',
+        _ => matches!(c as u32,
+            0xFE00..=0xFE0F | 0xE0100..=0xE01EF | 0x34F | 0x115F | 0x1160 | 0x3164 | 0xFFA0 | 0x2800),
+    }
 }
 
 /// One character, with control characters spelled out so they cannot hide
@@ -230,7 +237,7 @@ fn visible_lines(text: &str) -> Vec<String> {
         *blanks = 0;
     };
     for line in text.split('\n') {
-        if line.trim().is_empty() {
+        if line.chars().all(|c| c == ' ' || c == '\t') {
             blanks += 1;
             continue;
         }
@@ -904,6 +911,46 @@ mod tests {
         assert_eq!(
             text(&pc),
             ["ls \\u{202e}gnihton\\u{202c}\\u{200b}\\u{2066}\\u{feff}\\u{2028}x"]
+        );
+    }
+
+    #[test]
+    fn invisible_characters_are_escaped_by_property() {
+        for c in [
+            '\u{3000}',
+            '\u{2003}',
+            '\u{fe0f}',
+            '\u{3164}',
+            '\u{2800}',
+            '\u{e0100}',
+            '\u{34f}',
+            '\u{a0}',
+            '\u{ffa0}',
+        ] {
+            let pc = card_of("Bash", json!({"command": format!("a{c}b")}));
+            assert_eq!(text(&pc), [format!("a\\u{{{:x}}}b", c as u32)]);
+        }
+        let pc = card_of("Bash", json!({"command": "a b"}));
+        assert_eq!(text(&pc), ["a b"]);
+    }
+
+    #[test]
+    fn a_line_of_wide_spaces_is_not_blank() {
+        let pc = card_of(
+            "Bash",
+            json!({"command": "a\n\u{3000}\n\u{3000}\n\u{3000}\nb\n \t \n \n \nc"}),
+        );
+        assert_eq!(
+            text(&pc),
+            [
+                "a",
+                "\\u{3000}",
+                "\\u{3000}",
+                "\\u{3000}",
+                "b",
+                "[3 blank lines]",
+                "c"
+            ]
         );
     }
 
