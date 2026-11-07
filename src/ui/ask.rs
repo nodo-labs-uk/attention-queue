@@ -70,14 +70,17 @@ mod tests {
             Entry {
                 question: "why?".into(),
                 answer: Answer::Pending,
+                fallback: false,
             },
             Entry {
                 question: "how?".into(),
                 answer: Answer::Failed("took too long".into()),
+                fallback: false,
             },
             Entry {
                 question: "who?".into(),
                 answer: Answer::Done("Kiwi did.".into()),
+                fallback: false,
             },
         ];
         let screen = render(&a, 80, 24);

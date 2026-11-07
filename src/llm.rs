@@ -128,19 +128,52 @@ impl Llm for ClaudeCli {
     }
 }
 
+/// The fork could not start because the session does not exist (any more),
+/// so a plain call may answer instead. Every other failure is shown as is.
+#[derive(Debug)]
+pub struct SessionGone(pub String);
+
+impl std::fmt::Display for SessionGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for SessionGone {}
+
+/// Said when a session id is unknown to `claude --resume`.
+fn says_session_gone(text: &str) -> bool {
+    text.to_lowercase().contains("no conversation found")
+}
+
+/// Appended to an answer given without the session; `Entry` strips it.
+pub const FALLBACK_NOTE: &str = "\n(answered without the session's history)";
+
+/// Real ids are UUIDs. Anything else could be read as a flag or is junk.
+pub fn valid_session_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    id.len() <= 128
+        && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 impl ClaudeCli {
     fn once(&self, job: &LlmJob, parse: fn(&str) -> Result<String>) -> Result<String> {
         let (status, out, err) =
             run_child(claude_command(job), &job.prompt, TIMEOUT, &self.children)?;
         if !status.success() && out.trim().is_empty() {
+            if says_session_gone(&err) {
+                return Err(SessionGone(err.trim().to_string()).into());
+            }
             bail!("claude failed ({status}): {}", err.trim());
         }
         parse(&out)
     }
 }
 
-/// Runs a side question as a fork of its session; if that fails for any
-/// reason, once more as a plain call in the checkout.
+/// Runs a side question as a fork of its session; if the session cannot be
+/// resumed, once more as a plain call in the checkout, and the answer says so.
+/// Timeouts, login and other failures are errors, not a reason to fall back.
 pub fn ask_with_fallback(
     job: &LlmJob,
     mut attempt: impl FnMut(&LlmJob) -> Result<String>,
@@ -152,6 +185,9 @@ pub fn ask_with_fallback(
         return attempt(job);
     }
     attempt(job).or_else(|fork_err| {
+        if fork_err.downcast_ref::<SessionGone>().is_none() {
+            return Err(fork_err);
+        }
         let plain = LlmJob {
             kind: JobKind::Ask {
                 index: *index,
@@ -160,7 +196,8 @@ pub fn ask_with_fallback(
             ..job.clone()
         };
         attempt(&plain)
-            .map_err(|e| anyhow!("{e:#} (the fork of the live session failed first: {fork_err:#})"))
+            .map(|a| a + FALLBACK_NOTE)
+            .map_err(|e| anyhow!("{e:#} (the session could not be resumed: {fork_err:#})"))
     })
 }
 
@@ -178,6 +215,7 @@ pub fn claude_command(job: &LlmJob) -> Command {
         session_id: Some(id),
         ..
     } = &job.kind
+        && valid_session_id(id)
     {
         cmd.args(["--resume", id, "--fork-session"]);
     }
@@ -207,10 +245,11 @@ pub fn ask_output(stdout: &str) -> Result<String> {
         serde_json::from_str(stdout.trim()).context("claude printed no JSON")?;
     let text = v.get("result").and_then(serde_json::Value::as_str);
     if v.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
-        bail!(
-            "claude reported an error: {}",
-            text.unwrap_or("unknown error")
-        );
+        let why = text.unwrap_or("unknown error");
+        if says_session_gone(why) {
+            return Err(SessionGone(why.to_string()).into());
+        }
+        bail!("claude reported an error: {why}");
     }
     match text {
         Some(t) if !t.trim().is_empty() => Ok(t.to_string()),
@@ -459,6 +498,42 @@ mod tests {
                 .any(|a| a == "--resume" || a == "--fork-session")
         );
         assert!(plain.iter().any(|a| a == "--tools"));
+    }
+
+    #[test]
+    fn crafted_session_id_never_reaches_argv_as_resume() {
+        for bad in [
+            "--dangerously-skip-permissions",
+            "-x",
+            "",
+            "a b",
+            "a/../b",
+            &"a".repeat(129),
+        ] {
+            let args = ask_args(Some(bad));
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a == "--resume" || a == "--fork-session"),
+                "{bad:?}: {args:?}"
+            );
+        }
+        assert!(valid_session_id("ac17ec6d-6487-4fa4-8afc-53e91169e664"));
+        assert!(
+            ask_args(Some("ac17ec6d-6487-4fa4-8afc-53e91169e664"))
+                .iter()
+                .any(|a| a == "--resume")
+        );
+    }
+
+    #[test]
+    fn only_a_missing_session_is_a_fallback_error() {
+        let gone =
+            ask_output(r#"{"is_error":true,"result":"No conversation found with session ID: x"}"#)
+                .unwrap_err();
+        assert!(gone.downcast_ref::<SessionGone>().is_some());
+        let other = ask_output(r#"{"is_error":true,"result":"Not logged in"}"#).unwrap_err();
+        assert!(other.downcast_ref::<SessionGone>().is_none());
     }
 
     #[test]

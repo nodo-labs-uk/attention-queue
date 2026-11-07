@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 
 use crate::app::{App, Effect, Overlay};
 use crate::edit::EditPreview;
-use crate::llm::{JobKind, LlmEvent, LlmJob};
+use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, valid_session_id};
 use crate::model::{Card, CardKind, Checkout};
 use crate::permission::visible_lines;
 use crate::quiz::{QuizState, diff_text, fenced};
@@ -35,6 +35,8 @@ pub enum Answer {
 pub struct Entry {
     pub question: String,
     pub answer: Answer,
+    /// Answered by a plain call because the session could not be resumed.
+    pub fallback: bool,
 }
 
 /// The ask overlay: the questions so far, newest last.
@@ -102,7 +104,10 @@ impl AskState {
             match &e.answer {
                 Answer::Pending => out.push((LineKind::Pending, "Asking…".into())),
                 Answer::Done(a) => {
-                    wrap_into(&mut out, LineKind::Answer, "", &visible_text(a), width)
+                    wrap_into(&mut out, LineKind::Answer, "", &visible_text(a), width);
+                    if e.fallback {
+                        out.push((LineKind::Pending, FALLBACK_NOTE.trim_start().into()));
+                    }
                 }
                 Answer::Failed(why) => {
                     wrap_into(&mut out, LineKind::Error, "", &visible_text(why), width);
@@ -291,11 +296,12 @@ impl App {
             CardKind::Step(sc) => Some(sc.session_id.clone()),
             _ => None,
         };
-        let session_id = self
-            .agent(&card.agent)
-            .map(|a| a.session_id.clone())
-            .or(from_card)
-            .filter(|s| !s.is_empty() && s != "?");
+        // The hook's session is the exact one that raised the card.
+        let session_id = from_card.filter(|s| valid_session_id(s)).or_else(|| {
+            self.agent(&card.agent)
+                .map(|a| a.session_id.clone())
+                .filter(|s| valid_session_id(s))
+        });
         self.overlay = Some(Overlay::Ask(Box::new(AskState {
             card: card.id,
             checkout: card.checkout.clone(),
@@ -333,6 +339,7 @@ impl App {
                     ask.entries.push(Entry {
                         question: question.to_string(),
                         answer: Answer::Pending,
+                        fallback: false,
                     });
                     let index = ask.entries.len() - 1;
                     let (_, starts) = ask.lines(size.0);
@@ -383,8 +390,15 @@ impl App {
             .get_mut(index)
             .filter(|e| e.answer == Answer::Pending)
         {
+            e.fallback = false;
             e.answer = match ev.result {
-                Ok(text) => Answer::Done(text),
+                Ok(text) => match text.strip_suffix(FALLBACK_NOTE) {
+                    Some(plain) => {
+                        e.fallback = true;
+                        Answer::Done(plain.to_string())
+                    }
+                    None => Answer::Done(text),
+                },
                 Err(why) => Answer::Failed(why),
             };
         }
@@ -587,17 +601,25 @@ mod tests {
         assert!(ask_state(&a).input.is_none());
     }
 
-    #[test]
-    fn fork_failure_falls_back() {
-        let job = LlmJob {
+    fn ask_job(session: Option<&str>) -> LlmJob {
+        LlmJob {
             card: 1,
             kind: JobKind::Ask {
                 index: 0,
-                session_id: Some("sid".into()),
+                session_id: session.map(Into::into),
             },
             cwd: "/".into(),
             prompt: "p".into(),
-        };
+        }
+    }
+
+    fn gone() -> anyhow::Error {
+        crate::llm::SessionGone("No conversation found with session ID: x".into()).into()
+    }
+
+    #[test]
+    fn fork_failure_falls_back() {
+        let job = ask_job(Some("sid"));
         let mut seen = Vec::new();
         let r = crate::llm::ask_with_fallback(&job, |j| {
             seen.push(j.kind.clone());
@@ -605,11 +627,11 @@ mod tests {
                 JobKind::Ask {
                     session_id: Some(_),
                     ..
-                } => Err(anyhow!("no such session")),
+                } => Err(gone()),
                 _ => Ok("plain answer".into()),
             }
         });
-        assert_eq!(r.unwrap(), "plain answer");
+        assert_eq!(r.unwrap(), format!("plain answer{FALLBACK_NOTE}"));
         assert_eq!(
             seen,
             vec![
@@ -628,26 +650,93 @@ mod tests {
             JobKind::Ask {
                 session_id: Some(_),
                 ..
-            } => Err(anyhow!("fork bad")),
+            } => Err(gone()),
             _ => Err(anyhow!("plain bad")),
         })
         .unwrap_err()
         .to_string();
-        assert!(e.contains("plain bad") && e.contains("fork bad"), "{e}");
+        assert!(
+            e.contains("plain bad") && e.contains("No conversation"),
+            "{e}"
+        );
         // No session: one plain attempt only.
         let mut n = 0;
-        let plain = LlmJob {
-            kind: JobKind::Ask {
-                index: 0,
-                session_id: None,
-            },
-            ..job
-        };
-        let _ = crate::llm::ask_with_fallback(&plain, |_| {
+        let _ = crate::llm::ask_with_fallback(&ask_job(None), |_| {
             n += 1;
             Err(anyhow!("x"))
         });
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn timeout_and_other_failures_do_not_fall_back() {
+        for why in [
+            "took longer than 180 s",
+            "Not logged in",
+            "rate limit reached",
+        ] {
+            let mut n = 0;
+            let r = crate::llm::ask_with_fallback(&ask_job(Some("sid")), |_| {
+                n += 1;
+                Err(anyhow!(why))
+            });
+            assert_eq!(r.unwrap_err().to_string(), why);
+            assert_eq!(n, 1, "{why}");
+        }
+    }
+
+    #[test]
+    fn fallback_answer_is_marked_in_the_overlay() {
+        let mut a = app();
+        a.queue.push(review_with_cursor());
+        press(&mut a, KeyCode::Char('?'));
+        type_text(&mut a, "q");
+        press(&mut a, KeyCode::Enter);
+        let ev = |text: String| {
+            Msg::Llm(LlmEvent {
+                card: 1,
+                kind: JobKind::Ask {
+                    index: 0,
+                    session_id: None,
+                },
+                result: Ok(text),
+            })
+        };
+        a.update(ev(format!("fine{FALLBACK_NOTE}")));
+        let s = ask_state(&a);
+        assert!(s.entries[0].fallback);
+        assert_eq!(s.entries[0].answer, Answer::Done("fine".into()));
+        let (rows, _) = s.lines(80);
+        assert!(rows.iter().any(
+            |(k, l)| *k == LineKind::Pending && l == "(answered without the session's history)"
+        ));
+    }
+
+    #[test]
+    fn hook_session_beats_agent_session_and_bad_ids_are_dropped() {
+        let mut a = app();
+        a.agents = vec![agent("%1", 1, "api", "/a", true)];
+        let sc = StepCard {
+            session_id: "11111111-2222-3333-4444-555555555555".into(),
+            ..Default::default()
+        };
+        let mut c = card(1, "/a", CardKind::Step(Box::new(sc)), 0);
+        c.agent = a.agents[0].id.clone();
+        a.queue.push(c);
+        press(&mut a, KeyCode::Char('?'));
+        assert_eq!(
+            ask_state(&a).session_id.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+        // A crafted id on the agent is dropped.
+        let mut b = app();
+        b.agents = vec![agent("%1", 1, "api", "/a", true)];
+        b.agents[0].session_id = "--dangerously-skip-permissions".into();
+        let mut c = review_with_cursor();
+        c.agent = b.agents[0].id.clone();
+        b.queue.push(c);
+        press(&mut b, KeyCode::Char('?'));
+        assert_eq!(ask_state(&b).session_id, None);
     }
 
     #[test]
