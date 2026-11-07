@@ -81,10 +81,12 @@ async fn event_loop(
         tokio::select! {
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
+                sync_size(terminal, app, &jobs, &mut waiting);
                 on_msg(app, msg, &jobs, &mut waiting, &mut loading);
                 dirty = true;
             }
             Some(ev) = ipc_rx.recv() => {
+                sync_size(terminal, app, &jobs, &mut waiting);
                 sweep(app, &jobs, &mut waiting, &loading);
                 let (req_id, req) = (ev.req_id, ev.req);
                 if let HookRequest::PostTool {
@@ -147,6 +149,7 @@ async fn event_loop(
                     hl.set_theme(app.theme());
                     hl_theme = app.theme().name.clone();
                 }
+                sync_size(terminal, app, &jobs, &mut waiting);
                 terminal.draw(|f| crate::ui::draw(f, app, &mut hl))?;
                 dirty = false;
                 next_frame = Instant::now() + FRAME;
@@ -157,6 +160,22 @@ async fn event_loop(
     drop(jobs);
     let _ = worker.join();
     Ok(())
+}
+
+/// Tells the app the terminal size when it changed, so it can judge how
+/// much of a permission card is on screen.
+fn sync_size(
+    terminal: &DefaultTerminal,
+    app: &mut App,
+    jobs: &std::sync::mpsc::Sender<Job>,
+    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
+) {
+    if let Ok(size) = terminal.size()
+        && app.screen != Some((size.width, size.height))
+    {
+        let (width, height) = (size.width, size.height);
+        apply(app, Msg::Resize { width, height }, jobs, waiting);
+    }
 }
 
 /// Runs a message from the runtime's own channel through the app.

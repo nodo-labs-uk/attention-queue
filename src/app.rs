@@ -62,6 +62,11 @@ pub enum Msg {
     HookGone {
         req_id: u64,
     },
+    /// The terminal size, from the runtime before it draws.
+    Resize {
+        width: u16,
+        height: u16,
+    },
     /// The result of an `Effect::Grep`.
     GrepDone {
         ident: String,
@@ -168,6 +173,8 @@ pub struct App {
     /// Review cards whose message is on its way, with the status to show once it lands.
     pub(crate) sending: BTreeMap<u64, String>,
     pub steps: Steps,
+    /// Terminal size as last reported by the runtime.
+    pub(crate) screen: Option<(u16, u16)>,
     pub shell: Shell,
     /// The latest time a message carried.
     pub(crate) now: Option<Instant>,
@@ -207,6 +214,7 @@ impl App {
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
             steps: Steps::default(),
+            screen: None,
             shell: Shell::default(),
             now: None,
             shown: None,
@@ -314,6 +322,10 @@ impl App {
                 tool_input,
             } => self.on_post_tool(&session_id, checkout, &tool_name, &tool_input),
             Msg::Snapshot { req, result, at } => self.on_snapshot(req, result, at),
+            Msg::Resize { width, height } => {
+                self.screen = Some((width, height));
+                Vec::new()
+            }
             Msg::HookGone { req_id } => {
                 self.on_hook_gone(req_id);
                 Vec::new()

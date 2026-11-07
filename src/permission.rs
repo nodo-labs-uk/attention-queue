@@ -6,6 +6,8 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::text::Line;
 use serde_json::Value;
 
 use crate::app::{App, Effect, Overlay};
@@ -28,17 +30,164 @@ pub struct PermissionCard {
     pub summary: String,
     /// `$TMUX_PANE` of the hook, for `g`.
     pub pane: Option<String>,
+    /// First body row on screen.
+    pub scroll: usize,
+    /// How far down the body the user has had on screen, in rows.
+    pub seen: usize,
+}
+
+/// How a body line is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Plain,
+    Del,
+    Add,
+}
+
+/// The body rows and marker row the card gets on a screen of this size:
+/// `(width, height)` of the body.
+pub fn body_size(screen: (u16, u16)) -> (usize, usize) {
+    let area = Rect::new(0, 1, screen.0, screen.1.saturating_sub(2));
+    let body = areas(area)[1];
+    (body.width as usize, body.height as usize)
+}
+
+/// Head, body, "more" marker and key strip of the card inside the card area.
+pub fn areas(area: Rect) -> [Rect; 4] {
+    Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area.inner(Margin::new(1, 1)))
 }
 
 impl PermissionCard {
-    /// What the card shows in full: the whole command, the path, or the
-    /// input as pretty JSON.
-    pub fn body(&self) -> String {
-        match field(&self.tool_name, &self.tool_input) {
-            Some(text) => text.to_string(),
-            None => serde_json::to_string_pretty(&self.tool_input).unwrap_or_default(),
+    /// What the card shows in full, as unwrapped lines: the whole command, the
+    /// path with the change as -/+ lines, or the input as pretty JSON.
+    /// Control characters are made visible and long blank runs collapsed.
+    pub fn body_lines(&self) -> Vec<(LineKind, String)> {
+        let input = &self.tool_input;
+        let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("");
+        let mut out = Vec::new();
+        let mut diff = |kind: LineKind, mark: &str, text: &str| {
+            out.extend(
+                visible_lines(text)
+                    .into_iter()
+                    .map(|l| (kind, format!("{mark}{l}"))),
+            );
+        };
+        match self.tool_name.as_str() {
+            "Bash" if input.get("command").is_some_and(Value::is_string) => {
+                diff(LineKind::Plain, "", text("command"));
+            }
+            "Edit" | "Write" | "MultiEdit"
+                if input.get("file_path").is_some_and(Value::is_string) =>
+            {
+                diff(LineKind::Plain, "", text("file_path"));
+                match self.tool_name.as_str() {
+                    "Edit" => {
+                        diff(LineKind::Del, "- ", text("old_string"));
+                        diff(LineKind::Add, "+ ", text("new_string"));
+                    }
+                    "Write" => diff(LineKind::Add, "+ ", text("content")),
+                    _ => {
+                        for e in input
+                            .get("edits")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            let get = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
+                            diff(LineKind::Del, "- ", get("old_string"));
+                            diff(LineKind::Add, "+ ", get("new_string"));
+                        }
+                    }
+                }
+            }
+            "NotebookEdit" if input.get("notebook_path").is_some_and(Value::is_string) => {
+                diff(LineKind::Plain, "", text("notebook_path"));
+            }
+            _ => {
+                let json = serde_json::to_string_pretty(input).unwrap_or_default();
+                diff(LineKind::Plain, "", &json);
+            }
         }
+        out
     }
+
+    /// `body_lines` cut into rows of at most `width` columns.
+    pub fn body_rows(&self, width: usize) -> Vec<(LineKind, String)> {
+        let mut rows = Vec::new();
+        for (kind, line) in self.body_lines() {
+            wrap(&line, width, &mut |row| rows.push((kind, row)));
+        }
+        rows
+    }
+}
+
+/// A character's width in columns.
+fn cols(c: char) -> usize {
+    Line::from(c.to_string()).width()
+}
+
+fn wrap(line: &str, width: usize, push: &mut impl FnMut(String)) {
+    let width = width.max(1);
+    let (mut row, mut used) = (String::new(), 0);
+    for c in line.chars() {
+        let w = cols(c);
+        if used + w > width && !row.is_empty() {
+            push(std::mem::take(&mut row));
+            used = 0;
+        }
+        row.push(c);
+        used += w;
+    }
+    push(row);
+}
+
+/// One character, with control characters spelled out so they cannot hide
+/// anything: tab as →, return as ⏎, others as ^X or \u{..}.
+fn visible(c: char, out: &mut String) {
+    match c {
+        '\t' => out.push('→'),
+        '\r' => out.push('⏎'),
+        '\u{7f}' => out.push_str("^?"),
+        c if (c as u32) < 0x20 => {
+            out.push('^');
+            out.push(char::from(c as u8 ^ 0x40));
+        }
+        c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+        c => out.push(c),
+    }
+}
+
+/// `text` as visible lines; three or more blank lines in a row become one
+/// "[N blank lines]" line.
+fn visible_lines(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut blanks = 0;
+    let flush = |out: &mut Vec<String>, blanks: &mut usize| {
+        match *blanks {
+            0 => {}
+            1 | 2 => out.extend((0..*blanks).map(|_| String::new())),
+            n => out.push(format!("[{n} blank lines]")),
+        }
+        *blanks = 0;
+    };
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            blanks += 1;
+            continue;
+        }
+        flush(&mut out, &mut blanks);
+        let mut shown = String::new();
+        line.chars().for_each(|c| visible(c, &mut shown));
+        out.push(shown);
+    }
+    flush(&mut out, &mut blanks);
+    out
 }
 
 /// The input field that says what the tool will do: the command of Bash, the
@@ -112,6 +261,8 @@ impl App {
                 tool_name: r.tool_name,
                 tool_input: r.tool_input,
                 pane: r.pane,
+                scroll: 0,
+                seen: 0,
             }),
         });
         Vec::new()
@@ -147,7 +298,17 @@ impl App {
             KeyCode::Char('y' | 'n') if !self.looked_at(id) => {
                 self.set_status("Too quick: look at this request first");
             }
+            KeyCode::Char('y') if !self.read_to_end() => {
+                self.set_status("Scroll to the end before allowing");
+            }
             KeyCode::Char('y') => return self.decide_permission(id, HookReply::Allow),
+            KeyCode::Char('j' | 'k')
+            | KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::PageDown
+            | KeyCode::PageUp => {
+                self.scroll_permission(key.code);
+            }
             KeyCode::Char('n') => {
                 self.overlay = Some(Overlay::Deny(DenyDraft {
                     card: id,
@@ -164,6 +325,48 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Whether the whole body of the current permission card has been on
+    /// screen: it fits, or it was scrolled to the end.
+    fn read_to_end(&self) -> bool {
+        let Some(Card {
+            kind: CardKind::Permission(pc),
+            ..
+        }) = self.queue.current()
+        else {
+            return false;
+        };
+        let Some((width, height)) = self.screen.map(body_size) else {
+            return false;
+        };
+        let total = pc.body_rows(width).len();
+        pc.seen.max((pc.scroll + height).min(total)) >= total && (height > 0 || total == 0)
+    }
+
+    fn scroll_permission(&mut self, code: KeyCode) {
+        let Some((width, height)) = self.screen.map(body_size) else {
+            return;
+        };
+        let Some(Card {
+            kind: CardKind::Permission(pc),
+            ..
+        }) = self.queue.current_mut()
+        else {
+            return;
+        };
+        let total = pc.body_rows(width).len();
+        let last = total.saturating_sub(height);
+        let page = height.max(1);
+        let top = pc.scroll.min(last);
+        pc.scroll = match code {
+            KeyCode::Char('j') | KeyCode::Down => top + 1,
+            KeyCode::PageDown => top + page,
+            KeyCode::Char('k') | KeyCode::Up => top.saturating_sub(1),
+            _ => top.saturating_sub(page),
+        }
+        .min(last);
+        pc.seen = pc.seen.max((pc.scroll + height).min(total));
     }
 
     pub(crate) fn on_deny_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -206,7 +409,11 @@ impl App {
         } else {
             "Denied"
         };
-        let what = pc.summary.replace('\n', " ");
+        let mut what = String::new();
+        pc.summary
+            .replace('\n', " ")
+            .chars()
+            .for_each(|c| visible(c, &mut what));
         self.set_status(format!("{verb} {}: {what}", pc.tool_name));
         vec![Effect::Reply {
             req_id: pc.req_id,
@@ -219,6 +426,9 @@ impl App {
 /// tmux arguments that pick the server; empty means the default one.
 /// Switching the client is best effort: it fails when no client is attached.
 pub fn go_to_window(pane: &str, server: &[&str]) -> Result<()> {
+    if pane.trim().is_empty() {
+        bail!("no pane to go to");
+    }
     let tmux = |args: &[&str]| -> Result<()> {
         let out = Command::new("tmux")
             .args(server)
@@ -254,6 +464,10 @@ mod tests {
     fn app() -> App {
         let mut a = App::new(Config::default(), builtin_themes());
         a.agents = vec![agent("%5", 5, "api", "/w/api", false)];
+        a.update(Msg::Resize {
+            width: 80,
+            height: 24,
+        });
         a
     }
 
@@ -469,22 +683,137 @@ mod tests {
         assert!(a.status_text().unwrap().contains("No window"));
     }
 
-    #[test]
-    fn body_shows_the_full_command_path_or_pretty_json() {
-        let long = "echo ".to_string() + &"a".repeat(300);
-        let c = |tool: &str, input: Value| PermissionCard {
+    fn card_of(tool: &str, input: Value) -> PermissionCard {
+        PermissionCard {
             summary: summary(tool, &input),
             tool_name: tool.into(),
             tool_input: input,
             ..Default::default()
-        };
-        assert_eq!(c("Bash", json!({"command": long})).body(), long);
-        assert_eq!(c("Edit", json!({"file_path": "/a"})).body(), "/a");
-        assert!(
-            c("WebFetch", json!({"url": "u"}))
-                .body()
-                .contains("\n  \"url\": \"u\"")
+        }
+    }
+
+    fn text(pc: &PermissionCard) -> Vec<String> {
+        pc.body_lines().into_iter().map(|(_, t)| t).collect()
+    }
+
+    #[test]
+    fn body_shows_the_full_command_path_or_pretty_json() {
+        let long = "echo ".to_string() + &"a".repeat(300);
+        assert_eq!(
+            text(&card_of("Bash", json!({"command": long}))),
+            std::slice::from_ref(&long)
         );
+        let rows = card_of("Bash", json!({"command": long})).body_rows(80);
+        assert_eq!(rows.len(), 4);
+        assert!(
+            card_of("WebFetch", json!({"url": "u"}))
+                .body_lines()
+                .iter()
+                .any(|(_, t)| t == "  \"url\": \"u\"")
+        );
+    }
+
+    #[test]
+    fn control_characters_render_visibly() {
+        let pc = card_of("Bash", json!({"command": "a\tb\rc\u{1b}[31m\u{7f}\u{85}"}));
+        assert_eq!(text(&pc), ["a→b⏎c^[[31m^?\\u{85}"]);
+    }
+
+    #[test]
+    fn blank_runs_collapse() {
+        let pc = card_of("Bash", json!({"command": "a\n\n\n\n   \nb\n\nc"}));
+        assert_eq!(text(&pc), ["a", "[4 blank lines]", "b", "", "c"]);
+    }
+
+    #[test]
+    fn edit_shows_the_change_as_minus_and_plus_lines() {
+        let pc = card_of(
+            "Edit",
+            json!({"file_path": "/a/b.rs", "old_string": "x\ny", "new_string": "z"}),
+        );
+        assert_eq!(text(&pc), ["/a/b.rs", "- x", "- y", "+ z"]);
+        let kinds: Vec<LineKind> = pc.body_lines().iter().map(|l| l.0).collect();
+        assert_eq!(
+            kinds,
+            [LineKind::Plain, LineKind::Del, LineKind::Del, LineKind::Add]
+        );
+        let w = card_of("Write", json!({"file_path": "/f", "content": "hi"}));
+        assert_eq!(text(&w), ["/f", "+ hi"]);
+        let m = card_of(
+            "MultiEdit",
+            json!({"file_path": "/f", "edits": [{"old_string": "a", "new_string": "b"}]}),
+        );
+        assert_eq!(text(&m), ["/f", "- a", "+ b"]);
+    }
+
+    /// An app on a 11-row screen (body of 2 rows) showing a command of `lines` lines.
+    fn long_command(lines: usize) -> (App, Instant) {
+        let mut a = app();
+        a.update(Msg::Resize {
+            width: 80,
+            height: 11,
+        });
+        let t0 = Instant::now();
+        let cmd = (0..lines)
+            .map(|i| format!("echo {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        ipc(
+            &mut a,
+            1,
+            ask("Bash", json!({"command": cmd}), Some("%5"), "s5"),
+        );
+        a.update(Msg::Tick(t0));
+        (a, t0 + Duration::from_millis(400))
+    }
+
+    #[test]
+    fn long_command_is_allowed_only_after_scrolling_to_the_end() {
+        let (mut a, t) = long_command(5);
+        assert_eq!(body_size((80, 11)), (78, 2));
+        assert!(a.update(key('y', t)).is_empty());
+        assert!(a.status_text().unwrap().contains("Scroll to the end"));
+        a.update(key('j', t));
+        a.update(key('j', t));
+        assert!(a.update(key('y', t)).is_empty(), "rows 0-3 of 5 seen");
+        a.update(key('j', t));
+        assert_eq!(
+            a.update(key('y', t)),
+            [Effect::Reply {
+                req_id: 1,
+                decision: HookReply::Allow
+            }]
+        );
+    }
+
+    #[test]
+    fn scrolling_back_up_keeps_what_was_seen_and_k_clamps_at_the_top() {
+        let (mut a, t) = long_command(5);
+        for _ in 0..5 {
+            a.update(key('j', t));
+        }
+        for _ in 0..9 {
+            a.update(key('k', t));
+        }
+        assert_eq!(perm(&a).scroll, 0);
+        assert_eq!(a.update(key('y', t)).len(), 1);
+    }
+
+    #[test]
+    fn short_command_is_allowed_at_once_but_a_hidden_screen_is_not() {
+        let (mut a, t) = long_command(2);
+        assert_eq!(a.update(key('y', t)).len(), 1);
+        let (mut a, t) = long_command(1);
+        a.update(Msg::Resize {
+            width: 80,
+            height: 4,
+        });
+        assert!(a.update(key('y', t)).is_empty(), "no body rows on screen");
+    }
+
+    #[test]
+    fn empty_pane_is_refused() {
+        assert!(go_to_window("", &[]).is_err());
     }
 
     #[test]
