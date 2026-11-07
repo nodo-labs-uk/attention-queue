@@ -372,13 +372,7 @@ impl App {
             return Vec::new();
         };
         let done = format!("Asked {} to undo it", a.window_name);
-        self.sending.insert(id, done);
-        self.set_status("Sending");
-        vec![Effect::Send {
-            agent,
-            text,
-            card: Some(id),
-        }]
+        self.send_when_ready(id, agent, text, done)
     }
 }
 

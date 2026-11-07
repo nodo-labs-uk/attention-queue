@@ -763,13 +763,7 @@ impl App {
             )
         };
         let agent = card.agent.clone();
-        self.sending.insert(id, done);
-        self.set_status("Sending");
-        vec![Effect::Send {
-            agent,
-            text,
-            card: Some(id),
-        }]
+        self.send_when_ready(id, agent, text, done)
     }
 
     /// Removes quiz card `id`; its tree is where the next round starts.

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::agents::Agent;
+use crate::agents::{Agent, AgentStatus};
 use crate::config::Config;
 use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
@@ -206,6 +206,9 @@ pub struct App {
     pub rounds: BTreeMap<PathBuf, LastRound>,
     /// Review cards whose message is on its way, with the status to show once it lands.
     pub(crate) sending: BTreeMap<u64, String>,
+    /// Messages of cards in `sending` held until their agent is at its
+    /// prompt, with the agent.
+    pub(crate) held: BTreeMap<u64, (AgentId, String)>,
     pub steps: Steps,
     /// Terminal size as last reported by the runtime.
     pub(crate) screen: Option<(u16, u16)>,
@@ -232,6 +235,9 @@ pub(crate) struct Shown {
     /// It took the screen from another card without a key of the user's.
     pub preempted: bool,
 }
+
+/// Shown while a message waits for its agent to be at its prompt.
+pub const QUEUED_STATUS: &str = "Queued: will send when the agent is idle";
 
 /// How long a status message stays on screen.
 pub const STATUS_FOR: Duration = Duration::from_secs(5);
@@ -262,6 +268,7 @@ impl App {
             quit: false,
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
+            held: BTreeMap::new(),
             steps: Steps::default(),
             screen: None,
             shell: Shell::default(),
@@ -319,7 +326,8 @@ impl App {
             }
             self.expire_step_decisions(t);
         }
-        let effects = self.handle(msg);
+        let mut effects = self.handle(msg);
+        effects.extend(self.release_held());
         // Any card for a checkout means the saves for it are done with.
         if !self.unclaimed.is_empty() {
             let checkouts: Vec<PathBuf> = self.queue.iter().map(|c| c.checkout.0.clone()).collect();
@@ -764,13 +772,71 @@ impl App {
             )
         };
         let agent = card.agent.clone();
+        self.send_when_ready(id, agent, text, done)
+    }
+
+    /// Sends `text` for card `id` once `agent` is at its prompt: waiting,
+    /// idle, and with no permission menu open. Until then the card holds it.
+    /// `done` is the status once it lands.
+    pub(crate) fn send_when_ready(
+        &mut self,
+        id: u64,
+        agent: AgentId,
+        text: String,
+        done: String,
+    ) -> Vec<Effect> {
         self.sending.insert(id, done);
-        self.set_status("Sending");
-        vec![Effect::Send {
-            agent,
-            text,
-            card: Some(id),
-        }]
+        if self.at_prompt(&agent) {
+            self.set_status("Sending");
+            return vec![Effect::Send {
+                agent,
+                text,
+                card: Some(id),
+            }];
+        }
+        self.held.insert(id, (agent, text));
+        self.set_status(QUEUED_STATUS);
+        Vec::new()
+    }
+
+    /// Whether text pasted into the agent's pane reaches its prompt.
+    fn at_prompt(&self, id: &AgentId) -> bool {
+        let menu_open = self
+            .queue
+            .iter()
+            .any(|c| matches!(c.kind, CardKind::Permission(_)) && &c.agent == id);
+        !menu_open
+            && self
+                .agent(id)
+                .is_some_and(|a| a.waiting && a.status == AgentStatus::Idle)
+    }
+
+    /// Sends the held messages whose agent is at its prompt now. A message
+    /// whose card or agent has gone is dropped, its card kept.
+    fn release_held(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        let ids: Vec<u64> = self.held.keys().copied().collect();
+        for id in ids {
+            let agent = &self.held[&id].0;
+            let card_gone = !self.queue.iter().any(|c| c.id == id);
+            let agent_gone = self.agent(agent).is_none();
+            if card_gone || agent_gone {
+                self.held.remove(&id);
+                self.sending.remove(&id);
+                if !card_gone {
+                    self.set_status("Could not send: agent gone");
+                }
+            } else if self.at_prompt(agent) {
+                let (agent, text) = self.held.remove(&id).expect("held");
+                self.set_status("Sending");
+                effects.push(Effect::Send {
+                    agent,
+                    text,
+                    card: Some(id),
+                });
+            }
+        }
+        effects
     }
 
     fn on_send_result(&mut self, card: u64, error: Option<String>) -> Vec<Effect> {
@@ -1448,6 +1514,78 @@ pub(crate) mod tests {
             a.update(at(1600)).as_slice(),
             [Effect::Send { .. }]
         ));
+    }
+
+    /// A round-1 review card for `/a` with one comment.
+    fn commented(a: &mut App) -> u64 {
+        let req = finish_round(a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        a.update(key('c'));
+        typed(a, "why?");
+        a.update(ctrl('s'));
+        a.queue.current().unwrap().id
+    }
+
+    #[test]
+    fn send_to_a_working_agent_waits_until_it_is_idle() {
+        let mut a = app();
+        let id = commented(&mut a);
+        // The user typed into the window: working again.
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(a.update(key('S')).is_empty(), "held, not sent");
+        assert_eq!(a.status_text(), Some(QUEUED_STATUS));
+        assert_eq!(a.queue.len(), 1);
+        let screen = crate::ui::tests::render(&a, 100, 20);
+        assert!(screen.contains(QUEUED_STATUS), "{screen}");
+        // Waiting, but `claude agents` still says busy: not yet.
+        let mut busy = agent("%1", 1, "api", "/a", true);
+        busy.status = crate::agents::AgentStatus::Busy;
+        let effects = a.update(Msg::Agents(vec![busy]));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Send { .. })),
+            "{effects:?}"
+        );
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let sends: Vec<&Effect> = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Send { card: Some(c), .. } if *c == id))
+            .collect();
+        assert_eq!(sends.len(), 1, "{effects:?}");
+        a.update(Msg::SendDone { card: id });
+        assert!(a.queue.is_empty());
+        assert_eq!(a.status_text(), Some("Sent 1 comment to api"));
+    }
+
+    #[test]
+    fn an_open_permission_prompt_holds_the_send() {
+        let mut a = app();
+        let id = commented(&mut a);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(a.update(key('S')).is_empty());
+        let ask = HookRequest::Permission {
+            session_id: "s1".into(),
+            cwd: "/a".into(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({"command": "ls"}),
+            pane: Some("%1".into()),
+        };
+        a.update(Msg::Ipc {
+            req_id: 9,
+            req: ask,
+            at: SystemTime::UNIX_EPOCH,
+            now: Instant::now(),
+        });
+        // The agent shows as waiting, but on the permission menu.
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Send { .. })),
+            "{effects:?}"
+        );
+        let effects = a.update(Msg::HookGone { req_id: 9 });
+        assert!(
+            matches!(effects.as_slice(), [Effect::Send { card: Some(c), .. }] if *c == id),
+            "{effects:?}"
+        );
     }
 
     #[test]

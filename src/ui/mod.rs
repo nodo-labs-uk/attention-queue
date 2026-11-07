@@ -108,6 +108,12 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
             Style::new().fg(t.dim),
         ),
     ])];
+    if app.held.contains_key(&card.id) {
+        lines.push(Line::styled(
+            crate::app::QUEUED_STATUS,
+            Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
+        ));
+    }
     if let Some(w) = shared_checkout_warning(card, &app.agents) {
         lines.push(Line::styled(w, Style::new().fg(t.hi)));
     }
