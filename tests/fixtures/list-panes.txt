@@ -1,0 +1,8 @@
+main|1|vibed|%12|3440673|claude|/home/saman/apps/vibed|1
+main|2|locus|%48|3935219|claude|/home/saman/devel/locus|1
+main|3|hftv|%49|2267973|claude|/home/saman/devel/ideas/hftv|1
+main|4|fairway|%52|1570722|claude|/home/saman/devel/fairway|1
+main|5|wiistream|%53|2233737|claude|/home/saman/devel/wiistream|1
+main|6|chezmoi|%54|2466920|claude|/home/saman/.local/share/chezmoi|
+main|7|chezmoi|%56|847984|claude|/home/saman/.local/share/chezmoi|
+main|8|bash|%57|4118970|bash|/home/saman|

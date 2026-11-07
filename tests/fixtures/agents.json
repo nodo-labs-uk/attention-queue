@@ -1,0 +1,5 @@
+[
+  {"pid":279801,"cwd":"/home/saman/.local/share/chezmoi","kind":"interactive","startedAt":1793871860843,"sessionId":"f746f93d-45a6-468c-b3f2-19373c3cf46c","name":"chezmoi-86","status":"busy"},
+  {"pid":280112,"cwd":"/home/saman/devel/locus","kind":"interactive","startedAt":1793871870000,"sessionId":"a1b2c3d4-0000-4000-8000-000000000001","name":"locus-2","status":"idle"},
+  {"pid":281000,"cwd":"/home/saman/devel/fairway","kind":"background","startedAt":1793871880000,"sessionId":"a1b2c3d4-0000-4000-8000-000000000002","name":"fairway-bg","status":"busy"}
+]
