@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod llm;
 pub mod model;
 pub mod queue;
+pub mod review;
 pub mod runtime;
 pub mod theme;
 pub mod ui;

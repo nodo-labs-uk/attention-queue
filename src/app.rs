@@ -1,14 +1,19 @@
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::agents::Agent;
 use crate::config::Config;
+use crate::git::FileDiff;
 use crate::ipc::{Decision, IpcEvent};
 use crate::llm::{LlmEvent, LlmJob};
-use crate::model::{AgentId, Card, Checkout, Mode};
+use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::queue::Queue;
+use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
 use crate::theme::Theme;
+use crate::ui::input::{InputEvent, TextInput};
 
 #[derive(Debug)]
 pub enum Msg {
@@ -22,6 +27,27 @@ pub enum Msg {
     EffectFailed(String),
     Ipc(IpcEvent),
     Llm(LlmEvent),
+    /// The diff a `ComputeReview` effect asked for.
+    ReviewComputed {
+        req: ReviewRequest,
+        from_tree: String,
+        to_tree: String,
+        files: Vec<FileDiff>,
+        at: SystemTime,
+    },
+}
+
+/// A diff for the review board, computed by the runtime: from `from_tree`
+/// (the branch base when `None`) to a fresh snapshot of the checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRequest {
+    pub checkout: Checkout,
+    pub agent: AgentId,
+    pub from_tree: Option<String>,
+    pub full_branch: bool,
+    /// The card to refresh (`R`). `None` means the agent finished a round:
+    /// refresh the checkout's review card, or make one if the diff is not empty.
+    pub card: Option<u64>,
 }
 
 /// Work for the runtime. `update` never does I/O itself.
@@ -38,12 +64,24 @@ pub enum Effect {
     Llm(LlmJob),
     /// Write the config (and, later, drafts and quiz progress) to disk.
     SaveState,
+    ComputeReview(ReviewRequest),
+    /// Write `App::rounds` to the state dir.
+    SaveRounds,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     /// `?`: a side question about the current card.
     Ask,
+    /// `c` on the review board: typing a comment.
+    Comment(CommentDraft),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentDraft {
+    pub card: u64,
+    pub target: Target,
+    pub input: TextInput,
 }
 
 pub struct App {
@@ -55,6 +93,9 @@ pub struct App {
     pub overlay: Option<Overlay>,
     pub status_msg: Option<Status>,
     pub quit: bool,
+    /// Last sent review round per checkout root.
+    pub rounds: BTreeMap<PathBuf, LastRound>,
+    next_card_id: u64,
 }
 
 /// How long a status message stays on screen.
@@ -84,6 +125,8 @@ impl App {
             overlay: None,
             status_msg: None,
             quit: false,
+            rounds: BTreeMap::new(),
+            next_card_id: 0,
         }
     }
 
@@ -95,7 +138,7 @@ impl App {
         self.status_msg.as_ref().map(|s| s.text.as_str())
     }
 
-    fn set_status(&mut self, text: impl Into<String>) {
+    pub fn set_status(&mut self, text: impl Into<String>) {
         self.status_msg = Some(Status {
             text: text.into(),
             shown_at: None,
@@ -134,11 +177,25 @@ impl App {
             }
             Msg::Ipc(IpcEvent::Noop) => Vec::new(),
             Msg::Llm(LlmEvent::Noop) => Vec::new(),
+            Msg::ReviewComputed {
+                req,
+                from_tree,
+                to_tree,
+                files,
+                at,
+            } => {
+                self.on_review_computed(req, from_tree, to_tree, files, at);
+                Vec::new()
+            }
         }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.kind == KeyEventKind::Release {
+            return Vec::new();
+        }
+        if let Some(Overlay::Comment(_)) = &self.overlay {
+            self.on_comment_key(key);
             return Vec::new();
         }
         if key
@@ -168,6 +225,7 @@ impl App {
                 self.queue.skip();
                 Vec::new()
             }
+            _ if self.overlay.is_none() => self.on_review_key(key),
             _ => Vec::new(),
         }
     }
@@ -206,10 +264,211 @@ impl App {
             .collect()
     }
 
-    /// An agent just went from working to waiting. Review cards (Task 6) and
-    /// quiz cards (Task 11) are created here, by the mode of its checkout.
-    fn on_agent_waiting(&mut self, _agent: &Agent) -> Vec<Effect> {
-        Vec::new()
+    /// An agent just went from working to waiting. Review cards and quiz
+    /// cards (Task 11) are created here, by the mode of its checkout.
+    fn on_agent_waiting(&mut self, agent: &Agent) -> Vec<Effect> {
+        let Some(checkout) = &agent.checkout else {
+            return Vec::new();
+        };
+        if self.config.mode_for(checkout) != Mode::Review {
+            return Vec::new();
+        }
+        vec![Effect::ComputeReview(ReviewRequest {
+            checkout: checkout.clone(),
+            agent: agent.id.clone(),
+            from_tree: self.rounds.get(&checkout.0).map(|r| r.tree.clone()),
+            full_branch: false,
+            card: None,
+        })]
+    }
+
+    fn on_review_computed(
+        &mut self,
+        req: ReviewRequest,
+        from_tree: String,
+        to_tree: String,
+        files: Vec<FileDiff>,
+        at: SystemTime,
+    ) {
+        let existing = match req.card {
+            Some(id) => self.queue.find_mut(|c| c.id == id),
+            None => self
+                .queue
+                .find_mut(|c| c.checkout == req.checkout && matches!(c.kind, CardKind::Review(_))),
+        };
+        if let Some(card) = existing {
+            if let CardKind::Review(rc) = &mut card.kind {
+                rc.replace_diff(from_tree, to_tree, files, req.full_branch);
+            }
+            card.agent = req.agent;
+            return;
+        }
+        // A refreshed card that has gone since, or nothing to review.
+        if req.card.is_some() || files.is_empty() {
+            return;
+        }
+        let last = self.rounds.get(&req.checkout.0);
+        let round = last.map_or(1, |l| l.round + 1);
+        let comments = last.map(|l| l.comments.clone()).unwrap_or_default();
+        self.next_card_id += 1;
+        self.queue.push(Card {
+            id: self.next_card_id,
+            checkout: req.checkout,
+            agent: req.agent,
+            created: at,
+            kind: CardKind::Review(ReviewCard::new(
+                round,
+                from_tree,
+                to_tree,
+                files,
+                comments,
+                req.full_branch,
+            )),
+        });
+    }
+
+    fn on_review_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(card) = self.queue.current_mut() else {
+            return Vec::new();
+        };
+        let id = card.id;
+        let CardKind::Review(rc) = &mut card.kind else {
+            return Vec::new();
+        };
+        match review::on_key(rc, key) {
+            review::Action::None => Vec::new(),
+            review::Action::Status(s) => {
+                self.set_status(s);
+                Vec::new()
+            }
+            review::Action::Comment(target) => {
+                self.overlay = Some(Overlay::Comment(CommentDraft {
+                    card: id,
+                    target,
+                    input: TextInput::multi_line(),
+                }));
+                Vec::new()
+            }
+            review::Action::Send => self.finish_review(false),
+            review::Action::Approve => self.finish_review(true),
+            review::Action::ToggleFullBranch => self.toggle_full_branch(),
+        }
+    }
+
+    fn on_comment_key(&mut self, key: KeyEvent) {
+        let Some(Overlay::Comment(draft)) = &mut self.overlay else {
+            return;
+        };
+        let body = match draft.input.handle_key(key) {
+            InputEvent::Editing => return,
+            InputEvent::Cancel => None,
+            InputEvent::Submit(body) => Some(body),
+        };
+        let Some(Overlay::Comment(draft)) = self.overlay.take() else {
+            return;
+        };
+        let Some(body) = body.filter(|b| !b.trim().is_empty()) else {
+            return;
+        };
+        let card = self.queue.find_mut(|c| c.id == draft.card);
+        if let Some(Card {
+            kind: CardKind::Review(rc),
+            ..
+        }) = card
+        {
+            let t = draft.target;
+            rc.comments.push(Comment {
+                path: t.path,
+                line: t.line,
+                end_line: t.end_line,
+                side: t.side,
+                body: body.trim_end().to_string(),
+                round: rc.round,
+            });
+        }
+    }
+
+    /// `S` (send this round's comments) or `A` (approve). Either way the card
+    /// closes and its snapshot becomes the start of the next round.
+    fn finish_review(&mut self, approve: bool) -> Vec<Effect> {
+        let Some(card) = self.queue.current() else {
+            return Vec::new();
+        };
+        let CardKind::Review(rc) = &card.kind else {
+            return Vec::new();
+        };
+        let Some(agent) = self.agent(&card.agent) else {
+            self.set_status("agent gone");
+            return Vec::new();
+        };
+        let n = rc.current_comments().count();
+        let (text, status) = if approve {
+            (
+                agent.waiting.then(|| APPROVE_MESSAGE.to_string()),
+                "Approved".to_string(),
+            )
+        } else if n == 0 {
+            self.set_status("No comments to send; A approves");
+            return Vec::new();
+        } else {
+            let s = if n == 1 { "" } else { "s" };
+            (
+                Some(review::compose_message(rc)),
+                format!("Sent {n} comment{s} to {}", agent.window_name),
+            )
+        };
+        let id = card.id;
+        let Some(Card {
+            checkout,
+            agent,
+            kind: CardKind::Review(rc),
+            ..
+        }) = self.queue.remove(id)
+        else {
+            return Vec::new();
+        };
+        self.rounds.insert(
+            checkout.0,
+            LastRound {
+                tree: rc.to_tree,
+                round: rc.round,
+                comments: rc.comments,
+            },
+        );
+        self.set_status(status);
+        let mut effects: Vec<Effect> = text
+            .map(|text| Effect::Send { agent, text })
+            .into_iter()
+            .collect();
+        effects.push(Effect::SaveRounds);
+        effects
+    }
+
+    fn toggle_full_branch(&mut self) -> Vec<Effect> {
+        let Some(card) = self.queue.current() else {
+            return Vec::new();
+        };
+        let CardKind::Review(rc) = &card.kind else {
+            return Vec::new();
+        };
+        let Some(last) = self.rounds.get(&card.checkout.0) else {
+            self.set_status("Round 1 already shows the whole branch");
+            return Vec::new();
+        };
+        let full_branch = !rc.show_full_branch;
+        let req = ReviewRequest {
+            checkout: card.checkout.clone(),
+            agent: card.agent.clone(),
+            from_tree: (!full_branch).then(|| last.tree.clone()),
+            full_branch,
+            card: Some(card.id),
+        };
+        self.set_status(if full_branch {
+            "Loading the whole branch diff"
+        } else {
+            "Loading changes since the last round"
+        });
+        vec![Effect::ComputeReview(req)]
     }
 }
 
@@ -391,7 +650,8 @@ pub(crate) mod tests {
     fn mode_key_cycles_current_checkout() {
         let mut a = app();
         assert!(a.update(key('M')).is_empty());
-        a.queue.push(card(1, "/a", CardKind::Review(ReviewCard), 0));
+        a.queue
+            .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
         let ck = Checkout("/a".into());
         assert_eq!(a.update(key('M')), [Effect::SaveState]);
         assert_eq!(a.config.mode_for(&ck), Mode::Step);
@@ -406,7 +666,8 @@ pub(crate) mod tests {
         let mut a = app();
         a.update(key('?'));
         assert_eq!(a.overlay, None, "nothing to ask about without a card");
-        a.queue.push(card(1, "/a", CardKind::Review(ReviewCard), 0));
+        a.queue
+            .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
         a.update(key('?'));
         assert_eq!(a.overlay, Some(Overlay::Ask));
         a.update(key('q'));
@@ -420,15 +681,243 @@ pub(crate) mod tests {
     fn skip_key_skips() {
         let mut a = app();
         a.queue
-            .push(card(1, "/a", CardKind::Review(ReviewCard), 10));
-        a.queue.push(card(2, "/b", CardKind::Review(ReviewCard), 5));
+            .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 10));
+        a.queue
+            .push(card(2, "/b", CardKind::Review(ReviewCard::default()), 5));
         a.update(key('s'));
         assert_eq!(a.queue.current().unwrap().id, 2);
     }
 
+    fn ctrl(c: char) -> Msg {
+        Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn typed(a: &mut App, s: &str) {
+        for c in s.chars() {
+            a.update(key(c));
+        }
+    }
+
+    /// The effect the agent finishing in `/a` asks for.
+    fn finish_round(a: &mut App) -> ReviewRequest {
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let [Effect::ComputeReview(req)] = effects.as_slice() else {
+            panic!("expected one ComputeReview, got {effects:?}");
+        };
+        req.clone()
+    }
+
+    fn computed(req: ReviewRequest, from: &str, to: &str, files: Vec<FileDiff>) -> Msg {
+        Msg::ReviewComputed {
+            req,
+            from_tree: from.into(),
+            to_tree: to.into(),
+            files,
+            at: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn fixture_files() -> Vec<FileDiff> {
+        crate::git::parse_unified(crate::review::tests::FIXTURE.as_bytes())
+    }
+
+    fn review(a: &App) -> &ReviewCard {
+        match &a.queue.current().expect("a card").kind {
+            CardKind::Review(rc) => rc,
+            k => panic!("not a review card: {k:?}"),
+        }
+    }
+
+    #[test]
+    fn finished_agent_gets_review_card() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        assert_eq!(
+            req,
+            ReviewRequest {
+                checkout: Checkout("/a".into()),
+                agent: a.agents[0].id.clone(),
+                from_tree: None,
+                full_branch: false,
+                card: None,
+            }
+        );
+        assert!(a.queue.is_empty(), "no card until the diff is in");
+        a.update(computed(req, "base", "t1", fixture_files()));
+        let rc = review(&a);
+        assert_eq!(
+            (rc.round, rc.from_tree.as_str(), rc.to_tree.as_str()),
+            (1, "base", "t1")
+        );
+        assert_eq!(a.queue.current().unwrap().agent, a.agents[0].id);
+    }
+
+    #[test]
+    fn empty_diff_makes_no_card() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", Vec::new()));
+        assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn non_review_checkout_computes_nothing() {
+        let mut a = app();
+        a.config.set_mode(&Checkout("/a".into()), Mode::Quiz);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(
+            a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn comment_then_send() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        a.update(key('c'));
+        assert!(matches!(a.overlay, Some(Overlay::Comment(_))));
+        typed(&mut a, "store down?");
+        // Keys go to the comment box, so this `S` is typed, not a send.
+        typed(&mut a, "S");
+        a.update(ctrl('s'));
+        assert_eq!(a.overlay, None);
+        assert_eq!(review(&a).comments[0].body, "store down?S");
+        let effects = a.update(key('S'));
+        assert_eq!(
+            effects,
+            [
+                Effect::Send {
+                    agent: a.agents[0].id.clone(),
+                    text: "Review comments (round 1):\n\nsrc/limit.rs:40\n\
+                           > let b = store.get(key).unwrap_or_default();\nstore down?S"
+                        .into(),
+                },
+                Effect::SaveRounds,
+            ]
+        );
+        assert!(a.queue.is_empty());
+        assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
+        assert_eq!(a.status_text(), Some("Sent 1 comment to api"));
+    }
+
+    #[test]
+    fn send_without_comments_is_refused() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        assert!(a.update(key('S')).is_empty());
+        assert_eq!(a.queue.len(), 1);
+    }
+
+    #[test]
+    fn send_to_gone_agent_is_refused() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        a.update(key('c'));
+        typed(&mut a, "x");
+        a.update(ctrl('s'));
+        // The agent's window closed.
+        a.update(Msg::Agents(Vec::new()));
+        let effects = a.update(key('S'));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Send { .. })),
+            "{effects:?}"
+        );
+        assert_eq!(a.status_text(), Some("agent gone"));
+        assert_eq!(a.queue.len(), 1, "the card stays");
+        assert!(a.update(key('A')).is_empty());
+        assert_eq!(a.queue.len(), 1);
+    }
+
+    #[test]
+    fn approve_sends_only_to_waiting_agent() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req.clone(), "base", "t1", fixture_files()));
+        assert_eq!(
+            a.update(key('A')),
+            [
+                Effect::Send {
+                    agent: a.agents[0].id.clone(),
+                    text: "Approved, carry on.".into()
+                },
+                Effect::SaveRounds
+            ]
+        );
+        assert!(a.queue.is_empty());
+        // The agent is working again by the time the user approves the next round.
+        a.update(computed(req, "t1", "t2", fixture_files()));
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert_eq!(a.update(key('A')), [Effect::SaveRounds]);
+        assert!(a.queue.is_empty());
+        assert_eq!(a.rounds[&PathBuf::from("/a")].round, 2);
+    }
+
+    #[test]
+    fn round_two_uses_last_snapshot() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        a.update(key('c'));
+        typed(&mut a, "first");
+        a.update(ctrl('s'));
+        a.update(key('S'));
+
+        let req = finish_round(&mut a);
+        assert_eq!(req.from_tree.as_deref(), Some("t1"));
+        a.update(computed(req, "t1", "t2", fixture_files()));
+        let rc = review(&a);
+        assert_eq!(rc.round, 2);
+        assert_eq!(rc.from_tree, "t1");
+        assert_eq!(rc.comments.len(), 1, "round 1 comment shown as old");
+        assert_eq!(rc.comments[0].round, 1);
+        assert_eq!(rc.current_comments().count(), 0, "and not resent");
+    }
+
+    fn toggle(a: &mut App) -> ReviewRequest {
+        match a.update(key('R')).as_slice() {
+            [Effect::ComputeReview(r)] => r.clone(),
+            e => panic!("expected one ComputeReview, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn full_branch_toggle_recomputes_from_base() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        assert!(
+            a.update(key('R')).is_empty(),
+            "round 1 is already the whole branch"
+        );
+        a.update(key('A'));
+
+        let req = finish_round(&mut a);
+        a.update(computed(req, "t1", "t2", fixture_files()));
+        let id = a.queue.current().unwrap().id;
+        let r = toggle(&mut a);
+        assert_eq!(
+            (r.from_tree.as_deref(), r.full_branch, r.card),
+            (None, true, Some(id))
+        );
+        a.update(computed(r, "base", "t3", fixture_files()));
+        assert!(review(&a).show_full_branch);
+        assert_eq!(review(&a).from_tree, "base");
+        let r = toggle(&mut a);
+        assert_eq!((r.from_tree.as_deref(), r.full_branch), (Some("t1"), false));
+        // A recompute for a card closed meanwhile makes no new card.
+        a.update(key('A'));
+        a.update(computed(r, "t1", "t4", fixture_files()));
+        assert!(a.queue.is_empty());
+    }
+
     #[test]
     fn shared_checkout_names_both_windows() {
-        let c = card(1, "/a", CardKind::Review(ReviewCard), 0);
+        let c = card(1, "/a", CardKind::Review(ReviewCard::default()), 0);
         let one = [
             agent("%1", 1, "api", "/a", true),
             agent("%2", 2, "web", "/b", true),

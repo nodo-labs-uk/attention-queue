@@ -1,6 +1,10 @@
 mod bar;
+mod diffview;
 mod empty;
+pub mod input;
 mod keys;
+mod review;
+mod tree;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -9,9 +13,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 use crate::app::{App, Overlay, mode_label, project_name, shared_checkout_warning};
+use crate::highlight::Highlighter;
 use crate::model::{Card, CardKind};
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
     let t = app.theme();
     let area = frame.area();
     frame.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.fg)), area);
@@ -23,12 +28,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .areas(area);
     bar::render(frame, top, app);
     match app.queue.current() {
-        Some(card) => render_card(frame, body, app, card),
+        Some(card) => render_card(frame, body, app, card, hl),
         None => empty::render(frame, body, app),
     }
     keys::render(frame, bottom, app);
-    if let Some(Overlay::Ask) = &app.overlay {
-        render_ask(frame, body, app);
+    match &app.overlay {
+        Some(Overlay::Ask) => render_ask(frame, body, app),
+        Some(Overlay::Comment(d)) => {
+            let target = &d.target;
+            let lines = if target.end_line == target.line {
+                target.line.to_string()
+            } else {
+                format!("{}-{}", target.line, target.end_line)
+            };
+            let title = format!("Comment on {}:{lines}", target.path.display());
+            input::render(frame, body, &d.input, &title, t);
+        }
+        None => {}
     }
 }
 
@@ -74,7 +90,10 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card) {
+fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut Highlighter) {
+    if let CardKind::Review(rc) = &card.kind {
+        return review::render(frame, area, app, card, rc, hl);
+    }
     let inner = area.inner(ratatui::layout::Margin::new(1, 1));
     frame.render_widget(Paragraph::new(card_header(app, card)), inner);
 }
@@ -103,7 +122,7 @@ fn render_ask(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -114,13 +133,14 @@ mod tests {
     use crate::queue::tests::card;
     use crate::theme::builtin_themes;
 
-    fn render(app: &App, w: u16, h: u16) -> String {
+    pub(crate) fn render(app: &App, w: u16, h: u16) -> String {
+        let mut hl = Highlighter::new(app.theme());
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, app)).unwrap();
+        term.draw(|f| draw(f, app, &mut hl)).unwrap();
         term.backend().to_string()
     }
 
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         App::new(Config::default(), builtin_themes())
     }
 
@@ -132,10 +152,18 @@ mod tests {
             agent("%2", 2, "api-tests", "/w/api", false),
             agent("%3", 3, "web", "/w/web", true),
         ];
-        a.queue
-            .push(card(1, "/w/web", CardKind::Review(ReviewCard), 30));
-        a.queue
-            .push(card(2, "/w/web", CardKind::Review(ReviewCard), 20));
+        a.queue.push(card(
+            1,
+            "/w/web",
+            CardKind::Review(ReviewCard::default()),
+            30,
+        ));
+        a.queue.push(card(
+            2,
+            "/w/web",
+            CardKind::Review(ReviewCard::default()),
+            20,
+        ));
         a.queue
             .push(card(3, "/w/web", CardKind::Step(StepCard), 10));
         let mut perm = card(4, "/w/api", CardKind::Permission(PermissionCard), 5);

@@ -1,7 +1,8 @@
 //! The impure shell around `App::update`: terminal, agent polling, key input,
 //! rendering and effects.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -13,9 +14,12 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 
 use crate::agents::AgentConn;
-use crate::app::{App, Effect, Msg};
+use crate::app::{App, Effect, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
+use crate::git;
+use crate::highlight::Highlighter;
 use crate::model::AgentId;
+use crate::review::LastRound;
 use crate::theme::load_themes;
 
 const AGENT_POLL: Duration = Duration::from_secs(1);
@@ -28,6 +32,10 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     let config = Config::load(&paths.config_file)?;
     let themes = load_themes(&paths.themes_dir);
     let mut app = App::new(config, themes);
+    match load_rounds(&rounds_file(&paths)) {
+        Ok(rounds) => app.rounds = rounds,
+        Err(e) => app.set_status(format!("Could not read saved review rounds: {e:#}")),
+    }
 
     // Installs a panic hook that leaves raw mode and the alternate screen.
     let mut terminal = ratatui::try_init().context("starting the terminal")?;
@@ -43,11 +51,13 @@ async fn event_loop(
     conn: Arc<dyn AgentConn>,
 ) -> Result<()> {
     let (tx, mut rx) = unbounded_channel();
-    let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.config_file.clone());
+    let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone());
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
     spawn_ticker(tx);
 
+    let mut hl = Highlighter::new(app.theme());
+    let mut hl_theme = app.theme().name.clone();
     let mut dirty = true;
     let mut next_frame = Instant::now();
     while !app.quit {
@@ -58,6 +68,8 @@ async fn event_loop(
                     let job = match effect {
                         Effect::Send { agent, text } => Job::Send { agent, text },
                         Effect::SaveState => Job::Save(app.config.clone()),
+                        Effect::ComputeReview(req) => Job::Review(req),
+                        Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
                         // Hook replies and LLM work arrive with the socket server and the LLM worker.
                         Effect::Reply { .. } | Effect::Llm(_) => continue,
                     };
@@ -67,7 +79,11 @@ async fn event_loop(
                 dirty = true;
             }
             _ = tokio::time::sleep_until(next_frame), if dirty => {
-                terminal.draw(|f| crate::ui::draw(f, app))?;
+                if hl_theme != app.theme().name {
+                    hl.set_theme(app.theme());
+                    hl_theme = app.theme().name.clone();
+                }
+                terminal.draw(|f| crate::ui::draw(f, app, &mut hl))?;
                 dirty = false;
                 next_frame = Instant::now() + FRAME;
             }
@@ -83,6 +99,8 @@ async fn event_loop(
 enum Job {
     Send { agent: AgentId, text: String },
     Save(Config),
+    Review(ReviewRequest),
+    SaveRounds(BTreeMap<PathBuf, LastRound>),
 }
 
 /// Runs effects off the event loop, one at a time so they land in order.
@@ -90,29 +108,86 @@ enum Job {
 fn spawn_effect_worker(
     tx: UnboundedSender<Msg>,
     conn: Arc<dyn AgentConn>,
-    config_file: PathBuf,
+    paths: Paths,
 ) -> (std::sync::mpsc::Sender<Job>, JoinHandle<()>) {
     let (jobs, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         for job in rx {
-            let failed = match job {
+            let msg = match job {
+                Job::Send { agent, .. } if !conn.is_alive(&agent) => {
+                    Some(Msg::EffectFailed("agent gone".into()))
+                }
                 Job::Send { agent, text } => conn
                     .send_text(&agent, &text)
                     .err()
-                    .map(|e| format!("Could not send to {}: {e:#}", agent.pane)),
+                    .map(|e| Msg::EffectFailed(format!("Could not send to {}: {e:#}", agent.pane))),
                 Job::Save(config) => config
-                    .save(&config_file)
+                    .save(&paths.config_file)
                     .err()
-                    .map(|e| format!("Could not save settings: {e:#}")),
+                    .map(|e| Msg::EffectFailed(format!("Could not save settings: {e:#}"))),
+                Job::Review(req) => Some(compute_review(req)),
+                Job::SaveRounds(rounds) => save_rounds(&rounds_file(&paths), &rounds)
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not save review rounds: {e:#}"))),
             };
-            if let Some(e) = failed
-                && tx.send(Msg::EffectFailed(e)).is_err()
+            if let Some(msg) = msg
+                && tx.send(msg).is_err()
             {
                 return;
             }
         }
     });
     (jobs, worker)
+}
+
+/// Diff from the request's tree (or the branch base) to a fresh snapshot.
+fn compute_review(req: ReviewRequest) -> Msg {
+    let c = &req.checkout;
+    let result = (|| {
+        let from = match &req.from_tree {
+            Some(t) => t.clone(),
+            None => git::base_tree(c)?,
+        };
+        let to = git::snapshot_tree(c)?;
+        let files = git::diff_trees(c, &from, &to)?;
+        anyhow::Ok((from, to, files))
+    })();
+    match result {
+        Ok((from_tree, to_tree, files)) => Msg::ReviewComputed {
+            req,
+            from_tree,
+            to_tree,
+            files,
+            at: std::time::SystemTime::now(),
+        },
+        Err(e) => Msg::EffectFailed(format!(
+            "Could not diff {}: {e:#}",
+            crate::app::project_name(c)
+        )),
+    }
+}
+
+fn rounds_file(paths: &Paths) -> PathBuf {
+    paths.state_dir.join("snapshots.json")
+}
+
+/// A missing file means no rounds yet.
+fn load_rounds(path: &Path) -> Result<BTreeMap<PathBuf, LastRound>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn save_rounds(path: &Path, rounds: &BTreeMap<PathBuf, LastRound>) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let text = serde_json::to_string_pretty(rounds).context("serialising review rounds")?;
+    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
 }
 
 fn spawn_agent_poll(tx: UnboundedSender<Msg>, conn: Arc<dyn AgentConn>) {
@@ -160,4 +235,79 @@ fn spawn_ticker(tx: UnboundedSender<Msg>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::review::{Comment, Side};
+
+    #[test]
+    fn rounds_round_trip_and_missing_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state/snapshots.json");
+        assert!(load_rounds(&file).unwrap().is_empty());
+        let mut rounds = BTreeMap::new();
+        rounds.insert(
+            PathBuf::from("/w/api"),
+            LastRound {
+                tree: "abc".into(),
+                round: 2,
+                comments: vec![Comment {
+                    path: "src/a.rs".into(),
+                    line: 3,
+                    end_line: 4,
+                    side: Side::Old,
+                    body: "why?".into(),
+                    round: 2,
+                }],
+            },
+        );
+        save_rounds(&file, &rounds).unwrap();
+        assert_eq!(load_rounds(&file).unwrap(), rounds);
+    }
+
+    #[test]
+    fn compute_review_diffs_base_to_working_tree() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+        let req = ReviewRequest {
+            checkout: crate::model::Checkout::new(dir.path()),
+            agent: AgentId {
+                pane: "%1".into(),
+                claude_pid: 1,
+            },
+            from_tree: None,
+            full_branch: false,
+            card: None,
+        };
+        let Msg::ReviewComputed { files, to_tree, .. } = compute_review(req) else {
+            panic!("expected a diff");
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].hunks[0].lines.len(), 2);
+        assert_eq!(to_tree.len(), 40);
+    }
 }

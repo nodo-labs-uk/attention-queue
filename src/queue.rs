@@ -118,7 +118,7 @@ pub(crate) mod tests {
     }
 
     fn review() -> CardKind {
-        CardKind::Review(ReviewCard)
+        CardKind::Review(ReviewCard::default())
     }
     fn step() -> CardKind {
         CardKind::Step(StepCard)

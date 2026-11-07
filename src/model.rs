@@ -3,6 +3,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::review::ReviewCard;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -31,8 +33,6 @@ pub struct AgentId {
     pub claude_pid: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewCard;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepCard;
 #[derive(Debug, Clone, PartialEq, Eq)]
