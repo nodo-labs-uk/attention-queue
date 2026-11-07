@@ -11,7 +11,6 @@ use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::permission::{DenyDraft, PermissionRequest};
-use crate::persist::CardKey;
 use crate::queue::Queue;
 use crate::quiz::{AnswerDraft, CodeRequest, Snippet};
 use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
@@ -328,9 +327,15 @@ impl App {
         }
         let mut effects = self.handle(msg);
         effects.extend(self.release_held());
-        // Any card for a checkout means the saves for it are done with.
+        // A review or quiz card for a checkout means the saves for it are
+        // done with; other cards (a permission, a step) say nothing of them.
         if !self.unclaimed.is_empty() {
-            let checkouts: Vec<PathBuf> = self.queue.iter().map(|c| c.checkout.0.clone()).collect();
+            let checkouts: Vec<PathBuf> = self
+                .queue
+                .iter()
+                .filter(|c| matches!(c.kind, CardKind::Review(_) | CardKind::Quiz(_)))
+                .map(|c| c.checkout.0.clone())
+                .collect();
             for c in checkouts {
                 self.unclaimed.forget(&c);
             }
@@ -620,11 +625,7 @@ impl App {
         // saves for the checkout are done with.
         let draft = match req.card {
             Some(_) => None,
-            None => self.unclaimed.take_draft(&CardKey {
-                checkout: req.checkout.0.clone(),
-                from_tree: from_tree.clone(),
-                to_tree: to_tree.clone(),
-            }),
+            None => self.unclaimed.take_draft(&req.checkout.0, &from_tree),
         };
         let existing = match req.card {
             Some(id) => self.queue.find_mut(|c| c.id == id),
@@ -646,8 +647,24 @@ impl App {
         let last = self.rounds.get(&req.checkout.0);
         let round = last.map_or(1, |l| l.round + 1);
         let mut comments = last.map(|l| l.comments.clone()).unwrap_or_default();
-        let draft = draft.unwrap_or_default();
-        comments.extend(draft.into_iter().map(|c| Comment { round, ..c }));
+        // A saved comment goes back on its file, at the nearest line, as
+        // older rounds' comments do; one whose file left the diff cannot.
+        let (placed, lost): (Vec<Comment>, Vec<Comment>) = draft
+            .unwrap_or_default()
+            .into_iter()
+            .partition(|c| files.iter().any(|f| review::file_path(f) == c.path));
+        if !lost.is_empty() {
+            let n = lost.len();
+            let (s, its) = if n == 1 {
+                ("", "its file is")
+            } else {
+                ("s", "their files are")
+            };
+            self.set_status(format!(
+                "{n} saved comment{s} dropped: {its} no longer in the diff"
+            ));
+        }
+        comments.extend(placed.into_iter().map(|c| Comment { round, ..c }));
         self.next_card_id += 1;
         self.queue.push(Card {
             id: self.next_card_id,

@@ -1,7 +1,8 @@
 //! Saved state, kept across restarts in `state.json` in the state dir: each
 //! checkout's last review round, draft review comments and quiz progress.
-//! Cards are not saved. A saved draft or quiz goes back on its card when
-//! the same card (same checkout, from tree and to tree) is made again.
+//! Cards are not saved. A saved draft goes back on the review card of the
+//! same checkout and round start, a saved quiz on the quiz card of the same
+//! checkout, from tree and to tree.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -75,12 +76,17 @@ impl Unclaimed {
         self.quizzes.retain(|q| q.card.checkout != checkout);
     }
 
-    /// The comments saved for the review card `key`. Every other save for
-    /// its checkout is dropped: a new card there means the work moved on.
-    pub fn take_draft(&mut self, key: &CardKey) -> Option<Vec<Comment>> {
-        let found = self.drafts.iter().find(|d| d.card == *key);
+    /// The comments saved for the review round of `checkout` that starts
+    /// at `round_base`, whatever snapshot it was written on: the agent may
+    /// have changed more since. Every other save for the checkout is
+    /// dropped: a new card there means the work moved on.
+    pub fn take_draft(&mut self, checkout: &Path, round_base: &str) -> Option<Vec<Comment>> {
+        let found = self
+            .drafts
+            .iter()
+            .find(|d| d.card.checkout == checkout && d.card.from_tree == round_base);
         let found = found.map(|d| d.comments.clone());
-        self.forget(&key.checkout);
+        self.forget(checkout);
         found
     }
 
@@ -259,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_for_another_snapshot_is_dropped() {
+    fn draft_moves_to_a_newer_snapshot_of_the_same_round() {
         let mut a = app();
         let req = finish_round(&mut a);
         a.update(computed(req.clone(), "base", "t1", fixture_files()));
@@ -269,10 +275,45 @@ mod tests {
         let (mut b, _) = restart(&mut a, Mode::Review);
         // Kept while unclaimed, so another restart still has it.
         assert_eq!(b.saved_state().drafts.len(), 1);
-        // The tree moved on before the card came back.
+        // The agent changed more files before the card came back.
         b.update(computed(req, "base", "t2", fixture_files()));
+        let bodies: Vec<&str> = review(&b)
+            .current_comments()
+            .map(|c| c.body.as_str())
+            .collect();
+        assert_eq!(bodies, ["old"]);
+        assert!(b.unclaimed.drafts.is_empty());
+        assert_eq!(b.saved_state().drafts[0].card.to_tree, "t2");
+    }
+
+    #[test]
+    fn draft_comment_on_a_file_gone_from_the_diff_is_dropped_and_said() {
+        let (mut a, req) = draft("on limit.rs");
+        let (mut b, _) = restart(&mut a, Mode::Review);
+        let files: Vec<_> = fixture_files()
+            .into_iter()
+            .filter(|f| f.new_path.as_deref() != Some(Path::new("src/limit.rs")))
+            .collect();
+        b.update(computed(req, "base", "t2", files));
         assert_eq!(review(&b).current_comments().count(), 0);
-        assert!(b.saved_state().drafts.is_empty());
+        assert_eq!(
+            b.status_text(),
+            Some("1 saved comment dropped: its file is no longer in the diff")
+        );
+    }
+
+    #[test]
+    fn other_cards_for_the_checkout_keep_the_save() {
+        let (mut a, _) = draft("x");
+        let (mut b, _) = restart(&mut a, Mode::Review);
+        for (id, kind) in [
+            (98, CardKind::Permission(Default::default())),
+            (99, CardKind::ShellChange(Default::default())),
+        ] {
+            b.queue.push(crate::queue::tests::card(id, "/a", kind, 0));
+        }
+        b.update(Msg::Tick(std::time::Instant::now()));
+        assert_eq!(b.unclaimed.drafts.len(), 1);
     }
 
     #[test]
