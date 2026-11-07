@@ -496,10 +496,12 @@ fn load_post(req: PostToolReq) -> Msg {
         .iter()
         .find_map(|k| req.tool_input.get(k).and_then(serde_json::Value::as_str))
         .map(|f| cwd.join(f));
-    // The file, with its directory's links resolved, to compare with the checkout.
+    // The file with every link resolved; a file not there yet is its
+    // resolved parent plus its name.
     let edited = file.as_ref().and_then(|f| {
-        let name = f.file_name()?;
-        Some(file_dir(f)?.join(name))
+        f.canonicalize()
+            .ok()
+            .or_else(|| Some(f.parent()?.canonicalize().ok()?.join(f.file_name()?)))
     });
     let checkout = file
         .and_then(|f| file_dir(&f))
@@ -525,8 +527,12 @@ fn take_snapshot(req: SnapshotRequest) -> Msg {
         if req.command.is_some() {
             if let Some(from) = &req.from {
                 files = git::diff_trees(c, from, &tree)?;
-                if let Some(edited) = &req.edited {
-                    files = crate::shell::without_path(files, edited);
+                // The edited file is explained only if it holds what was approved.
+                if let Some((path, approved)) = &req.approved {
+                    let text = git::file_at(c, &tree, path)?;
+                    if text.as_deref().map(crate::shell::text_hash) == Some(*approved) {
+                        files = crate::shell::without_path(files, path);
+                    }
                 }
             }
             if let Some(before) = &req.from_guard {
@@ -783,13 +789,13 @@ mod tests {
             pane: "%1".into(),
             claude_pid: 1,
         };
-        let snap = |from: Option<&Taken>, command: bool, edited: Option<&str>| {
+        let snap = |from: Option<&Taken>, command: bool, approved: Option<(&str, u64)>| {
             let Msg::Snapshot { result, .. } = take_snapshot(SnapshotRequest {
                 checkout: checkout.clone(),
                 from: from.map(|t| t.tree.clone()),
                 from_guard: from.map(|t| t.guard.clone()),
                 command: command.then(|| ("echo".to_string(), agent.clone())),
-                edited: edited.map(Into::into),
+                approved: approved.map(|(p, h)| (p.into(), h)),
             }) else {
                 panic!("expected a snapshot");
             };
@@ -806,10 +812,17 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
         assert_eq!(snap(Some(&base), true, None).files.len(), 2);
-        // After an edit of a.txt only the unrelated b.txt is left.
-        let t = snap(Some(&base), true, Some("a.txt"));
+        // After an approved edit of a.txt only the unrelated b.txt is left.
+        let two = crate::shell::text_hash("two\n");
+        let t = snap(Some(&base), true, Some(("a.txt", two)));
         assert_eq!(t.files.len(), 1);
         assert_eq!(t.files[0].new_path.as_deref(), Some(Path::new("b.txt")));
+        // Not what was approved: the file stays on the card.
+        let other = crate::shell::text_hash("something else\n");
+        assert_eq!(
+            snap(Some(&base), true, Some(("a.txt", other))).files.len(),
+            2
+        );
         // A planted hook is no file change, but is seen.
         std::fs::write(dir.path().join(".git/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
         let t = snap(Some(&base), true, None);

@@ -332,18 +332,24 @@ mod tests {
                 step_no: 1,
                 path: "/a/src/store.rs".into(),
                 allowed: true,
+                key: Default::default(),
+                after: None,
             },
             Done {
                 session_id: "s1".into(),
                 step_no: 2,
                 path: "/a/src/config.rs".into(),
                 allowed: false,
+                key: Default::default(),
+                after: None,
             },
             Done {
                 session_id: "other".into(),
                 step_no: 1,
                 path: "/a/src/hidden.rs".into(),
                 allowed: true,
+                key: Default::default(),
+                after: None,
             },
         ];
         let mut e = pending("s1", "/a", input());

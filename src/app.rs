@@ -988,7 +988,7 @@ pub(crate) mod tests {
                     from: None,
                     from_guard: None,
                     command: None,
-                    edited: None,
+                    approved: None,
                 })
             ]
         );

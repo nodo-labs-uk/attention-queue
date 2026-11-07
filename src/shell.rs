@@ -13,6 +13,7 @@ use crate::app::{App, Effect};
 use crate::git::FileDiff;
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::review::{self, ReviewCard};
+use crate::step::EditKey;
 
 /// `u`: the message starts with this, then the command.
 pub const UNDO_PREFIX: &str = "Please undo what this command changed: ";
@@ -28,6 +29,14 @@ const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 pub const OUTSIDE_TITLE: &str = "Changed outside a reviewed edit";
 /// Shown on a card when git's own settings changed.
 pub const GIT_WARNING: &str = "Git settings or hooks changed (.git/config, hooks or info)";
+
+/// Hash of a file's text, to tell whether it is as an approved edit left it.
+pub fn text_hash(text: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
 
 /// Hashes of git's config, hooks and info files, by name.
 pub type Guard = BTreeMap<String, u64>;
@@ -76,8 +85,10 @@ pub struct SnapshotRequest {
     /// The Bash command to make a card for (or `OUTSIDE_TITLE` after an
     /// edit), and the agent that ran it.
     pub command: Option<(String, AgentId)>,
-    /// The file an edit touched, relative to the checkout; left out of the diff.
-    pub edited: Option<PathBuf>,
+    /// A file an approved edit touched, relative to the checkout, and the
+    /// hash of its text as that edit leaves it. Left out of the diff only if
+    /// the new snapshot holds exactly that text.
+    pub approved: Option<(PathBuf, u64)>,
 }
 
 /// A snapshot taken: the new tree, its diff from the request's tree (without
@@ -113,7 +124,7 @@ pub fn without_path(files: Vec<FileDiff>, path: &Path) -> Vec<FileDiff> {
 }
 
 /// A snapshot waiting its turn: the command (`None`: a baseline) and edited file.
-type Queued = (Option<(String, AgentId)>, Option<PathBuf>);
+type Queued = (Option<(String, AgentId)>, Option<(PathBuf, u64)>);
 
 #[derive(Debug, Default)]
 pub struct Shell {
@@ -153,9 +164,11 @@ impl App {
                 .unwrap_or_default()
                 .to_string()
         };
-        let edited = edited
-            .and_then(|p| p.strip_prefix(&checkout.0).ok())
-            .map(Path::to_path_buf);
+        let approved = if is_edit {
+            self.approved_edit(session_id, tool_name, tool_input, edited, &checkout)
+        } else {
+            None
+        };
         let agent = self
             .agents
             .iter()
@@ -167,7 +180,28 @@ impl App {
                 },
                 |a| a.id.clone(),
             );
-        self.request_snapshot(checkout, Some((command, agent)), edited)
+        self.request_snapshot(checkout, Some((command, agent)), approved)
+    }
+
+    /// The edited file and its approved text, when the step history holds an
+    /// allowed edit with this identity (which it then forgets).
+    fn approved_edit(
+        &mut self,
+        session_id: &str,
+        tool_name: &str,
+        tool_input: &Value,
+        edited: Option<&Path>,
+        checkout: &Checkout,
+    ) -> Option<(PathBuf, u64)> {
+        let key = EditKey::new(session_id, tool_name, tool_input);
+        let at = self
+            .steps
+            .history
+            .iter()
+            .rposition(|d| d.allowed && d.key == key && d.after.is_some())?;
+        let after = self.steps.history.remove(at).after?;
+        let rel = edited?.strip_prefix(&checkout.0).ok()?;
+        Some((rel.to_path_buf(), after))
     }
 
     /// Takes a baseline when `checkout` has none and none is on its way.
@@ -188,13 +222,13 @@ impl App {
         &mut self,
         checkout: Checkout,
         command: Option<(String, AgentId)>,
-        edited: Option<PathBuf>,
+        approved: Option<(PathBuf, u64)>,
     ) -> Vec<Effect> {
         if self.shell.busy.contains(&checkout) {
             let queue = self.shell.queued.entry(checkout).or_default();
             // A baseline right behind another baseline adds nothing.
             if command.is_some() || queue.last().is_none_or(|(c, _)| c.is_some()) {
-                queue.push((command, edited));
+                queue.push((command, approved));
             }
             return Vec::new();
         }
@@ -206,7 +240,7 @@ impl App {
             from,
             from_guard,
             command,
-            edited,
+            approved,
         })]
     }
 
@@ -234,7 +268,7 @@ impl App {
                 {
                     self.next_card_id += 1;
                     let mut card = ShellCard::new(command, from, taken.tree, taken.files);
-                    card.outside = req.edited.is_some() || card.command == OUTSIDE_TITLE;
+                    card.outside = card.command == OUTSIDE_TITLE;
                     card.git_changes = taken.git_changes;
                     self.queue.push(Card {
                         id: self.next_card_id,
@@ -252,7 +286,7 @@ impl App {
             .get_mut(&checkout)
             .and_then(|q| (!q.is_empty()).then(|| q.remove(0)));
         match next {
-            Some((command, edited)) => self.request_snapshot(checkout, command, edited),
+            Some((command, approved)) => self.request_snapshot(checkout, command, approved),
             None => {
                 self.shell.queued.remove(&checkout);
                 Vec::new()
@@ -421,7 +455,7 @@ mod tests {
             from: None,
             from_guard: None,
             command: None,
-            edited: None,
+            approved: None,
         };
         assert!(snapshot(&mut a, base, "t0", Vec::new()).is_empty());
         a
@@ -461,18 +495,35 @@ mod tests {
             session_id: "s1".into(),
             checkout: Some(Checkout("/a".into())),
             tool_name: "Edit".into(),
-            tool_input: json!({"file_path": file}),
+            tool_input: edit_input(file),
             edited: Some(PathBuf::from("/a").join(file)),
         })
+    }
+
+    fn edit_input(file: &str) -> Value {
+        json!({"file_path": file, "old_string": "one", "new_string": "two"})
+    }
+
+    /// Step history as if the edit of `file` had been allowed, leaving "two\n".
+    fn allowed(a: &mut App, file: &str) {
+        a.steps.history.push(crate::step::Done {
+            session_id: "s1".into(),
+            step_no: 1,
+            path: PathBuf::from("/a").join(file),
+            allowed: true,
+            key: EditKey::new("s1", "Edit", &edit_input(file)),
+            after: Some(text_hash("two\n")),
+        });
     }
 
     #[test]
     fn edit_tool_post_updates_last_tree_without_card() {
         let mut a = baselined();
+        allowed(&mut a, "a.txt");
         let req = only_request(post_edit(&mut a, "a.txt"));
         assert_eq!(
-            (req.from.as_deref(), req.edited.clone()),
-            (Some("t0"), Some("a.txt".into()))
+            (req.from.as_deref(), req.approved.clone()),
+            (Some("t0"), Some(("a.txt".into(), text_hash("two\n"))))
         );
         // The edited file is left out of the diff, so nothing else changed.
         snapshot(&mut a, req, "t1", Vec::new());
@@ -483,6 +534,21 @@ mod tests {
         assert_eq!(req.from.as_deref(), Some("t1"));
         snapshot(&mut a, req, "t1", Vec::new());
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn edit_without_an_approved_step_leaves_its_file_on_the_card() {
+        let mut a = baselined();
+        // Never allowed in step mode (or already reported once).
+        let req = only_request(post_edit(&mut a, "a.txt"));
+        assert_eq!(req.approved, None);
+        snapshot(&mut a, req, "t0", Vec::new());
+        allowed(&mut a, "a.txt");
+        let req = only_request(post_edit(&mut a, "a.txt"));
+        snapshot(&mut a, req, "t1", Vec::new());
+        // The approval is used up by the first report.
+        let req = only_request(post_edit(&mut a, "a.txt"));
+        assert_eq!(req.approved, None);
     }
 
     #[test]

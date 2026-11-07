@@ -436,6 +436,10 @@ pub struct Done {
     pub step_no: u32,
     pub path: PathBuf,
     pub allowed: bool,
+    /// The edit's identity, to match its PostToolUse report.
+    pub key: EditKey,
+    /// Hash of the file as the allowed edit leaves it (`shell::text_hash`).
+    pub after: Option<u64>,
 }
 
 /// Step state the app keeps outside the queue.
@@ -723,6 +727,13 @@ impl App {
             step_no: sc.step_no,
             path: sc.path.clone(),
             allowed,
+            key: sc.key,
+            after: match &sc.preview {
+                EditPreview::Placed { after, .. } if allowed => {
+                    Some(crate::shell::text_hash(after))
+                }
+                _ => None,
+            },
         });
         let effects: Vec<Effect> = sc
             .req_ids
