@@ -29,7 +29,16 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // A hook must never fail Claude: exit 2 from PreToolUse would block
+        // every edit. Say what was wrong on stderr and give no decision.
+        Err(e) if std::env::args_os().nth(1).is_some_and(|a| a == "hook") => {
+            eprintln!("aq hook: {e}");
+            return Ok(());
+        }
+        Err(e) => e.exit(),
+    };
     match cli.command {
         None => {
             let conn = Arc::new(TmuxConn::default());
