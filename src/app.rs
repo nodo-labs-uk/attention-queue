@@ -36,6 +36,8 @@ pub enum Msg {
     Ipc {
         req_id: u64,
         req: HookRequest,
+        /// The checkout of the request's cwd, found by the runtime.
+        checkout: Option<Checkout>,
         /// When the runtime received it.
         at: SystemTime,
         now: Instant,
@@ -379,6 +381,7 @@ impl App {
                         tool_input,
                         pane,
                     },
+                checkout,
                 at,
                 ..
             } => self.on_permission(
@@ -390,6 +393,7 @@ impl App {
                     tool_name,
                     tool_input,
                     pane,
+                    checkout,
                 },
             ),
             // No card for the other kinds; nothing waits.
@@ -1107,6 +1111,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             a.update(Msg::Ipc {
+                checkout: None,
                 req_id: 7,
                 req,
                 at: SystemTime::UNIX_EPOCH,
@@ -1505,6 +1510,7 @@ pub(crate) mod tests {
             pane: Some("%1".into()),
         };
         a.update(Msg::Ipc {
+            checkout: None,
             req_id: 9,
             req: ask,
             at: SystemTime::UNIX_EPOCH,
@@ -1623,6 +1629,7 @@ pub(crate) mod tests {
             pane: Some("%1".into()),
         };
         a.update(Msg::Ipc {
+            checkout: None,
             req_id: 9,
             req: ask,
             at: SystemTime::UNIX_EPOCH,

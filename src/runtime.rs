@@ -1,7 +1,7 @@
 //! The impure shell around `App::update`: terminal, agent polling, key input,
 //! rendering and effects.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
@@ -133,6 +133,10 @@ impl Workers {
 /// Hooks waiting for an answer, by request id.
 type Waiting = HashMap<u64, oneshot::Sender<HookReply>>;
 
+/// Requests the loader is still reading files for, and whether each is an
+/// edit (rather than a permission request).
+type Loading = HashMap<u64, bool>;
+
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
@@ -145,7 +149,7 @@ async fn event_loop(
     tokio::spawn(ipc::accept_loop(listener, ipc_tx));
     let mut waiting = Waiting::new();
     // Requests the loader is still reading files for.
-    let mut loading: HashSet<u64> = HashSet::new();
+    let mut loading = Loading::new();
     let children = Arc::new(Children::default());
     let llm: Arc<dyn Llm> = Arc::new(ClaudeCli {
         children: children.clone(),
@@ -170,7 +174,7 @@ async fn event_loop(
     )
     .await;
     if result.is_err() {
-        abandon_hooks(app, &mut waiting);
+        abandon_hooks(app, &mut waiting, &loading);
     }
     (result, Background { worker, children })
 }
@@ -180,7 +184,7 @@ async fn serve(
     app: &mut App,
     workers: &Workers,
     waiting: &mut Waiting,
-    loading: &mut HashSet<u64>,
+    loading: &mut Loading,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<Msg>,
     ipc_rx: &mut tokio::sync::mpsc::Receiver<ipc::IpcEvent>,
 ) -> Result<()> {
@@ -217,15 +221,17 @@ async fn serve(
     Ok(())
 }
 
-/// aq cannot go on: permission hooks get "no decision", so the normal
-/// prompt stays; every other hook is let go without an answer, so a
-/// step-mode edit is refused rather than let through.
-fn abandon_hooks(app: &App, waiting: &mut Waiting) {
+/// aq cannot go on: every hook gets "no decision" (a permission prompt
+/// stays in the window), except step-mode edits, whose hooks are let go
+/// unanswered so the edit is refused rather than let through.
+fn abandon_hooks(app: &App, waiting: &mut Waiting, loading: &Loading) {
     for (req_id, reply) in waiting.drain() {
-        let permission = app.queue.iter().any(
-            |c| matches!(&c.kind, crate::model::CardKind::Permission(p) if p.req_id == req_id),
-        );
-        if permission {
+        let edit = loading.get(&req_id).copied().unwrap_or_else(|| {
+            app.queue.iter().any(|c| {
+                matches!(&c.kind, crate::model::CardKind::Step(s) if s.req_ids.contains(&req_id))
+            })
+        });
+        if !edit {
             let _ = reply.send(HookReply::NoDecision);
         }
     }
@@ -239,7 +245,7 @@ fn on_ipc(
     ev: ipc::IpcEvent,
     workers: &Workers,
     waiting: &mut Waiting,
-    loading: &mut HashSet<u64>,
+    loading: &mut Loading,
 ) -> Result<(), WorkerGone> {
     let (req_id, reply) = (ev.req_id, ev.reply);
     match ev.req {
@@ -274,7 +280,7 @@ fn on_ipc(
                 return Ok(());
             }
             waiting.insert(req_id, reply);
-            loading.insert(req_id);
+            loading.insert(req_id, true);
             workers.load(Load::Edit {
                 req_id,
                 req: PreToolReq {
@@ -288,19 +294,14 @@ fn on_ipc(
                 config: app.config.clone(),
             })
         }
-        req => {
+        req @ HookRequest::Permission { .. } => {
             waiting.insert(req_id, reply);
-            apply(
-                app,
-                Msg::Ipc {
-                    req_id,
-                    req,
-                    at: std::time::SystemTime::now(),
-                    now: std::time::Instant::now(),
-                },
-                workers,
-                waiting,
-            )
+            loading.insert(req_id, false);
+            workers.load(Load::Permission {
+                req_id,
+                req,
+                at: std::time::SystemTime::now(),
+            })
         }
     }
 }
@@ -362,10 +363,10 @@ fn on_msg(
     msg: Msg,
     workers: &Workers,
     waiting: &mut Waiting,
-    loading: &mut HashSet<u64>,
+    loading: &mut Loading,
 ) -> Result<(), WorkerGone> {
     let loaded = match &msg {
-        Msg::PreTool { req_id, .. } => Some(*req_id),
+        Msg::PreTool { req_id, .. } | Msg::Ipc { req_id, .. } => Some(*req_id),
         _ => None,
     };
     // Before: a decision sees which hooks still wait.
@@ -384,11 +385,11 @@ fn sweep(
     app: &mut App,
     workers: &Workers,
     waiting: &mut Waiting,
-    loading: &HashSet<u64>,
+    loading: &Loading,
 ) -> Result<(), WorkerGone> {
     let gone: Vec<u64> = waiting
         .iter()
-        .filter(|(id, reply)| reply.is_closed() && !loading.contains(id))
+        .filter(|(id, reply)| reply.is_closed() && !loading.contains_key(id))
         .map(|(id, _)| *id)
         .collect();
     for req_id in gone {
@@ -440,6 +441,31 @@ fn apply(
     Ok(())
 }
 
+/// How long the loader trusts a folder's checkout before asking git again.
+const CHECKOUT_TTL: Duration = Duration::from_secs(30);
+
+/// Folders' checkouts as git last gave them, so a hook does not cost a git
+/// call each time.
+#[derive(Default)]
+struct Checkouts(HashMap<PathBuf, (Option<Checkout>, std::time::Instant)>);
+
+impl Checkouts {
+    fn of(&mut self, dir: &Path) -> Option<Checkout> {
+        self.of_at(dir, std::time::Instant::now())
+    }
+
+    fn of_at(&mut self, dir: &Path, now: std::time::Instant) -> Option<Checkout> {
+        if let Some((c, at)) = self.0.get(dir)
+            && now.saturating_duration_since(*at) < CHECKOUT_TTL
+        {
+            return c.clone();
+        }
+        let c = agents::checkout_of(dir);
+        self.0.insert(dir.to_path_buf(), (c.clone(), now));
+        c
+    }
+}
+
 /// Reads for hooks, done in order on the loader thread.
 enum Load {
     /// Read what a step card needs. `config` is a snapshot, used only to
@@ -451,6 +477,13 @@ enum Load {
     },
     /// Find the checkout a finished tool worked in.
     Post(PostToolReq),
+    /// Find the checkout a permission request comes from, for when its
+    /// agent is not known.
+    Permission {
+        req_id: u64,
+        req: HookRequest,
+        at: std::time::SystemTime,
+    },
 }
 
 /// Reads files for hooks on its own thread, so an edit never waits behind
@@ -458,6 +491,7 @@ enum Load {
 fn spawn_loader(tx: UnboundedSender<Msg>) -> std::sync::mpsc::Sender<Load> {
     let (loads, rx) = std::sync::mpsc::channel::<Load>();
     std::thread::spawn(move || {
+        let mut checkouts = Checkouts::default();
         while let Ok(load) = rx.recv() {
             let msg = match load {
                 Load::Edit {
@@ -470,6 +504,19 @@ fn spawn_loader(tx: UnboundedSender<Msg>) -> std::sync::mpsc::Sender<Load> {
                     at: std::time::Instant::now(),
                 },
                 Load::Post(req) => load_post(req),
+                Load::Permission { req_id, req, at } => {
+                    let checkout = match &req {
+                        HookRequest::Permission { cwd, .. } => checkouts.of(Path::new(cwd)),
+                        _ => None,
+                    };
+                    Msg::Ipc {
+                        req_id,
+                        req,
+                        checkout,
+                        at,
+                        now: std::time::Instant::now(),
+                    }
+                }
             };
             if tx.send(msg).is_err() {
                 return;
@@ -941,7 +988,7 @@ mod tests {
         app.config.set_mode(&Checkout("/a".into()), Mode::Step);
         let (workers, _jobs, _loads) = wedged();
         let mut waiting = HashMap::new();
-        let mut loading = HashSet::from([1]);
+        let mut loading = Loading::from([(1, true)]);
         let (reply, hook) = oneshot::channel();
         waiting.insert(1, reply);
         // The hook leaves while the worker reads its file.
@@ -984,7 +1031,7 @@ mod tests {
         let mut app = App::new(Config::default(), crate::theme::builtin_themes());
         app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
         let (workers, _jobs, _loads) = wedged();
-        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
         let (ev, mut hook) = ipc_event(1, pre_tool_req("/w/other", "/w/other/a.rs"));
         on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
         assert_eq!(hook.try_recv(), Ok(HookReply::NoDecision));
@@ -1001,12 +1048,12 @@ mod tests {
         let mut app = App::new(Config::default(), crate::theme::builtin_themes());
         app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
         let (workers, _jobs, loads) = wedged();
-        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
         // From another checkout, into the step one.
         let (ev, mut hook) = ipc_event(1, pre_tool_req("/w/other", "/w/step/src/a.rs"));
         on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
         assert!(hook.try_recv().is_err(), "no answer yet");
-        assert!(waiting.contains_key(&1) && loading.contains(&1));
+        assert!(waiting.contains_key(&1) && loading.contains_key(&1));
         assert!(matches!(loads.try_recv(), Ok(Load::Edit { req_id: 1, .. })));
     }
 
@@ -1023,7 +1070,7 @@ mod tests {
             jobs,
             loads: spawn_loader(tx),
         };
-        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
         let cwd = checkout.0.display().to_string();
         let file = checkout.0.join("a.rs").display().to_string();
         let (ev, _hook) = ipc_event(1, pre_tool_req(&cwd, &file));
@@ -1046,7 +1093,7 @@ mod tests {
         app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
         let (workers, jobs, _loads) = wedged();
         drop(jobs);
-        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
         let ask = HookRequest::Permission {
             session_id: "s1".into(),
             cwd: "/w/api".into(),
@@ -1065,11 +1112,67 @@ mod tests {
             on_msg(&mut app, msg, &workers, &mut waiting, &mut loading),
             Err(WorkerGone)
         );
-        abandon_hooks(&app, &mut waiting);
+        abandon_hooks(&app, &mut waiting, &loading);
         assert_eq!(asked.try_recv(), Ok(HookReply::NoDecision));
         // The step-mode edit's hook is let go unanswered, so it refuses.
         assert_eq!(edit.try_recv(), Err(oneshot::error::TryRecvError::Closed));
         assert!(waiting.is_empty());
+    }
+
+    #[test]
+    fn permission_from_a_subfolder_gets_its_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init(dir.path());
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        let (tx, mut rx) = unbounded_channel();
+        let (jobs, _wedged) = std::sync::mpsc::channel();
+        let workers = Workers {
+            jobs,
+            loads: spawn_loader(tx),
+        };
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        let ask = HookRequest::Permission {
+            session_id: "nobody".into(),
+            cwd: dir.path().join("sub").display().to_string(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({"command": "ls"}),
+            pane: None,
+        };
+        let (ev, _hook) = ipc_event(1, ask);
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(loading.contains_key(&1));
+        let start = std::time::Instant::now();
+        let msg = loop {
+            match rx.try_recv() {
+                Ok(msg) => break msg,
+                Err(_) if start.elapsed() > Duration::from_secs(5) => panic!("no card"),
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        on_msg(&mut app, msg, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(loading.is_empty());
+        let card = app.queue.current().expect("a permission card");
+        assert_eq!(card.checkout, Checkout::new(dir.path()));
+    }
+
+    #[test]
+    fn checkout_lookups_are_kept_for_a_while() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seen = Checkouts::default();
+        let t = std::time::Instant::now();
+        assert_eq!(seen.of_at(dir.path(), t), None);
+        git_init(dir.path());
+        assert_eq!(
+            seen.of_at(dir.path(), t + Duration::from_secs(1)),
+            None,
+            "cached"
+        );
+        let later = t + CHECKOUT_TTL;
+        assert_eq!(
+            seen.of_at(dir.path(), later),
+            Some(Checkout::new(dir.path()))
+        );
     }
 
     #[test]

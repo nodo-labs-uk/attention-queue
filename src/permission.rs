@@ -198,6 +198,8 @@ pub struct PermissionRequest {
     pub tool_name: String,
     pub tool_input: Value,
     pub pane: Option<String>,
+    /// The checkout of `cwd`, when it is in one.
+    pub checkout: Option<Checkout>,
 }
 
 /// `n` on a permission card: typing what Claude reads.
@@ -223,6 +225,7 @@ impl App {
             .or_else(|| self.agents.iter().find(|a| a.session_id == r.session_id));
         let checkout = agent
             .and_then(|a| a.checkout.clone())
+            .or(r.checkout)
             .unwrap_or_else(|| Checkout(r.cwd.clone().into()));
         let agent = agent.map_or_else(
             || AgentId {
@@ -469,6 +472,7 @@ mod tests {
 
     fn ipc_at(a: &mut App, req_id: u64, req: HookRequest, now: Instant) -> Vec<Effect> {
         a.update(Msg::Ipc {
+            checkout: None,
             req_id,
             req,
             at: SystemTime::UNIX_EPOCH + Duration::from_secs(req_id),
