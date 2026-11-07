@@ -440,6 +440,12 @@ impl App {
         files: Vec<FileDiff>,
         at: SystemTime,
     ) -> Vec<Effect> {
+        // Taken first: an open quiz or an empty diff also ends older saves.
+        let saved = self.unclaimed.take_quiz(&CardKey {
+            checkout: checkout.0.clone(),
+            from_tree: from_tree.clone(),
+            to_tree: to_tree.clone(),
+        });
         let open = self
             .queue
             .iter()
@@ -450,13 +456,8 @@ impl App {
         let diff = diff_text(&files, DIFF_CAP);
         self.next_card_id += 1;
         let id = self.next_card_id;
-        let key = CardKey {
-            checkout: checkout.0.clone(),
-            from_tree: from_tree.clone(),
-            to_tree: to_tree.clone(),
-        };
         // A quiz saved before a restart carries on with its questions.
-        let (qc, effects) = match self.unclaimed.take_quiz(&key) {
+        let (qc, effects) = match saved {
             Some(saved) => (saved.into_card(diff), Vec::new()),
             None => {
                 let job = quiz_job(id, &checkout, &diff);

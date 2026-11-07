@@ -48,4 +48,4 @@ When no `aq` is running, every hook exits at once and prints nothing, so Claude 
 - Saved state: `~/.local/state/aq/state.json`. It holds each checkout's last review round, review comments not sent yet and quiz progress. A saved draft or quiz comes back when the agent's card for the same snapshot comes back.
 - Socket: `$XDG_RUNTIME_DIR/aq.sock`, or `/tmp/aq-$UID/aq.sock`. `AQ_SOCKET` overrides it.
 
-`AQ_AGENTS_JSON` is a test hook: when it names a file, `aq` reads the agent list from that file instead of running `claude agents --json`. The end-to-end tests use it to make a fake agent look like Claude.
+`AQ_AGENTS_JSON` is a test hook, honoured by debug builds only: when it names a file, `aq` reads the agent list from that file instead of running `claude agents --json`. The end-to-end tests use it to make a fake agent look like Claude.

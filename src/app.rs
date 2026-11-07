@@ -31,6 +31,8 @@ pub enum Msg {
     AgentsFailed(String),
     /// A `Send` or `SaveConfig` effect failed in the runtime.
     EffectFailed(String),
+    /// Writing the saved state failed.
+    StateSaveFailed(String),
     /// A hook is waiting for `Effect::Reply` with this `req_id`.
     Ipc {
         req_id: u64,
@@ -215,8 +217,9 @@ pub struct App {
     pub(crate) next_card_id: u64,
     /// Saved drafts and quizzes waiting for their card to come back.
     pub(crate) unclaimed: crate::persist::Unclaimed,
-    /// The state as last handed out to be written.
-    pub(crate) saved: crate::persist::SavedState,
+    /// The state as last handed out to be written; `None` after a failed
+    /// write, so the next look writes it again.
+    pub(crate) saved: Option<crate::persist::SavedState>,
 }
 
 /// How long a status message stays on screen.
@@ -255,7 +258,7 @@ impl App {
             shown: None,
             next_card_id: 0,
             unclaimed: Default::default(),
-            saved: Default::default(),
+            saved: Some(Default::default()),
         }
     }
 
@@ -301,6 +304,13 @@ impl App {
             self.expire_step_decisions(t);
         }
         let effects = self.handle(msg);
+        // Any card for a checkout means the saves for it are done with.
+        if !self.unclaimed.is_empty() {
+            let checkouts: Vec<PathBuf> = self.queue.iter().map(|c| c.checkout.0.clone()).collect();
+            for c in checkouts {
+                self.unclaimed.forget(&c);
+            }
+        }
         let current = self.queue.current().map(|c| c.id);
         if self.shown.map(|(id, _)| id) != current {
             self.shown = current.map(|id| (id, at));
@@ -318,6 +328,11 @@ impl App {
             Msg::Agents(agents) => self.on_agents(agents),
             Msg::AgentsFailed(e) => {
                 self.set_status(format!("Could not list agents: {e}"));
+                Vec::new()
+            }
+            Msg::StateSaveFailed(e) => {
+                self.set_status(format!("Could not save state: {e}"));
+                self.saved = None;
                 Vec::new()
             }
             Msg::EffectFailed(e) => {
@@ -496,6 +511,8 @@ impl App {
             Mode::Quiz => Mode::Review,
         };
         self.config.set_mode(&checkout, mode);
+        // A save from the old mode would never be claimed.
+        self.unclaimed.forget(&checkout.0);
         self.set_status(format!("{}: {}", project_name(&checkout), mode_label(mode)));
         let mut effects = vec![Effect::SaveConfig];
         match mode {
@@ -572,6 +589,17 @@ impl App {
         files: Vec<FileDiff>,
         at: SystemTime,
     ) {
+        // A finished round claims its checkout's saved draft. Whatever
+        // happens next (a card there already, nothing to review), older
+        // saves for the checkout are done with.
+        let draft = match req.card {
+            Some(_) => None,
+            None => self.unclaimed.take_draft(&CardKey {
+                checkout: req.checkout.0.clone(),
+                from_tree: from_tree.clone(),
+                to_tree: to_tree.clone(),
+            }),
+        };
         let existing = match req.card {
             Some(id) => self.queue.find_mut(|c| c.id == id),
             None => self
@@ -592,12 +620,7 @@ impl App {
         let last = self.rounds.get(&req.checkout.0);
         let round = last.map_or(1, |l| l.round + 1);
         let mut comments = last.map(|l| l.comments.clone()).unwrap_or_default();
-        let key = CardKey {
-            checkout: req.checkout.0.clone(),
-            from_tree: from_tree.clone(),
-            to_tree: to_tree.clone(),
-        };
-        let draft = self.unclaimed.take_draft(&key).unwrap_or_default();
+        let draft = draft.unwrap_or_default();
         comments.extend(draft.into_iter().map(|c| Comment { round, ..c }));
         self.next_card_id += 1;
         self.queue.push(Card {

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::App;
 use crate::config::{Paths, write_atomic};
-use crate::model::{CardKind, Checkout};
+use crate::model::{CardKind, Checkout, Mode};
 use crate::quiz::{Answer, Question, QuizCard, QuizState, Verdict};
 use crate::review::{Comment, LastRound};
 
@@ -65,33 +65,43 @@ impl Unclaimed {
         self.drafts.iter().any(|d| here(&d.card)) || self.quizzes.iter().any(|q| here(&q.card))
     }
 
-    /// The comments saved for the review card `key`. Any other draft for
+    pub fn is_empty(&self) -> bool {
+        self.drafts.is_empty() && self.quizzes.is_empty()
+    }
+
+    /// Drops every save for `checkout`.
+    pub fn forget(&mut self, checkout: &Path) {
+        self.drafts.retain(|d| d.card.checkout != checkout);
+        self.quizzes.retain(|q| q.card.checkout != checkout);
+    }
+
+    /// The comments saved for the review card `key`. Every other save for
     /// its checkout is dropped: a new card there means the work moved on.
     pub fn take_draft(&mut self, key: &CardKey) -> Option<Vec<Comment>> {
-        let i = self.drafts.iter().position(|d| d.card == *key);
-        let found = i.map(|i| self.drafts.remove(i).comments);
-        self.drafts.retain(|d| d.card.checkout != key.checkout);
+        let found = self.drafts.iter().find(|d| d.card == *key);
+        let found = found.map(|d| d.comments.clone());
+        self.forget(&key.checkout);
         found
     }
 
-    /// The progress saved for the quiz card `key`, dropping any other for
-    /// its checkout.
+    /// The progress saved for the quiz card `key`, dropping every other
+    /// save for its checkout.
     pub fn take_quiz(&mut self, key: &CardKey) -> Option<QuizProgress> {
-        let i = self.quizzes.iter().position(|q| q.card == *key);
-        let found = i.map(|i| self.quizzes.remove(i));
-        self.quizzes.retain(|q| q.card.checkout != key.checkout);
+        let found = self.quizzes.iter().find(|q| q.card == *key).cloned();
+        self.forget(&key.checkout);
         found
     }
 }
 
 impl Draft {
-    /// The review card's comments of its round, if it has any.
+    /// The review card's comments of its round, if it has any, keyed by
+    /// where the round starts whatever view is on screen.
     fn of(checkout: &Checkout, rc: &crate::review::ReviewCard) -> Option<Draft> {
         let comments: Vec<Comment> = rc.current_comments().cloned().collect();
         (!comments.is_empty()).then(|| Draft {
             card: CardKey {
                 checkout: checkout.0.clone(),
-                from_tree: rc.from_tree.clone(),
+                from_tree: rc.round_base.clone(),
                 to_tree: rc.to_tree.clone(),
             },
             comments,
@@ -141,14 +151,18 @@ impl QuizProgress {
 }
 
 impl App {
-    /// Takes back what an earlier run saved.
-    pub fn restore(&mut self, state: SavedState) {
+    /// Takes back what an earlier run saved. A draft or quiz whose
+    /// checkout is in another mode now is dropped: no card would claim it.
+    pub fn restore(&mut self, mut state: SavedState) {
+        let mode = |k: &CardKey| self.config.mode_for(&Checkout(k.checkout.clone()));
+        state.drafts.retain(|d| mode(&d.card) == Mode::Review);
+        state.quizzes.retain(|q| mode(&q.card) == Mode::Quiz);
         self.rounds = state.rounds.clone();
         self.unclaimed = Unclaimed {
             drafts: state.drafts.clone(),
             quizzes: state.quizzes.clone(),
         };
-        self.saved = state;
+        self.saved = Some(state);
     }
 
     /// What is worth keeping across a restart now, unclaimed saves included.
@@ -171,10 +185,10 @@ impl App {
     /// The state to write, when it changed since it was last handed out.
     pub fn state_to_save(&mut self) -> Option<SavedState> {
         let state = self.saved_state();
-        if state == self.saved {
+        if self.saved.as_ref() == Some(&state) {
             return None;
         }
-        self.saved = state.clone();
+        self.saved = Some(state.clone());
         Some(state)
     }
 }
@@ -207,8 +221,7 @@ mod tests {
     use crate::app::tests::{
         agent, app, computed, ctrl, finish_round, fixture_files, key, review, typed,
     };
-    use crate::app::{Effect, Msg};
-    use crate::model::Mode;
+    use crate::app::{Effect, Msg, ReviewRequest};
     use crate::quiz::tests::{answer_free, asking, file, quiz};
     use crate::review::Side;
 
@@ -317,6 +330,105 @@ mod tests {
             qc.answers[1].verdict,
             Verdict::JudgeFailed(NOT_JUDGED.into())
         );
+    }
+
+    /// A review card for `/a` with the comment `body`, in round 1.
+    fn draft(body: &str) -> (App, ReviewRequest) {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req.clone(), "base", "t1", fixture_files()));
+        a.update(key('c'));
+        typed(&mut a, body);
+        a.update(ctrl('s'));
+        (a, req)
+    }
+
+    #[test]
+    fn draft_written_in_full_branch_view_survives_restart() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        let id = a.queue.current().unwrap().id;
+        a.update(key('A'));
+        a.update(Msg::SendDone { card: id });
+        // Round 2, shown as the whole branch while the comment is written.
+        let req = finish_round(&mut a);
+        a.update(computed(req.clone(), "t1", "t2", fixture_files()));
+        let effects = a.update(key('R'));
+        let [Effect::ComputeReview(full)] = effects.as_slice() else {
+            panic!("expected the full-branch diff, got {effects:?}");
+        };
+        a.update(computed(full.clone(), "base", "t2", fixture_files()));
+        assert!(review(&a).show_full_branch);
+        a.update(key('c'));
+        typed(&mut a, "seen whole");
+        a.update(ctrl('s'));
+        let (mut b, effects) = restart(&mut a, Mode::Review);
+        assert_eq!(effects, [Effect::ComputeReview(req.clone())]);
+        b.update(computed(req, "t1", "t2", fixture_files()));
+        let bodies: Vec<&str> = review(&b)
+            .current_comments()
+            .map(|c| c.body.as_str())
+            .collect();
+        assert_eq!(bodies, ["seen whole"]);
+    }
+
+    #[test]
+    fn save_for_another_mode_is_dropped_on_restart() {
+        let (mut a, _) = draft("x");
+        let (b, effects) = restart(&mut a, Mode::Quiz);
+        assert!(
+            effects.is_empty(),
+            "the stale draft starts nothing: {effects:?}"
+        );
+        assert_eq!(b.saved_state().drafts, []);
+    }
+
+    #[test]
+    fn empty_recompute_drops_the_save() {
+        let (mut a, req) = draft("x");
+        let (mut b, _) = restart(&mut a, Mode::Review);
+        b.update(computed(req, "base", "t1", Vec::new()));
+        assert!(b.queue.is_empty());
+        assert_eq!(b.saved_state().drafts, []);
+
+        let mut a = asking();
+        a.update(key('3'));
+        let (mut b, _) = restart(&mut a, Mode::Quiz);
+        let effects = b.update(Msg::QuizDiff {
+            checkout: Checkout("/a".into()),
+            agent: b.agents[0].id.clone(),
+            from_tree: "base".into(),
+            to_tree: "t1".into(),
+            files: Vec::new(),
+            at: SystemTime::UNIX_EPOCH,
+        });
+        assert!(effects.is_empty());
+        assert_eq!(b.saved_state().quizzes, []);
+    }
+
+    #[test]
+    fn any_card_for_the_checkout_drops_the_save() {
+        let (mut a, _) = draft("x");
+        let (mut b, _) = restart(&mut a, Mode::Review);
+        b.queue.push(crate::queue::tests::card(
+            99,
+            "/a",
+            CardKind::Review(Default::default()),
+            0,
+        ));
+        b.update(Msg::Tick(std::time::Instant::now()));
+        assert_eq!(b.unclaimed, Unclaimed::default());
+    }
+
+    #[test]
+    fn failed_write_is_tried_again() {
+        let (mut a, _) = draft("x");
+        assert!(a.state_to_save().is_some());
+        assert_eq!(a.state_to_save(), None);
+        a.update(Msg::StateSaveFailed("disk full".into()));
+        assert_eq!(a.status_text(), Some("Could not save state: disk full"));
+        assert!(a.state_to_save().is_some(), "written again");
     }
 
     #[test]

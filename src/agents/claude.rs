@@ -54,9 +54,12 @@ pub fn parse_agents_json(s: &str) -> Result<Vec<ClaudeProc>> {
 
 /// Lists the running Claude Code sessions with `claude agents --json`.
 ///
-/// Test hook: when `AQ_AGENTS_JSON` names a file, that file is read instead,
-/// so the end-to-end tests can make a fake agent look like Claude.
+/// Test hook, in debug builds only: when `AQ_AGENTS_JSON` names a file,
+/// that file is read instead, so the end-to-end tests can make a fake agent
+/// look like Claude. A release build ignores it, so an inherited value can
+/// never feed aq someone else's agent list.
 pub fn list_claude_procs() -> Result<Vec<ClaudeProc>> {
+    #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("AQ_AGENTS_JSON").filter(|p| !p.is_empty()) {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.to_string_lossy()))?;

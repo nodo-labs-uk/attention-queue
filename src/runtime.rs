@@ -56,16 +56,20 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &paths, conn, listener).await;
     ratatui::restore();
     let _ = std::fs::remove_file(&paths.socket);
-    result
+    if let Ok(Some(e)) = &result {
+        eprintln!("aq: could not save state on exit: {e}");
+    }
+    result.map(|_| ())
 }
 
+/// Returns why saved state could not be written on the way out, if it could not.
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     paths: &Paths,
     conn: Arc<dyn AgentConn>,
     listener: UnixListener,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let (tx, mut rx) = unbounded_channel();
     let (ipc_tx, mut ipc_rx) = channel(64);
     tokio::spawn(ipc::accept_loop(listener, ipc_tx));
@@ -167,10 +171,10 @@ async fn event_loop(
     }
     // Let queued saves and sends finish before exit.
     drop(jobs);
-    let _ = worker.join();
+    let save_failed = worker.join().ok().flatten();
     // `claude` calls still running are of no use once aq is gone.
     children.kill_all();
-    Ok(())
+    Ok(save_failed)
 }
 
 /// Tells the app the terminal size when it changed, so it can judge how
@@ -335,14 +339,14 @@ fn spawn_effect_worker(
     conn: Arc<dyn AgentConn>,
     paths: Paths,
     llm: Arc<dyn Llm>,
-) -> (std::sync::mpsc::Sender<Job>, JoinHandle<()>) {
+) -> (std::sync::mpsc::Sender<Job>, JoinHandle<Option<String>>) {
     let (jobs, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let state_file = persist::state_file(&paths);
         let save = |state: &SavedState| {
             persist::save(&state_file, state)
                 .err()
-                .map(|e| Msg::EffectFailed(format!("Could not save state: {e:#}")))
+                .map(|e| format!("{e:#}"))
         };
         // The latest state not written yet, and when it is due.
         let mut due: Option<(SavedState, std::time::Instant)> = None;
@@ -357,12 +361,16 @@ fn spawn_effect_worker(
                 Ok(job) => job,
                 Err(e) => {
                     let failed = due.take().and_then(|(state, _)| save(&state));
-                    if let Some(msg) = failed {
-                        let _ = tx.send(msg);
-                    }
                     match e {
-                        RecvTimeoutError::Timeout => continue,
-                        RecvTimeoutError::Disconnected => return,
+                        RecvTimeoutError::Timeout => {
+                            if let Some(e) = failed {
+                                let _ = tx.send(Msg::StateSaveFailed(e));
+                            }
+                            continue;
+                        }
+                        // aq is closing: the caller reports this once the
+                        // terminal is back.
+                        RecvTimeoutError::Disconnected => return failed,
                     }
                 }
             };
@@ -427,7 +435,7 @@ fn spawn_effect_worker(
             if let Some(msg) = msg
                 && tx.send(msg).is_err()
             {
-                return;
+                return due.and_then(|(state, _)| save(&state));
             }
         }
     });

@@ -52,6 +52,9 @@ pub struct ReviewCard {
     pub round: u32,
     pub from_tree: String,
     pub to_tree: String,
+    /// Where the round starts: the last round's tree, or the branch base in
+    /// round 1. The full-branch view changes `from_tree`, never this.
+    pub round_base: String,
     pub files: Vec<FileDiff>,
     /// This round's comments and, marked by their round, earlier rounds' ones.
     pub comments: Vec<Comment>,
@@ -103,6 +106,7 @@ impl ReviewCard {
     ) -> Self {
         let mut card = ReviewCard {
             round,
+            round_base: from_tree.clone(),
             from_tree,
             to_tree,
             files,
