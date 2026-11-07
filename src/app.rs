@@ -323,6 +323,15 @@ impl App {
             } => self.on_post_tool(&session_id, checkout, &tool_name, &tool_input),
             Msg::Snapshot { req, result, at } => self.on_snapshot(req, result, at),
             Msg::Resize { width, height } => {
+                // What was seen is counted in rows at the old width.
+                if self.screen.is_some_and(|(w, _)| w != width) {
+                    for c in self.queue.cards_mut() {
+                        if let CardKind::Permission(p) = &mut c.kind {
+                            p.scroll = 0;
+                            p.seen = 0;
+                        }
+                    }
+                }
                 self.screen = Some((width, height));
                 Vec::new()
             }

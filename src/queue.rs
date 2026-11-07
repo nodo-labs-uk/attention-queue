@@ -63,6 +63,10 @@ impl Queue {
         self.order().into_iter().map(|i| &self.entries[i].card)
     }
 
+    pub fn cards_mut(&mut self) -> impl Iterator<Item = &mut Card> {
+        self.entries.iter_mut().map(|e| &mut e.card)
+    }
+
     pub fn find_mut(&mut self, mut pred: impl FnMut(&Card) -> bool) -> Option<&mut Card> {
         self.entries
             .iter_mut()

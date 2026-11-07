@@ -69,50 +69,95 @@ impl PermissionCard {
     /// Control characters are made visible and long blank runs collapsed.
     pub fn body_lines(&self) -> Vec<(LineKind, String)> {
         let input = &self.tool_input;
-        let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("");
-        let mut out = Vec::new();
-        let mut diff = |kind: LineKind, mark: &str, text: &str| {
+        let str_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+        let mut out: Vec<(LineKind, String)> = Vec::new();
+        let mut put = |kind: LineKind, mark: &str, text: &str| {
             out.extend(
                 visible_lines(text)
                     .into_iter()
                     .map(|l| (kind, format!("{mark}{l}"))),
             );
         };
-        match self.tool_name.as_str() {
-            "Bash" if input.get("command").is_some_and(Value::is_string) => {
-                diff(LineKind::Plain, "", text("command"));
+        // Keys of the input whose value the lines above show in full.
+        let shown: std::cell::RefCell<Vec<&str>> = Default::default();
+        let show = |key: &'static str,
+                    kind: LineKind,
+                    mark: &str,
+                    put: &mut dyn FnMut(LineKind, &str, &str)| {
+            if let Some(text) = str_of(input, key) {
+                put(kind, mark, &text);
+                shown.borrow_mut().push(key);
             }
-            "Edit" | "Write" | "MultiEdit"
-                if input.get("file_path").is_some_and(Value::is_string) =>
-            {
-                diff(LineKind::Plain, "", text("file_path"));
-                match self.tool_name.as_str() {
-                    "Edit" => {
-                        diff(LineKind::Del, "- ", text("old_string"));
-                        diff(LineKind::Add, "+ ", text("new_string"));
+        };
+        let tool = self.tool_name.as_str();
+        match tool {
+            "Bash" => show("command", LineKind::Plain, "", &mut put),
+            "Edit" => {
+                show("file_path", LineKind::Plain, "", &mut put);
+                show("old_string", LineKind::Del, "- ", &mut put);
+                show("new_string", LineKind::Add, "+ ", &mut put);
+            }
+            "Write" => {
+                show("file_path", LineKind::Plain, "", &mut put);
+                show("content", LineKind::Add, "+ ", &mut put);
+            }
+            "MultiEdit" => {
+                show("file_path", LineKind::Plain, "", &mut put);
+                let edits = input.get("edits").and_then(Value::as_array);
+                // Only edits made of two strings are shown as -/+ lines.
+                let plain = |e: &Value| {
+                    e.as_object().is_some_and(|m| {
+                        m.len() == 2
+                            && str_of(e, "old_string").is_some()
+                            && str_of(e, "new_string").is_some()
+                    })
+                };
+                if let Some(edits) = edits.filter(|e| e.iter().all(plain)) {
+                    for e in edits {
+                        put(
+                            LineKind::Del,
+                            "- ",
+                            &str_of(e, "old_string").unwrap_or_default(),
+                        );
+                        put(
+                            LineKind::Add,
+                            "+ ",
+                            &str_of(e, "new_string").unwrap_or_default(),
+                        );
                     }
-                    "Write" => diff(LineKind::Add, "+ ", text("content")),
-                    _ => {
-                        for e in input
-                            .get("edits")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                        {
-                            let get = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
-                            diff(LineKind::Del, "- ", get("old_string"));
-                            diff(LineKind::Add, "+ ", get("new_string"));
-                        }
-                    }
+                    shown.borrow_mut().push("edits");
                 }
             }
-            "NotebookEdit" if input.get("notebook_path").is_some_and(Value::is_string) => {
-                diff(LineKind::Plain, "", text("notebook_path"));
+            "NotebookEdit" => {
+                show("notebook_path", LineKind::Plain, "", &mut put);
+                for key in ["cell_type", "edit_mode"] {
+                    if let Some(v) = str_of(input, key) {
+                        put(LineKind::Plain, &format!("{key}: "), &v);
+                        shown.borrow_mut().push(key);
+                    }
+                }
+                show("new_source", LineKind::Add, "+ ", &mut put);
             }
-            _ => {
-                let json = serde_json::to_string_pretty(input).unwrap_or_default();
-                diff(LineKind::Plain, "", &json);
+            _ => {}
+        }
+        // Whatever else the input holds, so the whole of it is on the card.
+        let rest: serde_json::Map<String, Value> = match input {
+            Value::Object(m) => m
+                .iter()
+                .filter(|(k, _)| !shown.borrow().contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => serde_json::Map::new(),
+        };
+        let all_extra = shown.borrow().is_empty();
+        if !rest.is_empty() || (all_extra && !input.is_object()) {
+            let json = if all_extra {
+                serde_json::to_string_pretty(input)
+            } else {
+                serde_json::to_string_pretty(&rest)
             }
+            .unwrap_or_default();
+            put(LineKind::Plain, "", &json);
         }
         out
     }
@@ -147,6 +192,14 @@ fn wrap(line: &str, width: usize, push: &mut impl FnMut(String)) {
     push(row);
 }
 
+/// Format characters that change how text reads or hide inside it: bidi
+/// controls, zero-width characters, line and paragraph separators, BOM, tags.
+fn is_format(c: char) -> bool {
+    matches!(c as u32,
+        0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E
+        | 0x2060..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE007F)
+}
+
 /// One character, with control characters spelled out so they cannot hide
 /// anything: tab as →, return as ⏎, others as ^X or \u{..}.
 fn visible(c: char, out: &mut String) {
@@ -158,7 +211,7 @@ fn visible(c: char, out: &mut String) {
             out.push('^');
             out.push(char::from(c as u8 ^ 0x40));
         }
-        c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+        c if c.is_control() || is_format(c) => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
         c => out.push(c),
     }
 }
@@ -809,6 +862,88 @@ mod tests {
             height: 4,
         });
         assert!(a.update(key('y', t)).is_empty(), "no body rows on screen");
+    }
+
+    #[test]
+    fn widening_forgets_what_was_seen() {
+        let mut a = app();
+        a.update(Msg::Resize {
+            width: 40,
+            height: 11,
+        });
+        let t0 = Instant::now();
+        let line = |c: char| c.to_string().repeat(60);
+        let cmd = ['a', 'b', 'c', 'd'].map(line).join("\n");
+        ipc(
+            &mut a,
+            1,
+            ask("Bash", json!({"command": cmd}), Some("%5"), "s5"),
+        );
+        a.update(Msg::Tick(t0));
+        let t = t0 + Duration::from_millis(400);
+        // 8 rows at width 40, 2 on screen: scroll to rows 2-3 only.
+        a.update(key('j', t));
+        a.update(key('j', t));
+        // At width 80 the body is 4 rows, and the top 2 are the only ones seen
+        // by that count; lines c and d were never shown.
+        a.update(Msg::Resize {
+            width: 80,
+            height: 11,
+        });
+        assert!(a.update(key('y', t)).is_empty());
+        assert!(a.status_text().unwrap().contains("Scroll to the end"));
+        a.update(key('j', t));
+        a.update(key('j', t));
+        assert_eq!(a.update(key('y', t)).len(), 1);
+    }
+
+    #[test]
+    fn format_characters_are_spelled_out() {
+        let cmd = "ls \u{202e}gnihton\u{202c}\u{200b}\u{2066}\u{feff}\u{2028}x";
+        let pc = card_of("Bash", json!({"command": cmd}));
+        assert_eq!(
+            text(&pc),
+            ["ls \\u{202e}gnihton\\u{202c}\\u{200b}\\u{2066}\\u{feff}\\u{2028}x"]
+        );
+    }
+
+    #[test]
+    fn notebook_edit_shows_source_and_mode() {
+        let pc = card_of(
+            "NotebookEdit",
+            json!({"notebook_path": "/n.ipynb", "new_source": "a = 1\nb = 2", "cell_type": "code", "edit_mode": "insert"}),
+        );
+        assert_eq!(
+            text(&pc),
+            [
+                "/n.ipynb",
+                "cell_type: code",
+                "edit_mode: insert",
+                "+ a = 1",
+                "+ b = 2"
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_input_keys_are_listed_below_the_body() {
+        let pc = card_of(
+            "Edit",
+            json!({"file_path": "/f", "old_string": "a", "new_string": "b", "sneaky": "rm -rf /"}),
+        );
+        let t = text(&pc);
+        assert_eq!(&t[..3], ["/f", "- a", "+ b"]);
+        assert!(t.iter().any(|l| l.contains("\"sneaky\": \"rm -rf /\"")));
+        assert!(!t.iter().any(|l| l.contains("old_string")));
+        // A non-string value is not hidden either.
+        let pc = card_of("Bash", json!({"command": "ls", "timeout": 5}));
+        assert!(text(&pc).iter().any(|l| l.contains("\"timeout\": 5")));
+        // A MultiEdit with an extra field on an edit shows the edits as JSON.
+        let pc = card_of(
+            "MultiEdit",
+            json!({"file_path": "/f", "edits": [{"old_string": "a", "new_string": "b", "replace_all": true}]}),
+        );
+        assert!(text(&pc).iter().any(|l| l.contains("replace_all")));
     }
 
     #[test]
