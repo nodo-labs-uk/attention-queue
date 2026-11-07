@@ -1,6 +1,7 @@
 //! Hook to TUI messages over the Unix socket: one connection per request,
 //! one JSON line each way.
 
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -65,13 +66,14 @@ pub async fn serve(socket: PathBuf, tx: mpsc::Sender<IpcEvent>) -> Result<()> {
 }
 
 /// Binds the socket with mode 0600. A socket file nothing answers on is
-/// removed first; one that answers means another `aq` is live.
+/// removed first; one that answers means another `aq` is live. The socket's
+/// directory must pass `check_private_dir`, as the hook checks the same.
 pub fn listen(socket: &Path) -> Result<UnixListener> {
-    if let Some(dir) = socket.parent()
-        && dir == crate::config::fallback_socket_dir()
-    {
+    let dir = socket.parent().context("socket path has no directory")?;
+    if dir == crate::config::fallback_socket_dir() {
         ensure_private_dir(dir)?;
     }
+    check_private_dir(dir)?;
     if std::fs::symlink_metadata(socket).is_ok() {
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
             bail!("aq is already running (socket {})", socket.display());
@@ -94,17 +96,59 @@ pub fn ensure_private_dir(dir: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
     }
+    owned_dir(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("setting the mode of {}", dir.display()))
+}
+
+/// Checks that `dir` is a real directory (not a symlink), owned by this user,
+/// that no other user can enter. Another user could otherwise plant a socket
+/// there and read or answer our hooks.
+pub fn check_private_dir(dir: &Path) -> Result<()> {
+    let meta = owned_dir(dir)?;
+    if meta.mode() & 0o077 != 0 {
+        bail!("{} is open to other users", dir.display());
+    }
+    Ok(())
+}
+
+fn owned_dir(dir: &Path) -> Result<std::fs::Metadata> {
     let meta =
         std::fs::symlink_metadata(dir).with_context(|| format!("reading {}", dir.display()))?;
     if !meta.is_dir() || meta.uid() != crate::config::current_uid() {
         bail!("{} is not a directory owned by this user", dir.display());
     }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("setting the mode of {}", dir.display()))
+    Ok(meta)
+}
+
+/// The uid of the process at the other end of a Unix socket (SO_PEERCRED).
+pub fn peer_uid(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the fd is a live socket owned by `stream`, and `cred` and `len`
+    // are valid for writes of the size passed.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(cred.uid)
 }
 
 /// Accepts hooks until the receiver of `tx` goes away.
 pub async fn accept_loop(listener: UnixListener, tx: mpsc::Sender<IpcEvent>) {
+    let uid = crate::config::current_uid();
     let mut next_id = 0u64;
     loop {
         let accepted = tokio::select! {
@@ -113,6 +157,11 @@ pub async fn accept_loop(listener: UnixListener, tx: mpsc::Sender<IpcEvent>) {
         };
         match accepted {
             Ok((stream, _)) => {
+                // Only our own user's hooks may talk to us.
+                match stream.peer_cred() {
+                    Ok(cred) if cred.uid() == uid => {}
+                    _ => continue,
+                }
                 next_id += 1;
                 tokio::spawn(handle(stream, next_id, tx.clone()));
             }

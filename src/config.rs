@@ -95,11 +95,9 @@ pub fn fallback_socket_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/aq-{}", current_uid()))
 }
 
-pub(crate) fn current_uid() -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self")
-        .map(|m| m.uid())
-        .unwrap_or(0)
+pub fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
 }
 
 #[cfg(test)]

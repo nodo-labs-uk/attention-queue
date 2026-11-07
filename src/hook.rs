@@ -4,11 +4,13 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use crate::config::current_uid;
 use crate::ipc::{HookReply, HookRequest};
 
 /// What a step-mode edit with no answer tells the agent.
@@ -46,24 +48,62 @@ pub fn run_hook_with(
     let input: Value = serde_json::from_str(&input).context("parsing hook input")?;
     let req = request(event, &input, pane);
 
-    // No aq listening: Claude behaves as if there were no hook.
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return Ok(None);
+    let end = Instant::now() + deadline;
+    let reply = match connect(socket, deadline) {
+        // No aq of ours listening: Claude behaves as if there were no hook.
+        Connect::NoAq => return Ok(None),
+        Connect::TimedOut => None,
+        Connect::Connected(stream) => exchange(stream, &req, end),
     };
-    let reply = exchange(stream, &req, deadline);
     Ok(output(event, reply))
 }
 
-/// Sends the request and waits for one reply line. `None` means no answer:
-/// the deadline passed, the connection closed, or the reply was unreadable.
-fn exchange(mut stream: UnixStream, req: &HookRequest, deadline: Duration) -> Option<HookReply> {
+enum Connect {
+    NoAq,
+    /// Our aq's socket exists but did not take the connection in time.
+    TimedOut,
+    Connected(UnixStream),
+}
+
+/// Connects to our own user's aq, waiting at most `wait`. The socket's
+/// directory must be private, and the listener must run as this user.
+fn connect(socket: &Path, wait: Duration) -> Connect {
+    let private = socket
+        .parent()
+        .is_some_and(|dir| crate::ipc::check_private_dir(dir).is_ok());
+    if !private {
+        return Connect::NoAq;
+    }
+    // A blocking connect to a stuck aq can hang, so it runs on a thread that
+    // is left behind if it does not finish in time.
+    let (tx, rx) = mpsc::channel();
+    let path = socket.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(UnixStream::connect(path));
+    });
+    match rx.recv_timeout(wait) {
+        Ok(Ok(stream)) if crate::ipc::peer_uid(&stream).ok() == Some(current_uid()) => {
+            Connect::Connected(stream)
+        }
+        Ok(_) => Connect::NoAq,
+        Err(_) => Connect::TimedOut,
+    }
+}
+
+/// Sends the request and waits for one reply line until `end`. `None` means
+/// no answer: the deadline passed, the connection closed, or the reply was
+/// unreadable.
+fn exchange(mut stream: UnixStream, req: &HookRequest, end: Instant) -> Option<HookReply> {
     // A zero timeout is an error for the socket, so wait at least 1 ms.
-    let deadline = deadline.max(Duration::from_millis(1));
-    stream.set_read_timeout(Some(deadline)).ok()?;
-    stream.set_write_timeout(Some(deadline)).ok()?;
+    let left = || {
+        end.saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1))
+    };
+    stream.set_write_timeout(Some(left())).ok()?;
     let mut line = serde_json::to_string(req).ok()?;
     line.push('\n');
     stream.write_all(line.as_bytes()).ok()?;
+    stream.set_read_timeout(Some(left())).ok()?;
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply).ok()?;
     serde_json::from_str(&reply).ok()

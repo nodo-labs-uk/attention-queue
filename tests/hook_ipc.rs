@@ -27,9 +27,16 @@ const PERMISSION_INPUT: &str = r#"{
   "permission_suggestions": []
 }"#;
 
+/// A temp dir only this user can enter, as the socket's directory must be.
+fn private_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 /// A listening server on a fresh socket, and the events it receives.
 fn start_server() -> (tempfile::TempDir, PathBuf, mpsc::Receiver<IpcEvent>) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("aq.sock");
     let listener = ipc::listen(&socket).unwrap();
     let (tx, rx) = mpsc::channel(8);
@@ -74,7 +81,7 @@ fn answer_all(mut rx: mpsc::Receiver<IpcEvent>, reply: HookReply) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_socket_prints_nothing() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("aq.sock");
     let out = hook(
         &socket,
@@ -88,7 +95,7 @@ async fn no_socket_prints_nothing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stale_socket_file_prints_nothing() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("aq.sock");
     drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
     let out = hook(
@@ -385,7 +392,7 @@ async fn second_instance_refuses() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stale_socket_is_replaced() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("aq.sock");
     drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
     assert!(socket.exists());
@@ -402,7 +409,7 @@ async fn socket_is_private() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn serve_answers_requests() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("aq.sock");
     let (tx, rx) = mpsc::channel(8);
     tokio::spawn(ipc::serve(socket.clone(), tx));
@@ -424,5 +431,97 @@ async fn serve_answers_requests() {
     assert_eq!(
         parsed(out)["hookSpecificOutput"]["permissionDecision"],
         "allow"
+    );
+}
+
+/// A listener that never accepts, in `dir`, and the socket path.
+fn silent_listener(dir: &Path) -> (std::os::unix::net::UnixListener, PathBuf) {
+    let socket = dir.join("aq.sock");
+    (
+        std::os::unix::net::UnixListener::bind(&socket).unwrap(),
+        socket,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn loose_socket_dir_prints_nothing() {
+    let base = private_dir();
+    for mode in [0o770, 0o707, 0o755] {
+        let dir = base.path().join(format!("aq-{mode:o}"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let (_listener, socket) = silent_listener(&dir);
+        let out = hook(
+            &socket,
+            HookEvent::PreTool,
+            PRE_TOOL_INPUT,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(out, None, "mode {mode:o}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn symlinked_socket_dir_prints_nothing() {
+    let base = private_dir();
+    let real = base.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (_listener, _) = silent_listener(&real);
+    let link = base.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let out = hook(
+        &link.join("aq.sock"),
+        HookEvent::PreTool,
+        PRE_TOOL_INPUT,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(out, None);
+}
+
+#[test]
+fn peer_uid_of_socketpair_is_ours() {
+    let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+    assert_eq!(ipc::peer_uid(&a).unwrap(), aq::config::current_uid());
+}
+
+#[test]
+fn listen_refuses_a_loose_dir() {
+    let base = private_dir();
+    let dir = base.path().join("open");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    assert!(ipc::listen(&dir.join("aq.sock")).is_err());
+}
+
+/// An aq that is stuck: its listen queue is full, so `connect` blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn stuck_aq_denies_pre_tool_by_the_deadline() {
+    use std::os::fd::AsRawFd;
+    let dir = private_dir();
+    let (listener, socket) = silent_listener(dir.path());
+    // SAFETY: a valid listening socket; listen again only shrinks its queue.
+    assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+    let _queued = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    let started = std::time::Instant::now();
+    let out = hook(
+        &socket,
+        HookEvent::PreTool,
+        PRE_TOOL_INPUT,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        parsed(out)["hookSpecificOutput"]["permissionDecisionReason"],
+        WAITING_REASON
     );
 }
