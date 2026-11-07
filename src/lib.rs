@@ -11,6 +11,7 @@ pub mod model;
 pub mod queue;
 pub mod review;
 pub mod runtime;
+pub mod shell;
 pub mod step;
 pub mod theme;
 pub mod transcript;

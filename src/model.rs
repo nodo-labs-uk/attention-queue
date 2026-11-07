@@ -4,6 +4,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 pub use crate::review::ReviewCard;
+pub use crate::shell::ShellCard;
 pub use crate::step::StepCard;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -34,8 +35,6 @@ pub struct AgentId {
     pub claude_pid: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShellCard;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuizCard;
 #[derive(Debug, Clone, PartialEq, Eq)]

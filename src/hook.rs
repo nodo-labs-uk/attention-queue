@@ -19,6 +19,9 @@ pub const WAITING_REASON: &str = "Waiting for human review in aq. Try this edit 
 /// Seconds the hook waits by default; the hook command's `timeout` is 3600.
 pub const DEFAULT_DEADLINE_SECS: u64 = 3570;
 
+/// The most a PostToolUse hook spends handing its report to aq.
+const POST_TOOL_WAIT: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum HookEvent {
     PreTool,
@@ -48,6 +51,11 @@ pub fn run_hook_with(
     let input: Value = serde_json::from_str(&input).context("parsing hook input")?;
     let req = request(event, &input, pane);
 
+    if event == HookEvent::PostTool {
+        // The tool already ran: report it and go, so nothing waits on aq.
+        send_only(socket, &req);
+        return Ok(None);
+    }
     let end = Instant::now() + deadline;
     let reply = match connect(socket, deadline) {
         // No aq of ours listening: Claude behaves as if there were no hook.
@@ -107,6 +115,20 @@ fn exchange(mut stream: UnixStream, req: &HookRequest, end: Instant) -> Option<H
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply).ok()?;
     serde_json::from_str(&reply).ok()
+}
+
+/// Sends the request and does not wait for a reply. Failures are ignored: a
+/// missed report only means a missed card.
+fn send_only(socket: &Path, req: &HookRequest) {
+    let end = Instant::now() + POST_TOOL_WAIT;
+    if let Connect::Connected(mut stream) = connect(socket, POST_TOOL_WAIT)
+        && let Ok(mut line) = serde_json::to_string(req)
+    {
+        line.push('\n');
+        let left = end.saturating_duration_since(Instant::now());
+        let _ = stream.set_write_timeout(Some(left.max(Duration::from_millis(1))));
+        let _ = stream.write_all(line.as_bytes());
+    }
 }
 
 fn request(event: HookEvent, input: &Value, pane: Option<String>) -> HookRequest {

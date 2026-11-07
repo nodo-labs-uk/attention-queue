@@ -75,6 +75,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("s", "skip".into()),
             ("?", "ask".into()),
         ],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::ShellChange(_),
+                ..
+            }),
+        ) => vec![
+            ("y", "approve".into()),
+            ("u", "undo".into()),
+            ("v", "view".into()),
+            ("]c", "change".into()),
+            ("tab", "file".into()),
+            ("j/k", "line".into()),
+            ("s", "skip".into()),
+        ],
         (None, Some(_)) => vec![
             ("?", "ask".into()),
             ("s", "skip".into()),

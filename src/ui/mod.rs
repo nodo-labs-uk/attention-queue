@@ -5,6 +5,7 @@ pub mod fold;
 pub mod input;
 mod keys;
 mod review;
+mod shell;
 mod step;
 mod tree;
 
@@ -105,6 +106,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
     match &card.kind {
         CardKind::Review(rc) => return review::render(frame, area, app, card, rc, hl),
         CardKind::Step(sc) => return step::render(frame, area, app, card, sc, hl),
+        CardKind::ShellChange(sc) => return shell::render(frame, area, app, card, sc, hl),
         _ => {}
     }
     let inner = area.inner(ratatui::layout::Margin::new(1, 1));

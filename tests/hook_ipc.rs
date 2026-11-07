@@ -525,3 +525,22 @@ async fn stuck_aq_denies_pre_tool_by_the_deadline() {
         WAITING_REASON
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn post_tool_reports_and_returns_without_a_reply() {
+    let (_dir, socket, mut rx) = start_server();
+    let input = r#"{"session_id": "s1", "cwd": "/w/api", "tool_name": "Bash", "tool_input": {"command": "ls"}}"#;
+    // Nobody answers, yet the hook returns at once.
+    let out = hook(&socket, HookEvent::PostTool, input, Duration::from_secs(30)).await;
+    assert_eq!(out, None);
+    let ev = rx.recv().await.unwrap();
+    assert_eq!(
+        ev.req,
+        HookRequest::PostTool {
+            session_id: "s1".into(),
+            cwd: "/w/api".into(),
+            tool_name: "Bash".into(),
+            tool_input: json!({"command": "ls"}),
+        }
+    );
+}

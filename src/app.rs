@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -12,6 +12,7 @@ use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::queue::Queue;
 use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
+use crate::shell::{Shell, Snapshot, SnapshotRequest};
 use crate::step::{PendingEdit, ReasonDraft, SearchList, Steps};
 use crate::theme::Theme;
 use crate::ui::input::{InputEvent, TextInput};
@@ -39,6 +40,20 @@ pub enum Msg {
         edit: PendingEdit,
         /// When the runtime handed it over.
         at: Instant,
+    },
+    /// A tool finished (PostToolUse). `checkout` is the one the tool worked
+    /// in: the edited file's for an edit tool, the cwd's otherwise.
+    PostTool {
+        session_id: String,
+        checkout: Option<Checkout>,
+        tool_name: String,
+        tool_input: serde_json::Value,
+    },
+    /// The result of an `Effect::Snapshot`.
+    Snapshot {
+        req: SnapshotRequest,
+        result: Snapshot,
+        at: SystemTime,
     },
     /// The hook waiting on `req_id` went away without an answer.
     HookGone {
@@ -101,6 +116,9 @@ pub enum Effect {
     ComputeReview(ReviewRequest),
     /// Write `App::rounds` to the state dir.
     SaveRounds,
+    /// Snapshot a step-mode checkout's working tree, and diff it from the
+    /// request's tree.
+    Snapshot(SnapshotRequest),
     /// `git grep` for a whole word in the checkout (`gd` on a step card).
     Grep {
         checkout: Checkout,
@@ -139,8 +157,9 @@ pub struct App {
     /// Last sent review round per checkout root.
     pub rounds: BTreeMap<PathBuf, LastRound>,
     /// Review cards whose message is on its way, with the status to show once it lands.
-    sending: BTreeMap<u64, String>,
+    pub(crate) sending: BTreeMap<u64, String>,
     pub steps: Steps,
+    pub shell: Shell,
     /// The latest time a message carried.
     pub(crate) now: Option<Instant>,
     /// The card on screen, and when it got there. The time is `None` until
@@ -179,6 +198,7 @@ impl App {
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
             steps: Steps::default(),
+            shell: Shell::default(),
             now: None,
             shown: None,
             next_card_id: 0,
@@ -256,6 +276,13 @@ impl App {
                 decision: HookReply::NoDecision,
             }],
             Msg::PreTool { req_id, edit, .. } => self.on_pre_tool(req_id, edit),
+            Msg::PostTool {
+                session_id,
+                checkout,
+                tool_name,
+                tool_input,
+            } => self.on_post_tool(&session_id, checkout, &tool_name, &tool_input),
+            Msg::Snapshot { req, result, at } => self.on_snapshot(req, result, at),
             Msg::HookGone { req_id } => {
                 self.on_hook_gone(req_id);
                 Vec::new()
@@ -325,6 +352,7 @@ impl App {
             }
             _ if self.overlay.is_none() => match self.queue.current().map(|c| &c.kind) {
                 Some(CardKind::Step(_)) => self.on_step_key(key),
+                Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 _ => self.on_review_key(key),
             },
             _ => Vec::new(),
@@ -350,7 +378,16 @@ impl App {
         };
         self.config.set_mode(&checkout, mode);
         self.set_status(format!("{}: {}", project_name(&checkout), mode_label(mode)));
-        vec![Effect::SaveState]
+        let mut effects = vec![Effect::SaveState];
+        match mode {
+            // A fresh baseline: what changed before step mode is not a command's doing.
+            Mode::Step => {
+                self.forget_baseline(&checkout);
+                effects.extend(self.request_snapshot(checkout, None));
+            }
+            _ => self.forget_baseline(&checkout),
+        }
+        effects
     }
 
     fn on_agents(&mut self, agents: Vec<Agent>) -> Vec<Effect> {
@@ -359,10 +396,20 @@ impl App {
             .cloned()
             .collect();
         self.agents = agents;
-        started
+        let mut effects: Vec<Effect> = started
             .iter()
             .flat_map(|a| self.on_agent_waiting(a))
-            .collect()
+            .collect();
+        // Checkouts already in step mode at startup need a baseline too.
+        let checkouts: BTreeSet<Checkout> = self
+            .agents
+            .iter()
+            .filter_map(|a| a.checkout.clone())
+            .collect();
+        for checkout in checkouts {
+            effects.extend(self.ensure_baseline(&checkout));
+        }
+        effects
     }
 
     /// An agent just went from working to waiting. Review cards and quiz
@@ -541,7 +588,16 @@ impl App {
         let Some(done) = self.sending.remove(&card) else {
             return Vec::new();
         };
+        let shell = self
+            .queue
+            .find_mut(|c| c.id == card)
+            .is_some_and(|c| matches!(c.kind, CardKind::ShellChange(_)));
         match error {
+            None if shell => {
+                self.queue.remove(card);
+                self.set_status(done);
+                Vec::new()
+            }
             None => self.close_review(card, done),
             Some(e) => {
                 self.set_status(e);
@@ -799,7 +855,18 @@ pub(crate) mod tests {
         a.queue
             .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
         let ck = Checkout("/a".into());
-        assert_eq!(a.update(key('M')), [Effect::SaveState]);
+        // Entering step mode also takes the baseline tree for shell changes.
+        assert_eq!(
+            a.update(key('M')),
+            [
+                Effect::SaveState,
+                Effect::Snapshot(SnapshotRequest {
+                    checkout: ck.clone(),
+                    from: None,
+                    command: None,
+                })
+            ]
+        );
         assert_eq!(a.config.mode_for(&ck), Mode::Step);
         a.update(key('M'));
         assert_eq!(a.config.mode_for(&ck), Mode::Quiz);

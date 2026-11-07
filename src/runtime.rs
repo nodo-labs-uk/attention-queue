@@ -24,6 +24,7 @@ use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
 use crate::model::{AgentId, Checkout, Mode};
 use crate::review::LastRound;
+use crate::shell::SnapshotRequest;
 use crate::step::PendingEdit;
 use crate::theme::load_themes;
 use crate::transcript::description_before;
@@ -85,8 +86,27 @@ async fn event_loop(
             }
             Some(ev) = ipc_rx.recv() => {
                 sweep(app, &jobs, &mut waiting, &loading);
-                waiting.insert(ev.req_id, ev.reply);
-                match ev.req {
+                let (req_id, req) = (ev.req_id, ev.req);
+                if let HookRequest::PostTool {
+                    session_id,
+                    cwd,
+                    tool_name,
+                    tool_input,
+                } = req
+                {
+                    // A tool that already ran never waits for an answer.
+                    let _ = ev.reply.send(HookReply::NoDecision);
+                    let _ = jobs.send(Job::LoadPost(PostToolReq {
+                        session_id,
+                        cwd,
+                        tool_name,
+                        tool_input,
+                    }));
+                    dirty = true;
+                    continue;
+                }
+                waiting.insert(req_id, ev.reply);
+                match req {
                     HookRequest::PreTool {
                         session_id,
                         transcript_path,
@@ -95,9 +115,9 @@ async fn event_loop(
                         tool_use_id,
                         tool_input,
                     } => {
-                        loading.insert(ev.req_id);
+                        loading.insert(req_id);
                         let _ = jobs.send(Job::LoadEdit {
-                            req_id: ev.req_id,
+                            req_id,
                             req: PreToolReq {
                                 session_id,
                                 transcript_path,
@@ -109,7 +129,7 @@ async fn event_loop(
                             config: app.config.clone(),
                         });
                     }
-                    req => apply(app, Msg::Ipc { req_id: ev.req_id, req }, &jobs, &mut waiting),
+                    req => apply(app, Msg::Ipc { req_id, req }, &jobs, &mut waiting),
                 }
                 dirty = true;
             }
@@ -185,6 +205,7 @@ fn apply(
             Effect::ComputeReview(req) => Job::Review(req),
             Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
             Effect::Grep { checkout, ident } => Job::Grep { checkout, ident },
+            Effect::Snapshot(req) => Job::Snapshot(req),
             Effect::Reply { req_id, decision } => {
                 // The hook may have gone; then nobody is listening.
                 if let Some(reply) = waiting.remove(&req_id) {
@@ -221,6 +242,17 @@ enum Job {
         checkout: Checkout,
         ident: String,
     },
+    /// Find the checkout a finished tool worked in.
+    LoadPost(PostToolReq),
+    Snapshot(SnapshotRequest),
+}
+
+/// The fields of `HookRequest::PostTool`.
+struct PostToolReq {
+    session_id: String,
+    cwd: String,
+    tool_name: String,
+    tool_input: serde_json::Value,
 }
 
 /// The fields of `HookRequest::PreTool`.
@@ -275,6 +307,8 @@ fn spawn_effect_worker(
                     edit: load_edit(req, &config),
                     at: std::time::Instant::now(),
                 }),
+                Job::LoadPost(req) => Some(load_post(req)),
+                Job::Snapshot(req) => Some(take_snapshot(req)),
                 Job::Grep { checkout, ident } => Some(Msg::GrepDone {
                     result: git::grep_word(&checkout, &ident)
                         .map_err(|e| format!("Could not search for {ident}: {e:#}")),
@@ -341,6 +375,45 @@ fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
         tool_input: req.tool_input,
         path,
         description,
+        at: std::time::SystemTime::now(),
+    }
+}
+
+/// Finds the checkout a finished tool worked in: its file's for an edit,
+/// else the cwd's (Bash has no file).
+fn load_post(req: PostToolReq) -> Msg {
+    let cwd = Path::new(&req.cwd);
+    let file = ["file_path", "notebook_path"]
+        .iter()
+        .find_map(|k| req.tool_input.get(k).and_then(serde_json::Value::as_str))
+        .map(|f| cwd.join(f));
+    let checkout = file
+        .and_then(|f| file_dir(&f))
+        .and_then(|d| agents::checkout_of(&d))
+        .or_else(|| agents::checkout_of(cwd));
+    Msg::PostTool {
+        session_id: req.session_id,
+        checkout,
+        tool_name: req.tool_name,
+        tool_input: req.tool_input,
+    }
+}
+
+/// A fresh snapshot of the checkout, and its diff from `req.from`.
+fn take_snapshot(req: SnapshotRequest) -> Msg {
+    let c = &req.checkout;
+    let result = (|| {
+        let to = git::snapshot_tree(c)?;
+        let files = match &req.from {
+            Some(from) if req.command.is_some() => git::diff_trees(c, from, &to)?,
+            _ => Vec::new(),
+        };
+        anyhow::Ok((to, files))
+    })()
+    .map_err(|e| format!("Could not snapshot {}: {e:#}", crate::app::project_name(c)));
+    Msg::Snapshot {
+        req,
+        result,
         at: std::time::SystemTime::now(),
     }
 }
@@ -554,6 +627,76 @@ mod tests {
         config.set_mode(&checkout, Mode::Step);
         let e = load_edit(req(), &config);
         assert!(e.description.unwrap().starts_with("Return 429"));
+    }
+
+    #[test]
+    fn snapshot_after_a_command_diffs_from_the_last_tree() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let checkout = Checkout::new(dir.path());
+        let agent = AgentId {
+            pane: "%1".into(),
+            claude_pid: 1,
+        };
+        let snap = |from: Option<String>, command: bool| {
+            take_snapshot(SnapshotRequest {
+                checkout: checkout.clone(),
+                from,
+                command: command.then(|| ("echo".to_string(), agent.clone())),
+            })
+        };
+        let Msg::Snapshot { result, .. } = snap(None, false) else {
+            panic!("expected a snapshot");
+        };
+        let (base, files) = result.unwrap();
+        assert!(files.is_empty());
+        let Msg::Snapshot { result, .. } = snap(Some(base.clone()), true) else {
+            panic!("expected a snapshot");
+        };
+        assert!(result.unwrap().1.is_empty(), "nothing changed");
+        std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+        let Msg::Snapshot { result, .. } = snap(Some(base), true) else {
+            panic!("expected a snapshot");
+        };
+        let (_, files) = result.unwrap();
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn post_tool_finds_the_edited_files_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let Msg::PostTool { checkout, .. } = load_post(PostToolReq {
+            session_id: "s1".into(),
+            cwd: dir.path().display().to_string(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({"command": "ls"}),
+        }) else {
+            panic!("expected PostTool");
+        };
+        assert_eq!(checkout, Some(Checkout::new(dir.path())));
     }
 
     #[test]

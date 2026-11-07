@@ -156,7 +156,12 @@ pub(crate) mod tests {
         q.push(card(2, "/b", step(), 50));
         q.push(card(3, "/a", step(), 60));
         q.push(card(4, "/b", step(), 40));
-        q.push(card(5, "/a", CardKind::ShellChange(ShellCard), 30));
+        q.push(card(
+            5,
+            "/a",
+            CardKind::ShellChange(ShellCard::default()),
+            30,
+        ));
         assert_eq!(ids(&q), [3, 5, 2, 4, 1]);
     }
 
