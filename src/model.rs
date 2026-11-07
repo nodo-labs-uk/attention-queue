@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::permission::PermissionCard;
 pub use crate::review::ReviewCard;
 pub use crate::shell::ShellCard;
 pub use crate::step::StepCard;
@@ -37,9 +38,6 @@ pub struct AgentId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuizCard;
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionCard;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CardKind {
     Review(ReviewCard),

@@ -16,7 +16,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "new line".into()),
             ("Esc", "cancel".into()),
         ],
-        (Some(Overlay::StepReason(_)), _) => {
+        (Some(Overlay::StepReason(_) | Overlay::Deny(_)), _) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }
         (Some(Overlay::Search(_)), _) => vec![
@@ -72,6 +72,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .into(),
             ),
             ("j/k", "line".into()),
+            ("s", "skip".into()),
+            ("?", "ask".into()),
+        ],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Permission(_),
+                ..
+            }),
+        ) => vec![
+            ("y", "allow".into()),
+            ("n", "deny".into()),
+            ("g", "go to window".into()),
             ("s", "skip".into()),
             ("?", "ask".into()),
         ],

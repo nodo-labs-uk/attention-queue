@@ -558,7 +558,7 @@ impl App {
     }
 
     /// Whether card `id` has been on screen long enough to be decided.
-    fn looked_at(&self, id: u64) -> bool {
+    pub(crate) fn looked_at(&self, id: u64) -> bool {
         match (self.shown, self.now) {
             (Some((shown, Some(at))), Some(now)) if shown == id => {
                 now.saturating_duration_since(at) >= LOOK_FOR
@@ -569,6 +569,9 @@ impl App {
 
     /// A hook gave up waiting. Its card stays for Claude's retry.
     pub(crate) fn on_hook_gone(&mut self, req_id: u64) {
+        if self.close_permission(req_id) {
+            return;
+        }
         let card = self
             .queue
             .find_mut(|c| matches!(&c.kind, CardKind::Step(s) if s.req_ids.contains(&req_id)));

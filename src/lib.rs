@@ -8,6 +8,7 @@ pub mod hook;
 pub mod ipc;
 pub mod llm;
 pub mod model;
+pub mod permission;
 pub mod queue;
 pub mod review;
 pub mod runtime;

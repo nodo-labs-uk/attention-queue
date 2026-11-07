@@ -129,7 +129,16 @@ async fn event_loop(
                             config: app.config.clone(),
                         });
                     }
-                    req => apply(app, Msg::Ipc { req_id, req }, &jobs, &mut waiting),
+                    req => apply(
+                        app,
+                        Msg::Ipc {
+                            req_id,
+                            req,
+                            at: std::time::SystemTime::now(),
+                        },
+                        &jobs,
+                        &mut waiting,
+                    ),
                 }
                 dirty = true;
             }
@@ -206,6 +215,7 @@ fn apply(
             Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
             Effect::Grep { checkout, ident } => Job::Grep { checkout, ident },
             Effect::Snapshot(req) => Job::Snapshot(req),
+            Effect::GoToWindow { pane } => Job::GoTo(pane),
             Effect::Reply { req_id, decision } => {
                 // The hook may have gone; then nobody is listening.
                 if let Some(reply) = waiting.remove(&req_id) {
@@ -245,6 +255,7 @@ enum Job {
     /// Find the checkout a finished tool worked in.
     LoadPost(PostToolReq),
     Snapshot(SnapshotRequest),
+    GoTo(String),
 }
 
 /// The fields of `HookRequest::PostTool`.
@@ -309,6 +320,9 @@ fn spawn_effect_worker(
                 }),
                 Job::LoadPost(req) => Some(load_post(req)),
                 Job::Snapshot(req) => Some(take_snapshot(req)),
+                Job::GoTo(pane) => crate::permission::go_to_window(&pane, &[])
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not go to {pane}: {e:#}"))),
                 Job::Grep { checkout, ident } => Some(Msg::GrepDone {
                     result: git::grep_word(&checkout, &ident)
                         .map_err(|e| format!("Could not search for {ident}: {e:#}")),

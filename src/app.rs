@@ -10,6 +10,7 @@ use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
+use crate::permission::{DenyDraft, PermissionRequest};
 use crate::queue::Queue;
 use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
 use crate::shell::{Shell, Snapshot, SnapshotRequest};
@@ -32,6 +33,8 @@ pub enum Msg {
     Ipc {
         req_id: u64,
         req: HookRequest,
+        /// When the runtime received it.
+        at: SystemTime,
     },
     /// A PreToolUse hook is waiting for `Effect::Reply` with this `req_id`;
     /// the runtime has read the file and transcript for it.
@@ -124,6 +127,10 @@ pub enum Effect {
         checkout: Checkout,
         ident: String,
     },
+    /// `g` on a permission card: switch tmux to the pane's window.
+    GoToWindow {
+        pane: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +143,8 @@ pub enum Overlay {
     StepReason(ReasonDraft),
     /// `gd` on a step card: where the identifier appears.
     Search(SearchList),
+    /// `n` on a permission card: typing the reason Claude reads.
+    Deny(DenyDraft),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,7 +279,29 @@ impl App {
                 self.set_status(e);
                 Vec::new()
             }
-            // Cards for hook requests come later; until then nothing waits.
+            Msg::Ipc {
+                req_id,
+                req:
+                    HookRequest::Permission {
+                        session_id,
+                        cwd,
+                        tool_name,
+                        tool_input,
+                        pane,
+                    },
+                at,
+            } => self.on_permission(
+                req_id,
+                at,
+                PermissionRequest {
+                    session_id,
+                    cwd,
+                    tool_name,
+                    tool_input,
+                    pane,
+                },
+            ),
+            // No card for the other kinds; nothing waits.
             Msg::Ipc { req_id, .. } => vec![Effect::Reply {
                 req_id,
                 decision: HookReply::NoDecision,
@@ -317,6 +348,7 @@ impl App {
                 return Vec::new();
             }
             Some(Overlay::StepReason(_)) => return self.on_reason_key(key),
+            Some(Overlay::Deny(_)) => return self.on_deny_key(key),
             Some(Overlay::Search(_)) => {
                 self.on_search_key(key);
                 return Vec::new();
@@ -353,6 +385,7 @@ impl App {
             _ if self.overlay.is_none() => match self.queue.current().map(|c| &c.kind) {
                 Some(CardKind::Step(_)) => self.on_step_key(key),
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
+                Some(CardKind::Permission(_)) => self.on_permission_key(key),
                 _ => self.on_review_key(key),
             },
             _ => Vec::new(),
@@ -823,7 +856,11 @@ pub(crate) mod tests {
             tool_input: serde_json::Value::Null,
         };
         assert_eq!(
-            a.update(Msg::Ipc { req_id: 7, req }),
+            a.update(Msg::Ipc {
+                req_id: 7,
+                req,
+                at: SystemTime::UNIX_EPOCH
+            }),
             [Effect::Reply {
                 req_id: 7,
                 decision: HookReply::NoDecision,

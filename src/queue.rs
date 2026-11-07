@@ -143,8 +143,18 @@ pub(crate) mod tests {
         let mut q = Queue::new();
         q.push(card(1, "/a", review(), 50));
         q.push(card(2, "/b", step(), 40));
-        q.push(card(3, "/c", CardKind::Permission(PermissionCard), 5));
-        q.push(card(4, "/a", CardKind::Permission(PermissionCard), 10));
+        q.push(card(
+            3,
+            "/c",
+            CardKind::Permission(PermissionCard::default()),
+            5,
+        ));
+        q.push(card(
+            4,
+            "/a",
+            CardKind::Permission(PermissionCard::default()),
+            10,
+        ));
         assert_eq!(ids(&q), [4, 3, 2, 1]);
     }
 

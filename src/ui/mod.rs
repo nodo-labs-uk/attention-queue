@@ -4,6 +4,7 @@ mod empty;
 pub mod fold;
 pub mod input;
 mod keys;
+mod permission;
 mod review;
 mod shell;
 mod step;
@@ -54,6 +55,9 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 "Reject: tell Claude why"
             };
             input::render(frame, body, &d.input, title, t);
+        }
+        Some(Overlay::Deny(d)) => {
+            input::render(frame, body, &d.input, "Deny: tell Claude why", t);
         }
         Some(Overlay::Search(list)) => step::render_search(frame, body, list, t),
         None => {}
@@ -107,6 +111,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::Review(rc) => return review::render(frame, area, app, card, rc, hl),
         CardKind::Step(sc) => return step::render(frame, area, app, card, sc, hl),
         CardKind::ShellChange(sc) => return shell::render(frame, area, app, card, sc, hl),
+        CardKind::Permission(pc) => return permission::render(frame, area, app, card, pc),
         _ => {}
     }
     let inner = area.inner(ratatui::layout::Margin::new(1, 1));
@@ -181,10 +186,20 @@ pub(crate) mod tests {
         ));
         a.queue
             .push(card(3, "/w/web", CardKind::Step(Box::default()), 10));
-        let mut perm = card(4, "/w/api", CardKind::Permission(PermissionCard), 5);
+        let mut perm = card(
+            4,
+            "/w/api",
+            CardKind::Permission(PermissionCard {
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({"command": "ls"}),
+                summary: "ls".into(),
+                ..Default::default()
+            }),
+            5,
+        );
         perm.agent = a.agents[0].id.clone();
         a.queue.push(perm);
-        insta::assert_snapshot!(render(&a, 90, 6));
+        insta::assert_snapshot!(render(&a, 90, 10));
     }
 
     #[test]
