@@ -484,6 +484,7 @@ impl App {
     /// retry of one still open joins its card, but only while the file is
     /// as the card shows it.
     pub(crate) fn on_pre_tool(&mut self, req_id: u64, e: PendingEdit) -> Vec<Effect> {
+        self.shell.heard.insert(e.session_id.clone());
         let step = |c: &Option<Checkout>| {
             c.as_ref()
                 .is_some_and(|c| self.config.mode_for(c) == Mode::Step)

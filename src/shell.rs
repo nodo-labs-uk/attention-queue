@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 
+use crate::agents::Agent;
 use crate::app::{App, Effect};
 use crate::git::FileDiff;
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
@@ -27,6 +28,10 @@ const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /// Title of the card for changes no reviewed edit or command explains.
 pub const OUTSIDE_TITLE: &str = "Changed outside a reviewed edit";
+/// Shown once for a step-mode session that finished a turn with no hook
+/// event from it.
+pub const NO_HOOKS_WARNING: &str =
+    "Step mode: no hook events from this session. Are the aq hooks installed?";
 /// Shown on a card when git's own settings changed.
 pub const GIT_WARNING: &str = "Git settings or hooks changed (.git/config, hooks or info)";
 
@@ -128,6 +133,10 @@ pub struct Shell {
     busy: BTreeSet<Checkout>,
     /// Commands (`None`: just a baseline) waiting for the busy snapshot, in order.
     queued: BTreeMap<Checkout, Vec<Queued>>,
+    /// Sessions a PreToolUse or PostToolUse hook has reported on.
+    pub(crate) heard: BTreeSet<String>,
+    /// Sessions already warned that no hook reported on them.
+    warned: BTreeSet<String>,
 }
 
 impl App {
@@ -140,6 +149,7 @@ impl App {
         tool_input: &Value,
         edited: Option<&Path>,
     ) -> Vec<Effect> {
+        self.shell.heard.insert(session_id.to_string());
         let Some(checkout) = checkout.filter(|c| self.config.mode_for(c) == Mode::Step) else {
             return Vec::new();
         };
@@ -173,6 +183,20 @@ impl App {
                 |a| a.id.clone(),
             );
         self.request_snapshot(checkout, Some((command, agent)), approved)
+    }
+
+    /// A step-mode agent finished a turn. Whatever changed since the last
+    /// snapshot, which no reviewed edit or command explains, becomes a card,
+    /// so nothing lands unseen when the hooks do not reach aq. A session no
+    /// hook ever reported on gets one warning.
+    pub(crate) fn on_step_turn_end(&mut self, checkout: &Checkout, agent: &Agent) -> Vec<Effect> {
+        if !self.shell.heard.contains(&agent.session_id)
+            && self.shell.warned.insert(agent.session_id.clone())
+        {
+            self.set_status(NO_HOOKS_WARNING);
+        }
+        let command = Some((OUTSIDE_TITLE.to_string(), agent.id.clone()));
+        self.request_snapshot(checkout.clone(), command, None)
     }
 
     /// The edited file and its approved text, when the step history holds an
@@ -648,6 +672,46 @@ mod tests {
             })
             .expect("a baseline snapshot");
         assert_eq!((req.from, req.command), (None, None));
+    }
+
+    /// Agent `%1` in `/a` finishes a turn.
+    fn turn_ends(a: &mut App) -> Vec<Effect> {
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]))
+    }
+
+    #[test]
+    fn end_of_a_step_turn_shows_changes_no_hook_reported() {
+        let mut a = baselined();
+        a.agents.clear();
+        let effects = turn_ends(&mut a);
+        let req = only_request(effects);
+        assert_eq!(req.from.as_deref(), Some("t0"));
+        assert_eq!(req.command.as_ref().unwrap().0, OUTSIDE_TITLE);
+        snapshot(&mut a, req, "t1", vec![file()]);
+        let card = shell(&a);
+        assert!(card.outside);
+        assert_eq!(card.files().len(), 1);
+    }
+
+    #[test]
+    fn a_step_session_with_no_hook_events_warns_once() {
+        let mut a = baselined();
+        a.agents.clear();
+        let req = only_request(turn_ends(&mut a));
+        assert_eq!(a.status_text(), Some(NO_HOOKS_WARNING));
+        snapshot(&mut a, req, "t0", Vec::new());
+        a.status_msg = None;
+        let req = only_request(turn_ends(&mut a));
+        assert_eq!(a.status_text(), None, "only once");
+        snapshot(&mut a, req, "t0", Vec::new());
+        // A session the hooks did report on is not warned about.
+        let mut b = baselined();
+        b.agents.clear();
+        let req = only_request(post(&mut b, "Bash", bash("ls")));
+        snapshot(&mut b, req, "t0", Vec::new());
+        turn_ends(&mut b);
+        assert_eq!(b.status_text(), None);
     }
 
     #[test]

@@ -595,7 +595,7 @@ impl App {
                 agent: agent.id.clone(),
                 from_tree,
             }],
-            Mode::Step => Vec::new(),
+            Mode::Step => self.on_step_turn_end(checkout, agent),
         }
     }
 
