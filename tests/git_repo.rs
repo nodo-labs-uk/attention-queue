@@ -5,7 +5,7 @@ use aq::git::*;
 use aq::model::Checkout;
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    let out = Command::new("git").env_remove("GIT_DIR").arg("-C").arg(dir).args(args).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -106,4 +106,41 @@ fn branch_diff_against_merge_base() {
     let files = branch_diff(&c).unwrap();
     let names: Vec<_> = files.iter().filter_map(|f| f.new_path.clone()).collect();
     assert_eq!(names, [Path::new("a.txt"), Path::new("new.txt")]);
+}
+
+#[test]
+fn file_at_missing_path_is_none_and_bad_tree_is_err() {
+    let t = seeded_repo();
+    let c = Checkout::new(t.path());
+    let tree = snapshot_tree(&c).unwrap();
+    assert_eq!(file_at(&c, &tree, Path::new("nope.txt")).unwrap(), None);
+    assert!(file_at(&c, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", Path::new("a.txt")).is_err());
+    assert!(file_at(&c, "not-a-tree", Path::new("a.txt")).is_err());
+}
+
+#[test]
+fn diff_ignores_noprefix_config() {
+    let t = tempfile::tempdir().unwrap();
+    init_repo(t.path());
+    git(t.path(), &["config", "diff.noprefix", "true"]);
+    std::fs::create_dir(t.path().join("b")).unwrap();
+    std::fs::write(t.path().join("b/f.txt"), "x\n").unwrap();
+    let c = Checkout::new(t.path());
+    let files = branch_diff(&c).unwrap();
+    assert_eq!(files[0].new_path.as_deref(), Some(Path::new("b/f.txt")));
+}
+
+#[test]
+fn inherited_git_env_is_ignored() {
+    let t = seeded_repo();
+    let other = tempfile::tempdir().unwrap();
+    init_repo(other.path());
+    // Safe in this test binary: set before any git call in this test, and the value is
+    // only ever read by children we spawn; other tests pass explicit paths.
+    unsafe { std::env::set_var("GIT_DIR", other.path().join(".git")) };
+    let c = Checkout::new(t.path());
+    let r = snapshot_tree(&c);
+    unsafe { std::env::remove_var("GIT_DIR") };
+    let tree = r.unwrap();
+    assert_eq!(tree_files(t.path(), &tree), ["a.txt", "b.txt"]);
 }

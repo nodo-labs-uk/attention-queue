@@ -11,6 +11,8 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 fn git_cmd(c: &Checkout) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(&c.0).args(["-c", "core.quotePath=false"]);
+    // A parent environment (e.g. a Claude session) must not redirect git elsewhere.
+    cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
     cmd
 }
 
@@ -91,7 +93,16 @@ pub fn snapshot_tree(c: &Checkout) -> Result<String> {
 
 pub fn diff_trees(c: &Checkout, from: &str, to: &str) -> Result<Vec<FileDiff>> {
     let mut cmd = git_cmd(c);
-    cmd.args(["diff", "--no-color", "--no-ext-diff", "-M", from, to]);
+    cmd.args([
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "-M",
+        from,
+        to,
+    ]);
     let out = run(cmd)?;
     if !out.status.success() {
         bail!("git diff failed: {}", String::from_utf8_lossy(&out.stderr).trim());
@@ -106,12 +117,28 @@ pub fn branch_diff(c: &Checkout) -> Result<Vec<FileDiff>> {
 }
 
 /// File contents at `tree`, or `None` if the path does not exist there.
+/// Any other git failure (bad tree id, corrupt object) is an error.
 pub fn file_at(c: &Checkout, tree: &str, path: &Path) -> Result<Option<String>> {
-    let mut cmd = git_cmd(c);
-    cmd.args(["cat-file", "-p", &format!("{tree}:{}", path.display())]);
-    let out = run(cmd)?;
-    if !out.status.success() {
+    let mut check = git_cmd(c);
+    check.args(["rev-parse", "--verify", "--quiet", &format!("{tree}^{{tree}}")]);
+    run_ok(check).with_context(|| format!("not a tree: {tree}"))?;
+
+    let mut ls = git_cmd(c);
+    ls.args(["ls-tree", tree, "--"]).arg(path);
+    let listing = run_ok(ls)?;
+    // "<mode> <type> <sha>\t<name>"
+    let Some((meta, _)) = listing.split_once('\t') else {
         return Ok(None);
+    };
+    let mut parts = meta.split(' ');
+    let (Some(_), Some("blob"), Some(sha)) = (parts.next(), parts.next(), parts.next()) else {
+        return Ok(None);
+    };
+    let mut cat = git_cmd(c);
+    cat.args(["cat-file", "blob", sha]);
+    let out = run(cat)?;
+    if !out.status.success() {
+        bail!("git cat-file failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }

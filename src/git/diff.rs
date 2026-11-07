@@ -136,9 +136,7 @@ fn split_git_header(rest: &str) -> (Option<String>, Option<String>) {
     // Same path on both sides: "a/P b/P" has length 2n + 5.
     if rest.len() >= 5 && (rest.len() - 5).is_multiple_of(2) {
         let n = (rest.len() - 5) / 2;
-        let (a, b) = (&rest[..n + 2], &rest[n + 3..]);
-        if rest.is_char_boundary(n + 2)
-            && rest.is_char_boundary(n + 3)
+        if let (Some(a), Some(b)) = (rest.get(..n + 2), rest.get(n + 3..))
             && a.starts_with("a/")
             && b.starts_with("b/")
             && a[2..] == b[2..]
@@ -241,6 +239,22 @@ mod tests {
                 DiffLine::Context { old: 3, new: 3, text: "three".into() },
             ]
         );
+    }
+
+    #[test]
+    fn non_ascii_paths_in_header_do_not_panic() {
+        for d in [
+            "diff --git a/ü.bin b/ü.bin\nBinary files a/ü.bin and b/ü.bin differ\n",
+            "diff --git a/日本.bin b/日本.bin\nBinary files differ\n",
+            "diff --git a/日 b/ü x\nBinary files differ\n",
+            "diff --git a/ü b/日本語\nBinary files differ\n",
+        ] {
+            let f = parse_unified(d.as_bytes());
+            assert_eq!(f.len(), 1);
+            assert!(f[0].binary);
+        }
+        let f = parse_unified("diff --git a/日本.bin b/日本.bin\nBinary files differ\n".as_bytes());
+        assert_eq!(f[0].new_path.as_deref(), Some(Path::new("日本.bin")));
     }
 
     #[test]
