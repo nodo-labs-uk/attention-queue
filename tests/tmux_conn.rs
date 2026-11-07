@@ -1,15 +1,8 @@
-// The crate is a binary, so pull in the modules under test directly.
-#[path = "../src/agents/mod.rs"]
-mod agents;
-#[path = "../src/model.rs"]
-#[allow(dead_code)]
-mod model;
-
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use agents::{AgentConn, TmuxConn};
-use model::AgentId;
+use aq::agents::{AgentConn, TmuxConn};
+use aq::model::AgentId;
 
 #[test]
 fn send_text_reaches_pane() {

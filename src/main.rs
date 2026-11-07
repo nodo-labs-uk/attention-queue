@@ -1,10 +1,6 @@
 // Scaffolding: later tasks consume the model and config items.
 #![allow(dead_code)]
 
-mod agents;
-mod config;
-mod model;
-
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]

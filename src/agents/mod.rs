@@ -1,6 +1,3 @@
-// Scaffolding: later tasks consume this module.
-#![allow(dead_code, unused_imports)]
-
 pub mod claude;
 pub mod procs;
 pub mod tmux;

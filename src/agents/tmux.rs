@@ -90,7 +90,11 @@ impl TmuxConn {
 }
 
 /// Joins each claude process to the pane whose `pane_pid` is itself or an ancestor of it.
-fn join(panes: &[Pane], procs: &[ClaudeProc]) -> Vec<Agent> {
+fn join(
+    panes: &[Pane],
+    procs: &[ClaudeProc],
+    is_ancestor: impl Fn(u32, u32) -> bool,
+) -> Vec<Agent> {
     let mut agents = Vec::new();
     for p in procs {
         let Some(pane) = panes
@@ -121,7 +125,7 @@ impl AgentConn for TmuxConn {
     fn list(&self) -> Result<Vec<Agent>> {
         let panes = self.list_panes()?;
         let procs = list_claude_procs()?;
-        Ok(join(&panes, &procs))
+        Ok(join(&panes, &procs, is_ancestor))
     }
 
     fn send_text(&self, agent: &AgentId, text: &str) -> Result<()> {
@@ -153,6 +157,7 @@ impl AgentConn for TmuxConn {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{AgentStatus, parse_agents_json};
     use super::*;
 
     #[test]
@@ -176,6 +181,54 @@ mod tests {
         let panes = parse_list_panes("main|1|w|%1|42|claude|/home/a|b/c|\n");
         assert_eq!(panes[0].cwd, PathBuf::from("/home/a|b/c"));
         assert!(!panes[0].waiting);
+    }
+
+    fn fixture_procs() -> Vec<ClaudeProc> {
+        parse_agents_json(include_str!("../../tests/fixtures/agents.json")).unwrap()
+    }
+
+    fn fixture_panes() -> Vec<Pane> {
+        parse_list_panes(include_str!("../../tests/fixtures/list-panes.txt"))
+    }
+
+    #[test]
+    fn join_matches_pane_whose_pid_is_ancestor() {
+        // chezmoi claude 279801 sits under pane %54 (pid 2466920); locus 280112 under %48 (3935219).
+        let anc = |a: u32, p: u32| (a, p) == (2466920, 279801) || (a, p) == (3935219, 280112);
+        let agents = join(&fixture_panes(), &fixture_procs(), anc);
+        assert_eq!(agents.len(), 2);
+        assert_eq!(
+            agents[0].id,
+            AgentId {
+                pane: "%54".into(),
+                claude_pid: 279801
+            }
+        );
+        assert_eq!(agents[0].window_index, 6);
+        assert_eq!(agents[0].status, AgentStatus::Busy);
+        assert!(!agents[0].waiting);
+        assert_eq!(
+            agents[1].id,
+            AgentId {
+                pane: "%48".into(),
+                claude_pid: 280112
+            }
+        );
+        assert!(agents[1].waiting);
+    }
+
+    #[test]
+    fn join_matches_when_pane_pid_equals_claude_pid() {
+        let mut procs = fixture_procs();
+        procs[0].pid = 847984; // pane %56
+        let agents = join(&fixture_panes(), &procs[..1], |_, _| false);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id.pane, "%56");
+    }
+
+    #[test]
+    fn join_drops_process_without_pane() {
+        assert!(join(&fixture_panes(), &fixture_procs(), |_, _| false).is_empty());
     }
 
     #[test]

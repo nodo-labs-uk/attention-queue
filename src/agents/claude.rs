@@ -19,7 +19,6 @@ pub struct ClaudeProc {
 struct Raw {
     pid: u32,
     cwd: PathBuf,
-    kind: String,
     session_id: String,
     #[serde(default)]
     name: String,
@@ -29,11 +28,16 @@ struct Raw {
 
 /// Parses `claude agents --json`, keeping interactive entries only.
 pub fn parse_agents_json(s: &str) -> Result<Vec<ClaudeProc>> {
-    let raw: Vec<Raw> = serde_json::from_str(s).context("parsing claude agents --json")?;
-    Ok(raw
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(s).context("parsing claude agents --json")?;
+    // Filter before strict parsing so one odd non-interactive entry cannot empty the list.
+    let interactive = entries
         .into_iter()
-        .filter(|r| r.kind == "interactive")
-        .map(|r| ClaudeProc {
+        .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("interactive"));
+    let mut procs = Vec::new();
+    for e in interactive {
+        let r: Raw = serde_json::from_value(e).context("parsing interactive agent entry")?;
+        procs.push(ClaudeProc {
             pid: r.pid,
             cwd: r.cwd,
             session_id: r.session_id,
@@ -43,8 +47,9 @@ pub fn parse_agents_json(s: &str) -> Result<Vec<ClaudeProc>> {
                 "idle" => AgentStatus::Idle,
                 _ => AgentStatus::Unknown,
             },
-        })
-        .collect())
+        });
+    }
+    Ok(procs)
 }
 
 pub fn list_claude_procs() -> Result<Vec<ClaudeProc>> {
@@ -70,6 +75,15 @@ mod tests {
         assert_eq!(procs[0].name, "chezmoi-86");
         assert_eq!(procs[1].status, AgentStatus::Idle);
         assert!(procs.iter().all(|p| p.pid != 281000));
+    }
+
+    #[test]
+    fn odd_non_interactive_entry_does_not_empty_list() {
+        let s = r#"[{"pid":9,"kind":"background"},
+            {"pid":1,"cwd":"/","kind":"interactive","sessionId":"x","status":"idle"}]"#;
+        let procs = parse_agents_json(s).unwrap();
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].pid, 1);
     }
 
     #[test]
