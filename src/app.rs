@@ -691,6 +691,15 @@ impl App {
             self.too_quick("review");
             return Vec::new();
         }
+        // What is sent is what the card holds when the send lands.
+        if matches!(key.code, KeyCode::Char('c' | 'x' | 'R')) && self.sending.contains_key(&id) {
+            self.set_status(if self.held.contains_key(&id) {
+                QUEUED_STATUS
+            } else {
+                "Sending…"
+            });
+            return Vec::new();
+        }
         let Some(card) = self.queue.current_mut() else {
             return Vec::new();
         };
@@ -1571,6 +1580,33 @@ pub(crate) mod tests {
         a.update(Msg::SendDone { card: id });
         assert!(a.queue.is_empty());
         assert_eq!(a.status_text(), Some("Sent 1 comment to api"));
+    }
+
+    #[test]
+    fn a_card_being_sent_takes_no_more_edits() {
+        let mut a = app();
+        let id = commented(&mut a);
+        assert!(matches!(
+            a.update(key('S')).as_slice(),
+            [Effect::Send { .. }]
+        ));
+        for k in ['c', 'x', 'R'] {
+            a.status_msg = None;
+            assert!(a.update(key(k)).is_empty(), "{k}");
+            assert_eq!(a.overlay, None, "{k}");
+            assert_eq!(a.status_text(), Some("Sending…"), "{k}");
+        }
+        assert_eq!(review(&a).current_comments().count(), 1);
+        // Held for a busy agent: the same, saying why.
+        let mut b = app();
+        commented(&mut b);
+        b.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        b.update(key('S'));
+        b.update(key('c'));
+        assert_eq!(b.overlay, None);
+        assert_eq!(b.status_text(), Some(QUEUED_STATUS));
+        a.update(Msg::SendDone { card: id });
+        assert!(a.queue.is_empty());
     }
 
     #[test]
