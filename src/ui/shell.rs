@@ -23,7 +23,8 @@ pub fn render(
     let t = app.theme();
     let mut head = card_header(app, card);
     let mut lines = sc.command.lines();
-    let mut title = format!("$ {}", lines.next().unwrap_or_default());
+    let sigil = if sc.outside { "" } else { "$ " };
+    let mut title = format!("{sigil}{}", lines.next().unwrap_or_default());
     if lines.next().is_some() {
         title.push_str(" ...");
     }
@@ -31,6 +32,12 @@ pub fn render(
         title,
         Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
     )));
+    if let Some(w) = sc.warning() {
+        head.push(Line::styled(
+            w,
+            Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
+        ));
+    }
     head.push(Line::styled(
         "Already ran. y keeps the changes; u asks Claude to undo them.",
         Style::new().fg(t.dim),

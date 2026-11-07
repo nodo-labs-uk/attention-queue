@@ -24,7 +24,7 @@ use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
 use crate::model::{AgentId, Checkout, Mode};
 use crate::review::LastRound;
-use crate::shell::SnapshotRequest;
+use crate::shell::{SnapshotRequest, Taken};
 use crate::step::PendingEdit;
 use crate::theme::load_themes;
 use crate::transcript::description_before;
@@ -420,6 +420,11 @@ fn load_post(req: PostToolReq) -> Msg {
         .iter()
         .find_map(|k| req.tool_input.get(k).and_then(serde_json::Value::as_str))
         .map(|f| cwd.join(f));
+    // The file, with its directory's links resolved, to compare with the checkout.
+    let edited = file.as_ref().and_then(|f| {
+        let name = f.file_name()?;
+        Some(file_dir(f)?.join(name))
+    });
     let checkout = file
         .and_then(|f| file_dir(&f))
         .and_then(|d| agents::checkout_of(&d))
@@ -429,6 +434,7 @@ fn load_post(req: PostToolReq) -> Msg {
         checkout,
         tool_name: req.tool_name,
         tool_input: req.tool_input,
+        edited,
     }
 }
 
@@ -436,12 +442,27 @@ fn load_post(req: PostToolReq) -> Msg {
 fn take_snapshot(req: SnapshotRequest) -> Msg {
     let c = &req.checkout;
     let result = (|| {
-        let to = git::snapshot_tree(c)?;
-        let files = match &req.from {
-            Some(from) if req.command.is_some() => git::diff_trees(c, from, &to)?,
-            _ => Vec::new(),
-        };
-        anyhow::Ok((to, files))
+        let tree = git::snapshot_tree(c)?;
+        let guard = git::git_guard(c)?;
+        let mut files = Vec::new();
+        let mut git_changes = Vec::new();
+        if req.command.is_some() {
+            if let Some(from) = &req.from {
+                files = git::diff_trees(c, from, &tree)?;
+                if let Some(edited) = &req.edited {
+                    files = crate::shell::without_path(files, edited);
+                }
+            }
+            if let Some(before) = &req.from_guard {
+                git_changes = crate::shell::guard_changes(before, &guard);
+            }
+        }
+        anyhow::Ok(Taken {
+            tree,
+            files,
+            guard,
+            git_changes,
+        })
     })()
     .map_err(|e| format!("Could not snapshot {}: {e:#}", crate::app::project_name(c)));
     Msg::Snapshot {
@@ -686,28 +707,37 @@ mod tests {
             pane: "%1".into(),
             claude_pid: 1,
         };
-        let snap = |from: Option<String>, command: bool| {
-            take_snapshot(SnapshotRequest {
+        let snap = |from: Option<&Taken>, command: bool, edited: Option<&str>| {
+            let Msg::Snapshot { result, .. } = take_snapshot(SnapshotRequest {
                 checkout: checkout.clone(),
-                from,
+                from: from.map(|t| t.tree.clone()),
+                from_guard: from.map(|t| t.guard.clone()),
                 command: command.then(|| ("echo".to_string(), agent.clone())),
-            })
+                edited: edited.map(Into::into),
+            }) else {
+                panic!("expected a snapshot");
+            };
+            result.unwrap()
         };
-        let Msg::Snapshot { result, .. } = snap(None, false) else {
-            panic!("expected a snapshot");
-        };
-        let (base, files) = result.unwrap();
-        assert!(files.is_empty());
-        let Msg::Snapshot { result, .. } = snap(Some(base.clone()), true) else {
-            panic!("expected a snapshot");
-        };
-        assert!(result.unwrap().1.is_empty(), "nothing changed");
+        let base = snap(None, false, None);
+        assert!(base.files.is_empty());
+        assert!(base.guard.contains_key("config"), "{:?}", base.guard);
+        let t = snap(Some(&base), true, None);
+        assert!(
+            t.files.is_empty() && t.git_changes.is_empty(),
+            "nothing changed"
+        );
         std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
-        let Msg::Snapshot { result, .. } = snap(Some(base), true) else {
-            panic!("expected a snapshot");
-        };
-        let (_, files) = result.unwrap();
-        assert_eq!(files.len(), 1);
+        std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
+        assert_eq!(snap(Some(&base), true, None).files.len(), 2);
+        // After an edit of a.txt only the unrelated b.txt is left.
+        let t = snap(Some(&base), true, Some("a.txt"));
+        assert_eq!(t.files.len(), 1);
+        assert_eq!(t.files[0].new_path.as_deref(), Some(Path::new("b.txt")));
+        // A planted hook is no file change, but is seen.
+        std::fs::write(dir.path().join(".git/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
+        let t = snap(Some(&base), true, None);
+        assert_eq!(t.git_changes, ["hooks/pre-commit"]);
     }
 
     #[test]

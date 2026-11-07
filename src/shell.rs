@@ -3,6 +3,7 @@
 //! snapshots are taken by the runtime.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -16,13 +17,30 @@ use crate::review::{self, ReviewCard};
 /// `u`: the message starts with this, then the command.
 pub const UNDO_PREFIX: &str = "Please undo what this command changed: ";
 
+/// `u` on an `OUTSIDE_TITLE` card: the message starts with this, then the files.
+pub const UNDO_OUTSIDE_PREFIX: &str =
+    "Please undo these changes, which no edit of yours explains: ";
+
 /// Tools whose edits step mode already approved; they change the tree too.
 const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// Title of the card for changes no reviewed edit or command explains.
+pub const OUTSIDE_TITLE: &str = "Changed outside a reviewed edit";
+/// Shown on a card when git's own settings changed.
+pub const GIT_WARNING: &str = "Git settings or hooks changed (.git/config, hooks or info)";
+
+/// Hashes of git's config, hooks and info files, by name.
+pub type Guard = BTreeMap<String, u64>;
 
 /// What a shell command changed in a checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShellCard {
+    /// The Bash command, or `OUTSIDE_TITLE` when `outside`.
     pub command: String,
+    /// Changes found after an edit that its own file does not explain.
+    pub outside: bool,
+    /// The git files that changed, when any did.
+    pub git_changes: Vec<String>,
     /// The diff, with the review board's cursor and view.
     pub diff: ReviewCard,
 }
@@ -32,7 +50,14 @@ impl ShellCard {
         ShellCard {
             command,
             diff: ReviewCard::new(1, from_tree, to_tree, files, Vec::new(), false),
+            ..Default::default()
         }
+    }
+
+    /// The warning line for changed git settings.
+    pub fn warning(&self) -> Option<String> {
+        (!self.git_changes.is_empty())
+            .then(|| format!("{GIT_WARNING}: {}", self.git_changes.join(", ")))
     }
 
     pub fn files(&self) -> &[FileDiff] {
@@ -46,21 +71,60 @@ pub struct SnapshotRequest {
     pub checkout: Checkout,
     /// The tree to diff from; `None` means only record the new one.
     pub from: Option<String>,
-    /// The Bash command to make a card for, and the agent that ran it.
+    /// The git files' hashes at `from`.
+    pub from_guard: Option<Guard>,
+    /// The Bash command to make a card for (or `OUTSIDE_TITLE` after an
+    /// edit), and the agent that ran it.
     pub command: Option<(String, AgentId)>,
+    /// The file an edit touched, relative to the checkout; left out of the diff.
+    pub edited: Option<PathBuf>,
 }
 
-/// The new tree and what changed since `from`.
-pub type Snapshot = Result<(String, Vec<FileDiff>), String>;
+/// A snapshot taken: the new tree, its diff from the request's tree (without
+/// the edited file), the git files' hashes now and which of them changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taken {
+    pub tree: String,
+    pub files: Vec<FileDiff>,
+    pub guard: Guard,
+    pub git_changes: Vec<String>,
+}
+
+pub type Snapshot = Result<Taken, String>;
+
+/// Names in `now` that differ from `before` (added, changed or removed).
+pub fn guard_changes(before: &Guard, now: &Guard) -> Vec<String> {
+    let mut out: Vec<String> = now
+        .iter()
+        .filter(|(k, v)| before.get(*k) != Some(v))
+        .map(|(k, _)| k.clone())
+        .chain(before.keys().filter(|k| !now.contains_key(*k)).cloned())
+        .collect();
+    out.sort();
+    out
+}
+
+/// `files` without the one at `path`.
+pub fn without_path(files: Vec<FileDiff>, path: &Path) -> Vec<FileDiff> {
+    files
+        .into_iter()
+        .filter(|f| f.new_path.as_deref() != Some(path) && f.old_path.as_deref() != Some(path))
+        .collect()
+}
+
+/// A snapshot waiting its turn: the command (`None`: a baseline) and edited file.
+type Queued = (Option<(String, AgentId)>, Option<PathBuf>);
 
 #[derive(Debug, Default)]
 pub struct Shell {
     /// Working tree of each step-mode checkout as of the last command or edit.
     pub last_tree: BTreeMap<Checkout, String>,
+    /// The git files' hashes taken with `last_tree`.
+    pub last_guard: BTreeMap<Checkout, Guard>,
     /// Checkouts with a snapshot being taken.
     busy: BTreeSet<Checkout>,
     /// Commands (`None`: just a baseline) waiting for the busy snapshot, in order.
-    queued: BTreeMap<Checkout, Vec<Option<(String, AgentId)>>>,
+    queued: BTreeMap<Checkout, Vec<Queued>>,
 }
 
 impl App {
@@ -71,21 +135,27 @@ impl App {
         checkout: Option<Checkout>,
         tool_name: &str,
         tool_input: &Value,
+        edited: Option<&Path>,
     ) -> Vec<Effect> {
         let Some(checkout) = checkout.filter(|c| self.config.mode_for(c) == Mode::Step) else {
             return Vec::new();
         };
-        if EDIT_TOOLS.contains(&tool_name) {
-            return self.request_snapshot(checkout, None);
-        }
-        if tool_name != "Bash" {
+        let is_edit = EDIT_TOOLS.contains(&tool_name);
+        if !is_edit && tool_name != "Bash" {
             return Vec::new();
         }
-        let command = tool_input
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let command = if is_edit {
+            OUTSIDE_TITLE.to_string()
+        } else {
+            tool_input
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let edited = edited
+            .and_then(|p| p.strip_prefix(&checkout.0).ok())
+            .map(Path::to_path_buf);
         let agent = self
             .agents
             .iter()
@@ -97,7 +167,7 @@ impl App {
                 },
                 |a| a.id.clone(),
             );
-        self.request_snapshot(checkout, Some((command, agent)))
+        self.request_snapshot(checkout, Some((command, agent)), edited)
     }
 
     /// Takes a baseline when `checkout` has none and none is on its way.
@@ -108,7 +178,7 @@ impl App {
         if known {
             Vec::new()
         } else {
-            self.request_snapshot(checkout.clone(), None)
+            self.request_snapshot(checkout.clone(), None, None)
         }
     }
 
@@ -118,21 +188,25 @@ impl App {
         &mut self,
         checkout: Checkout,
         command: Option<(String, AgentId)>,
+        edited: Option<PathBuf>,
     ) -> Vec<Effect> {
         if self.shell.busy.contains(&checkout) {
             let queue = self.shell.queued.entry(checkout).or_default();
             // A baseline right behind another baseline adds nothing.
-            if command.is_some() || queue.last().is_none_or(Option::is_some) {
-                queue.push(command);
+            if command.is_some() || queue.last().is_none_or(|(c, _)| c.is_some()) {
+                queue.push((command, edited));
             }
             return Vec::new();
         }
         self.shell.busy.insert(checkout.clone());
         let from = self.shell.last_tree.get(&checkout).cloned();
+        let from_guard = self.shell.last_guard.get(&checkout).cloned();
         vec![Effect::Snapshot(SnapshotRequest {
             checkout,
             from,
+            from_guard,
             command,
+            edited,
         })]
     }
 
@@ -146,22 +220,28 @@ impl App {
         self.shell.busy.remove(&checkout);
         match result {
             Err(e) => self.set_status(e),
-            Ok((tree, files)) => {
+            Ok(taken) => {
                 let still_step = self.config.mode_for(&checkout) == Mode::Step;
                 if still_step {
-                    self.shell.last_tree.insert(checkout.clone(), tree.clone());
+                    self.shell
+                        .last_tree
+                        .insert(checkout.clone(), taken.tree.clone());
+                    self.shell.last_guard.insert(checkout.clone(), taken.guard);
                 }
-                if let (true, Some((command, agent)), Some(from)) =
-                    (still_step, req.command, req.from)
-                    && !files.is_empty()
+                let changed = !taken.files.is_empty() || !taken.git_changes.is_empty();
+                if let (true, true, Some((command, agent)), Some(from)) =
+                    (still_step, changed, req.command, req.from)
                 {
                     self.next_card_id += 1;
+                    let mut card = ShellCard::new(command, from, taken.tree, taken.files);
+                    card.outside = req.edited.is_some() || card.command == OUTSIDE_TITLE;
+                    card.git_changes = taken.git_changes;
                     self.queue.push(Card {
                         id: self.next_card_id,
                         checkout: checkout.clone(),
                         agent,
                         created: at,
-                        kind: CardKind::ShellChange(ShellCard::new(command, from, tree, files)),
+                        kind: CardKind::ShellChange(card),
                     });
                 }
             }
@@ -172,7 +252,7 @@ impl App {
             .get_mut(&checkout)
             .and_then(|q| (!q.is_empty()).then(|| q.remove(0)));
         match next {
-            Some(command) => self.request_snapshot(checkout, command),
+            Some((command, edited)) => self.request_snapshot(checkout, command, edited),
             None => {
                 self.shell.queued.remove(&checkout);
                 Vec::new()
@@ -183,6 +263,7 @@ impl App {
     /// The checkout left step mode: its baseline is stale.
     pub(crate) fn forget_baseline(&mut self, checkout: &Checkout) {
         self.shell.last_tree.remove(checkout);
+        self.shell.last_guard.remove(checkout);
     }
 
     pub(crate) fn on_shell_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -197,7 +278,17 @@ impl App {
         match key.code {
             KeyCode::Char('y') => return self.finish_shell(id, None),
             KeyCode::Char('u') => {
-                let text = format!("{UNDO_PREFIX}{}", sc.command);
+                let text = if sc.outside {
+                    let files: Vec<String> = sc
+                        .files()
+                        .iter()
+                        .map(|f| crate::review::file_path(f).display().to_string())
+                        .chain(sc.git_changes.iter().map(|g| format!(".git/{g}")))
+                        .collect();
+                    format!("{UNDO_OUTSIDE_PREFIX}{}", files.join(", "))
+                } else {
+                    format!("{UNDO_PREFIX}{}", sc.command)
+                };
                 return self.finish_shell(id, Some((agent, text)));
             }
             _ => {}
@@ -236,6 +327,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::Instant;
 
     use crossterm::event::KeyEvent;
@@ -261,6 +353,7 @@ mod tests {
             checkout: Some(Checkout("/a".into())),
             tool_name: tool.into(),
             tool_input: input,
+            edited: None,
         })
     }
 
@@ -301,7 +394,12 @@ mod tests {
     ) -> Vec<Effect> {
         a.update(Msg::Snapshot {
             req,
-            result: Ok((tree.into(), files)),
+            result: Ok(Taken {
+                tree: tree.into(),
+                files,
+                guard: Guard::new(),
+                git_changes: Vec::new(),
+            }),
             at: SystemTime::UNIX_EPOCH,
         })
     }
@@ -321,7 +419,9 @@ mod tests {
         let base = SnapshotRequest {
             checkout: Checkout("/a".into()),
             from: None,
+            from_guard: None,
             command: None,
+            edited: None,
         };
         assert!(snapshot(&mut a, base, "t0", Vec::new()).is_empty());
         a
@@ -356,13 +456,26 @@ mod tests {
         assert!(a.queue.is_empty());
     }
 
+    fn post_edit(a: &mut App, file: &str) -> Vec<Effect> {
+        a.update(Msg::PostTool {
+            session_id: "s1".into(),
+            checkout: Some(Checkout("/a".into())),
+            tool_name: "Edit".into(),
+            tool_input: json!({"file_path": file}),
+            edited: Some(PathBuf::from("/a").join(file)),
+        })
+    }
+
     #[test]
     fn edit_tool_post_updates_last_tree_without_card() {
         let mut a = baselined();
-        let req = only_request(post(&mut a, "Edit", json!({"file_path": "/a/a.txt"})));
-        assert_eq!((req.from.as_deref(), &req.command), (Some("t0"), &None));
-        // The edit changed files, yet no card: it was approved as a step.
-        snapshot(&mut a, req, "t1", vec![file()]);
+        let req = only_request(post_edit(&mut a, "a.txt"));
+        assert_eq!(
+            (req.from.as_deref(), req.edited.clone()),
+            (Some("t0"), Some("a.txt".into()))
+        );
+        // The edited file is left out of the diff, so nothing else changed.
+        snapshot(&mut a, req, "t1", Vec::new());
         assert!(a.queue.is_empty());
         assert_eq!(a.shell.last_tree[&Checkout("/a".into())], "t1");
         // A later command that changes nothing sees the edit as the baseline.
@@ -370,6 +483,40 @@ mod tests {
         assert_eq!(req.from.as_deref(), Some("t1"));
         snapshot(&mut a, req, "t1", Vec::new());
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn edit_with_unrelated_changes_makes_an_outside_card() {
+        let mut a = baselined();
+        let req = only_request(post_edit(&mut a, "a.txt"));
+        snapshot(&mut a, req, "t1", vec![file()]);
+        let card = shell(&a);
+        assert!(card.outside);
+        assert_eq!(card.command, OUTSIDE_TITLE);
+        assert_eq!(card.files().len(), 1);
+        assert_eq!(a.shell.last_tree[&Checkout("/a".into())], "t1");
+    }
+
+    #[test]
+    fn git_settings_change_adds_a_warning_even_without_file_changes() {
+        let mut a = baselined();
+        let req = only_request(post(&mut a, "Bash", bash("echo x > .git/hooks/pre-commit")));
+        a.update(Msg::Snapshot {
+            req,
+            result: Ok(Taken {
+                tree: "t0".into(),
+                files: Vec::new(),
+                guard: Guard::new(),
+                git_changes: vec!["hooks/pre-commit".into()],
+            }),
+            at: SystemTime::UNIX_EPOCH,
+        });
+        let card = shell(&a);
+        assert!(card.files().is_empty());
+        assert_eq!(
+            card.warning().unwrap(),
+            format!("{GIT_WARNING}: hooks/pre-commit")
+        );
     }
 
     #[test]
@@ -390,7 +537,7 @@ mod tests {
         // These arrive while the edit's snapshot is still being taken.
         assert!(post(&mut a, "Bash", bash("touch x")).is_empty());
         assert!(post(&mut a, "Bash", bash("touch y")).is_empty());
-        let next = only_request(snapshot(&mut a, first, "t1", vec![file()]));
+        let next = only_request(snapshot(&mut a, first, "t1", Vec::new()));
         assert_eq!(next.from.as_deref(), Some("t1"));
         assert_eq!(next.command.as_ref().unwrap().0, "touch x");
         let next = only_request(snapshot(&mut a, next, "t2", vec![file()]));
@@ -411,6 +558,7 @@ mod tests {
             checkout: None,
             tool_name: "Bash".into(),
             tool_input: bash("ls"),
+            edited: None,
         });
         assert!(none.is_empty());
     }

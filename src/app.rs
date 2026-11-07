@@ -51,6 +51,8 @@ pub enum Msg {
         checkout: Option<Checkout>,
         tool_name: String,
         tool_input: serde_json::Value,
+        /// The file an edit tool touched, absolute.
+        edited: Option<PathBuf>,
     },
     /// The result of an `Effect::Snapshot`.
     Snapshot {
@@ -320,7 +322,14 @@ impl App {
                 checkout,
                 tool_name,
                 tool_input,
-            } => self.on_post_tool(&session_id, checkout, &tool_name, &tool_input),
+                edited,
+            } => self.on_post_tool(
+                &session_id,
+                checkout,
+                &tool_name,
+                &tool_input,
+                edited.as_deref(),
+            ),
             Msg::Snapshot { req, result, at } => self.on_snapshot(req, result, at),
             Msg::Resize { width, height } => {
                 // What was seen is counted in rows at the old width.
@@ -437,7 +446,7 @@ impl App {
             // A fresh baseline: what changed before step mode is not a command's doing.
             Mode::Step => {
                 self.forget_baseline(&checkout);
-                effects.extend(self.request_snapshot(checkout, None));
+                effects.extend(self.request_snapshot(checkout, None, None));
             }
             _ => self.forget_baseline(&checkout),
         }
@@ -921,7 +930,9 @@ pub(crate) mod tests {
                 Effect::Snapshot(SnapshotRequest {
                     checkout: ck.clone(),
                     from: None,
+                    from_guard: None,
                     command: None,
+                    edited: None,
                 })
             ]
         );

@@ -3,7 +3,6 @@ pub mod procs;
 pub mod tmux;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Result;
 
@@ -41,9 +40,7 @@ pub trait AgentConn: Send + Sync {
 
 /// Worktree root containing `dir`, if it is inside a git checkout.
 pub fn checkout_of(dir: &Path) -> Option<Checkout> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = crate::git::git_in(dir)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()?;

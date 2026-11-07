@@ -8,12 +8,76 @@ use crate::model::Checkout;
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-fn git_cmd(c: &Checkout) -> Command {
+/// Settings that make git run programs named in the repository's own config
+/// or hooks, which a shell command in the checkout could have planted.
+pub const GIT_SAFETY_ARGS: [&str; 4] = [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+];
+
+/// A git command in `dir` that runs no repository-configured programs and is
+/// not redirected by the parent environment.
+pub fn git_in(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(&c.0).args(["-c", "core.quotePath=false"]);
+    cmd.arg("-C")
+        .arg(dir)
+        .args(GIT_SAFETY_ARGS)
+        .args(["-c", "core.quotePath=false"]);
     // A parent environment (e.g. a Claude session) must not redirect git elsewhere.
-    cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
+    cmd.env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
     cmd
+}
+
+fn git_cmd(c: &Checkout) -> Command {
+    git_in(&c.0)
+}
+
+/// Hashes of the files in the checkout's git directories that can make git
+/// (or a later `git commit`) run programs: config, hooks and info. Keys are
+/// paths relative to their git directory.
+pub fn git_guard(c: &Checkout) -> Result<std::collections::BTreeMap<String, u64>> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut dirs = Vec::new();
+    for flag in ["--absolute-git-dir", "--git-common-dir"] {
+        let mut cmd = git_cmd(c);
+        cmd.args(["rev-parse", flag]);
+        let dir = PathBuf::from(run_ok(cmd)?);
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            c.0.join(dir)
+        };
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    let mut add = |dir: &Path, file: &Path| {
+        let Ok(bytes) = std::fs::read(file) else {
+            return;
+        };
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        let name = file.strip_prefix(dir).unwrap_or(file);
+        out.insert(name.display().to_string(), h.finish());
+    };
+    for dir in &dirs {
+        add(dir, &dir.join("config"));
+        add(dir, &dir.join("config.worktree"));
+        for sub in ["hooks", "info"] {
+            let Ok(entries) = std::fs::read_dir(dir.join(sub)) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                add(dir, &e.path());
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn run(mut cmd: Command) -> Result<Output> {
@@ -24,7 +88,10 @@ fn run(mut cmd: Command) -> Result<Output> {
 fn run_ok(cmd: Command) -> Result<String> {
     let out = run(cmd)?;
     if !out.status.success() {
-        bail!("git failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -75,7 +142,11 @@ pub fn snapshot_tree(c: &Checkout) -> Result<String> {
     let mut cmd = git_cmd(c);
     cmd.args(["rev-parse", "--git-path", "index"]);
     let rel = PathBuf::from(run_ok(cmd)?);
-    let index = if rel.is_absolute() { rel } else { c.0.join(rel) };
+    let index = if rel.is_absolute() {
+        rel
+    } else {
+        c.0.join(rel)
+    };
 
     let dir = tempfile::tempdir().context("creating temp dir")?;
     let tmp_index = dir.path().join("index");
@@ -105,7 +176,10 @@ pub fn diff_trees(c: &Checkout, from: &str, to: &str) -> Result<Vec<FileDiff>> {
     ]);
     let out = run(cmd)?;
     if !out.status.success() {
-        bail!("git diff failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(parse_unified(&out.stdout))
 }
@@ -120,7 +194,12 @@ pub fn branch_diff(c: &Checkout) -> Result<Vec<FileDiff>> {
 /// Any other git failure (bad tree id, corrupt object) is an error.
 pub fn file_at(c: &Checkout, tree: &str, path: &Path) -> Result<Option<String>> {
     let mut check = git_cmd(c);
-    check.args(["rev-parse", "--verify", "--quiet", &format!("{tree}^{{tree}}")]);
+    check.args([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("{tree}^{{tree}}"),
+    ]);
     run_ok(check).with_context(|| format!("not a tree: {tree}"))?;
 
     let mut ls = git_cmd(c);
@@ -138,7 +217,10 @@ pub fn file_at(c: &Checkout, tree: &str, path: &Path) -> Result<Option<String>> 
     cat.args(["cat-file", "blob", sha]);
     let out = run(cat)?;
     if !out.status.success() {
-        bail!("git cat-file failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git cat-file failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
@@ -187,6 +269,44 @@ fn parse_grep(out: &str) -> Vec<GrepHit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_commands_disable_fsmonitor_and_hooks() {
+        let cmd = git_in(Path::new("/x"));
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into()).collect();
+        for pair in [
+            ["-c", "core.fsmonitor=false"],
+            ["-c", "core.hooksPath=/dev/null"],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn planted_fsmonitor_is_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let sh = |args: &[&str]| {
+            let out = git_in(dir.path()).args(args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        sh(&["init", "-q"]);
+        let hook = dir.path().join("mon.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        // Written straight to the file, as a shell command could.
+        let mut cfg = std::fs::read_to_string(dir.path().join(".git/config")).unwrap();
+        cfg.push_str(&format!("[core]\n\tfsmonitor = {}\n", hook.display()));
+        std::fs::write(dir.path().join(".git/config"), cfg).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        snapshot_tree(&Checkout::new(dir.path())).unwrap();
+        assert!(!marker.exists());
+    }
 
     #[test]
     fn grep_output_keeps_colons_in_paths_and_text() {
