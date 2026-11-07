@@ -298,6 +298,13 @@ impl App {
         };
         let id = card.id;
         let agent = card.agent.clone();
+        if matches!(key.code, KeyCode::Char('y' | 'u')) && !self.looked_at(id) {
+            self.too_quick("change");
+            return Vec::new();
+        }
+        let Some(card) = self.queue.current_mut() else {
+            return Vec::new();
+        };
         let CardKind::ShellChange(sc) = &mut card.kind else {
             return Vec::new();
         };
@@ -644,12 +651,43 @@ mod tests {
     }
 
     #[test]
+    fn y_and_u_wait_until_the_card_was_seen() {
+        let mut a = baselined();
+        let req = only_request(post(&mut a, "Bash", bash("rm a.txt")));
+        snapshot(&mut a, req, "t1", vec![file()]);
+        let t = Instant::now();
+        a.update(Msg::Tick(t));
+        let at = |c, ms| {
+            Msg::Key(
+                KeyEvent::from(KeyCode::Char(c)),
+                t + std::time::Duration::from_millis(ms),
+            )
+        };
+        assert!(a.update(at('y', 100)).is_empty());
+        assert!(a.update(at('u', 150)).is_empty());
+        assert_eq!(a.queue.len(), 1, "not decided");
+        assert_eq!(
+            a.status_text(),
+            Some("Too quick: look at this change first")
+        );
+        assert!(matches!(
+            a.update(at('u', 400)).as_slice(),
+            [Effect::Send { .. }]
+        ));
+    }
+
+    #[test]
     fn y_approves_and_u_sends_the_undo_message() {
         let mut a = baselined();
         let req = only_request(post(&mut a, "Bash", bash("rm a.txt")));
         snapshot(&mut a, req, "t1", vec![file()]);
-        let press =
-            |a: &mut App, c| a.update(Msg::Key(KeyEvent::from(KeyCode::Char(c)), Instant::now()));
+        // Each key a second after the last, so every card has been seen.
+        let t = std::cell::Cell::new(Instant::now());
+        let press = |a: &mut App, c| {
+            t.set(t.get() + std::time::Duration::from_secs(1));
+            a.update(Msg::Key(KeyEvent::from(KeyCode::Char(c)), t.get()))
+        };
+        a.update(Msg::Tick(t.get()));
         let effects = press(&mut a, 'u');
         let [Effect::Send { agent, text, card }] = effects.as_slice() else {
             panic!("{effects:?}");
@@ -669,6 +707,8 @@ mod tests {
 
         let req = only_request(post(&mut a, "Bash", bash("rm b.txt")));
         snapshot(&mut a, req, "t2", vec![file()]);
+        // A key that decides nothing stamps when the new card was seen.
+        press(&mut a, 'j');
         assert!(press(&mut a, 'y').is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.status_text(), Some("Approved"));
