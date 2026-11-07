@@ -3,6 +3,7 @@ pub mod app;
 pub mod config;
 pub mod git;
 pub mod highlight;
+pub mod hook;
 pub mod ipc;
 pub mod llm;
 pub mod model;

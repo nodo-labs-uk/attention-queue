@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::agents::Agent;
 use crate::config::Config;
 use crate::git::FileDiff;
-use crate::ipc::{Decision, IpcEvent};
+use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::queue::Queue;
@@ -25,7 +25,11 @@ pub enum Msg {
     AgentsFailed(String),
     /// A `Send` or `SaveState` effect failed in the runtime.
     EffectFailed(String),
-    Ipc(IpcEvent),
+    /// A hook is waiting for `Effect::Reply` with this `req_id`.
+    Ipc {
+        req_id: u64,
+        req: HookRequest,
+    },
     Llm(LlmEvent),
     /// A `Send` for a review card reached the agent.
     SendDone {
@@ -70,7 +74,7 @@ pub enum Effect {
     },
     Reply {
         req_id: u64,
-        decision: Decision,
+        decision: HookReply,
     },
     Llm(LlmJob),
     /// Write the config (and, later, drafts and quiz progress) to disk.
@@ -189,7 +193,11 @@ impl App {
                 self.set_status(e);
                 Vec::new()
             }
-            Msg::Ipc(IpcEvent::Noop) => Vec::new(),
+            // Cards for hook requests come later; until then nothing waits.
+            Msg::Ipc { req_id, .. } => vec![Effect::Reply {
+                req_id,
+                decision: HookReply::NoDecision,
+            }],
             Msg::Llm(LlmEvent::Noop) => Vec::new(),
             Msg::SendDone { card } => self.on_send_result(card, None),
             Msg::SendFailed { card, error } => self.on_send_result(card, Some(error)),
@@ -670,6 +678,24 @@ pub(crate) mod tests {
         assert!(a.status_text().is_some());
         a.update(Msg::Tick(t0 + Duration::from_secs(14)));
         assert_eq!(a.status_text(), None);
+    }
+
+    #[test]
+    fn hook_request_gets_no_decision_for_now() {
+        let mut a = app();
+        let req = HookRequest::PostTool {
+            session_id: "s1".into(),
+            cwd: "/a".into(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::Value::Null,
+        };
+        assert_eq!(
+            a.update(Msg::Ipc { req_id: 7, req }),
+            [Effect::Reply {
+                req_id: 7,
+                decision: HookReply::NoDecision,
+            }]
+        );
     }
 
     #[test]

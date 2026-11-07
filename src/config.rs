@@ -80,7 +80,7 @@ pub fn paths_with(env: impl Fn(&str) -> Option<String>) -> Paths {
     let socket = match (get("AQ_SOCKET"), get("XDG_RUNTIME_DIR")) {
         (Some(s), _) => PathBuf::from(s),
         (None, Some(r)) => PathBuf::from(r).join("aq.sock"),
-        (None, None) => PathBuf::from(format!("/tmp/aq-{}", current_uid())).join("aq.sock"),
+        (None, None) => fallback_socket_dir().join("aq.sock"),
     };
     Paths {
         config_file: config_dir.join("config.toml"),
@@ -90,7 +90,12 @@ pub fn paths_with(env: impl Fn(&str) -> Option<String>) -> Paths {
     }
 }
 
-fn current_uid() -> u32 {
+/// `/tmp/aq-$UID`, used when `$XDG_RUNTIME_DIR` is not set.
+pub fn fallback_socket_dir() -> PathBuf {
+    PathBuf::from(format!("/tmp/aq-{}", current_uid()))
+}
+
+pub(crate) fn current_uid() -> u32 {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self")
         .map(|m| m.uid())

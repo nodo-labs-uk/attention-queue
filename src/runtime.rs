@@ -1,7 +1,7 @@
 //! The impure shell around `App::update`: terminal, agent polling, key input,
 //! rendering and effects.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -10,7 +10,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::net::UnixListener;
+use tokio::sync::mpsc::{UnboundedSender, channel, unbounded_channel};
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::agents::AgentConn;
@@ -18,6 +20,7 @@ use crate::app::{App, Effect, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
 use crate::git;
 use crate::highlight::Highlighter;
+use crate::ipc::{self, HookReply};
 use crate::model::AgentId;
 use crate::review::LastRound;
 use crate::theme::load_themes;
@@ -32,6 +35,8 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     let config = Config::load(&paths.config_file)?;
     let themes = load_themes(&paths.themes_dir);
     let mut app = App::new(config, themes);
+    // Before raw mode, so "aq is already running" shows on the terminal.
+    let listener = ipc::listen(&paths.socket)?;
     match load_rounds(&rounds_file(&paths)) {
         Ok(rounds) => app.rounds = rounds,
         Err(e) => app.set_status(format!("Could not read saved review rounds: {e:#}")),
@@ -39,8 +44,9 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
 
     // Installs a panic hook that leaves raw mode and the alternate screen.
     let mut terminal = ratatui::try_init().context("starting the terminal")?;
-    let result = event_loop(&mut terminal, &mut app, &paths, conn).await;
+    let result = event_loop(&mut terminal, &mut app, &paths, conn, listener).await;
     ratatui::restore();
+    let _ = std::fs::remove_file(&paths.socket);
     result
 }
 
@@ -49,8 +55,13 @@ async fn event_loop(
     app: &mut App,
     paths: &Paths,
     conn: Arc<dyn AgentConn>,
+    listener: UnixListener,
 ) -> Result<()> {
     let (tx, mut rx) = unbounded_channel();
+    let (ipc_tx, mut ipc_rx) = channel(64);
+    tokio::spawn(ipc::accept_loop(listener, ipc_tx));
+    // Hooks waiting for an answer, by request id.
+    let mut waiting: HashMap<u64, oneshot::Sender<HookReply>> = HashMap::new();
     let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone());
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
@@ -64,18 +75,14 @@ async fn event_loop(
         tokio::select! {
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
-                for effect in app.update(msg) {
-                    let job = match effect {
-                        Effect::Send { agent, text, card } => Job::Send { agent, text, card },
-                        Effect::SaveState => Job::Save(app.config.clone()),
-                        Effect::ComputeReview(req) => Job::Review(req),
-                        Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
-                        // Hook replies and LLM work arrive with the socket server and the LLM worker.
-                        Effect::Reply { .. } | Effect::Llm(_) => continue,
-                    };
-                    // The worker outlives the loop, so this cannot fail while we run.
-                    let _ = jobs.send(job);
-                }
+                apply(app, msg, &jobs, &mut waiting);
+                dirty = true;
+            }
+            Some(ev) = ipc_rx.recv() => {
+                // Forget hooks that went away without an answer.
+                waiting.retain(|_, reply| !reply.is_closed());
+                waiting.insert(ev.req_id, ev.reply);
+                apply(app, Msg::Ipc { req_id: ev.req_id, req: ev.req }, &jobs, &mut waiting);
                 dirty = true;
             }
             _ = tokio::time::sleep_until(next_frame), if dirty => {
@@ -93,6 +100,34 @@ async fn event_loop(
     drop(jobs);
     let _ = worker.join();
     Ok(())
+}
+
+/// Runs `msg` through `update` and carries out its effects.
+fn apply(
+    app: &mut App,
+    msg: Msg,
+    jobs: &std::sync::mpsc::Sender<Job>,
+    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
+) {
+    for effect in app.update(msg) {
+        let job = match effect {
+            Effect::Send { agent, text, card } => Job::Send { agent, text, card },
+            Effect::SaveState => Job::Save(app.config.clone()),
+            Effect::ComputeReview(req) => Job::Review(req),
+            Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
+            Effect::Reply { req_id, decision } => {
+                // The hook may have gone; then nobody is listening.
+                if let Some(reply) = waiting.remove(&req_id) {
+                    let _ = reply.send(decision);
+                }
+                continue;
+            }
+            // LLM work arrives with the LLM worker.
+            Effect::Llm(_) => continue,
+        };
+        // The worker outlives the loop, so this cannot fail while we run.
+        let _ = jobs.send(job);
+    }
 }
 
 /// Blocking effect work, done in order on the effect worker.
