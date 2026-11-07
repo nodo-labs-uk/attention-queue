@@ -38,6 +38,8 @@ const TICK: Duration = Duration::from_secs(1);
 const FRAME: Duration = Duration::from_millis(33);
 /// Saved state is written at most this often.
 const SAVE_EVERY: Duration = Duration::from_secs(1);
+/// How long quitting waits for saves and sends still running.
+const QUIT_WAIT: Duration = Duration::from_secs(3);
 
 pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     // Loaded before raw mode: bad theme files warn on stderr.
@@ -53,39 +55,131 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
 
     // Installs a panic hook that leaves raw mode and the alternate screen.
     let mut terminal = ratatui::try_init().context("starting the terminal")?;
-    let result = event_loop(&mut terminal, &mut app, &paths, conn, listener).await;
+    let (result, background) = event_loop(&mut terminal, &mut app, &paths, conn, listener).await;
     ratatui::restore();
     let _ = std::fs::remove_file(&paths.socket);
-    if let Ok(Some(e)) = &result {
-        eprintln!("aq: could not save state on exit: {e}");
+    if let Some(e) = background.finish(QUIT_WAIT) {
+        eprintln!("aq: {e}");
     }
-    result.map(|_| ())
+    result
 }
 
-/// Returns why saved state could not be written on the way out, if it could not.
+/// Threads that outlive the event loop, to be wound down after the
+/// terminal is back.
+struct Background {
+    worker: JoinHandle<Option<String>>,
+    children: Arc<Children>,
+}
+
+impl Background {
+    /// Lets queued saves and sends finish, waiting at most `wait`, then
+    /// kills the `claude` calls still running. Returns what went wrong.
+    fn finish(self, wait: Duration) -> Option<String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = self.worker;
+        std::thread::spawn(move || {
+            let _ = tx.send(worker.join());
+        });
+        let problem = match rx.recv_timeout(wait) {
+            Ok(Ok(save_failed)) => save_failed.map(|e| format!("could not save state on exit: {e}")),
+            Ok(Err(_)) => Some("the effect worker had stopped".to_string()),
+            Err(_) => Some(format!(
+                "saves and sends still running after {} s; quitting anyway",
+                wait.as_secs()
+            )),
+        };
+        // `claude` calls still running are of no use once aq is gone.
+        self.children.kill_all();
+        problem
+    }
+}
+
+/// The effect worker or the loader is gone, so nothing aq decides can be
+/// carried out any more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkerGone;
+
+impl std::fmt::Display for WorkerGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a background worker stopped, so aq cannot carry on")
+    }
+}
+
+impl std::error::Error for WorkerGone {}
+
+/// Where blocking work goes.
+pub(crate) struct Workers {
+    /// Effects, done in order.
+    jobs: std::sync::mpsc::Sender<Job>,
+    /// Reads for hooks, apart from `jobs` so a slow diff, snapshot or send
+    /// never holds up an edit.
+    loads: std::sync::mpsc::Sender<Load>,
+}
+
+impl Workers {
+    fn job(&self, job: Job) -> Result<(), WorkerGone> {
+        self.jobs.send(job).map_err(|_| WorkerGone)
+    }
+
+    fn load(&self, load: Load) -> Result<(), WorkerGone> {
+        self.loads.send(load).map_err(|_| WorkerGone)
+    }
+}
+
+/// Hooks waiting for an answer, by request id.
+type Waiting = HashMap<u64, oneshot::Sender<HookReply>>;
+
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     paths: &Paths,
     conn: Arc<dyn AgentConn>,
     listener: UnixListener,
-) -> Result<Option<String>> {
+) -> (Result<()>, Background) {
     let (tx, mut rx) = unbounded_channel();
     let (ipc_tx, mut ipc_rx) = channel(64);
     tokio::spawn(ipc::accept_loop(listener, ipc_tx));
-    // Hooks waiting for an answer, by request id.
-    let mut waiting: HashMap<u64, oneshot::Sender<HookReply>> = HashMap::new();
-    // PreToolUse requests the effect worker is still reading files for.
+    let mut waiting = Waiting::new();
+    // Requests the loader is still reading files for.
     let mut loading: HashSet<u64> = HashSet::new();
     let children = Arc::new(Children::default());
     let llm: Arc<dyn Llm> = Arc::new(ClaudeCli {
         children: children.clone(),
     });
     let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone(), llm);
+    let workers = Workers {
+        jobs,
+        loads: spawn_loader(tx.clone()),
+    };
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
     spawn_ticker(tx);
 
+    let result = serve(
+        terminal,
+        app,
+        &workers,
+        &mut waiting,
+        &mut loading,
+        &mut rx,
+        &mut ipc_rx,
+    )
+    .await;
+    if result.is_err() {
+        abandon_hooks(app, &mut waiting);
+    }
+    (result, Background { worker, children })
+}
+
+async fn serve(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    workers: &Workers,
+    waiting: &mut Waiting,
+    loading: &mut HashSet<u64>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Msg>,
+    ipc_rx: &mut tokio::sync::mpsc::Receiver<ipc::IpcEvent>,
+) -> Result<()> {
     let mut hl = Highlighter::new(app.theme());
     let mut hl_theme = app.theme().name.clone();
     let mut dirty = true;
@@ -94,67 +188,14 @@ async fn event_loop(
         tokio::select! {
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
-                sync_size(terminal, app, &jobs, &mut waiting);
-                on_msg(app, msg, &jobs, &mut waiting, &mut loading);
+                sync_size(terminal, app, workers, waiting)?;
+                on_msg(app, msg, workers, waiting, loading)?;
                 dirty = true;
             }
             Some(ev) = ipc_rx.recv() => {
-                sync_size(terminal, app, &jobs, &mut waiting);
-                sweep(app, &jobs, &mut waiting, &loading);
-                let (req_id, req) = (ev.req_id, ev.req);
-                if let HookRequest::PostTool {
-                    session_id,
-                    cwd,
-                    tool_name,
-                    tool_input,
-                } = req
-                {
-                    // A tool that already ran never waits for an answer.
-                    let _ = ev.reply.send(HookReply::NoDecision);
-                    let _ = jobs.send(Job::LoadPost(PostToolReq {
-                        session_id,
-                        cwd,
-                        tool_name,
-                        tool_input,
-                    }));
-                    dirty = true;
-                    continue;
-                }
-                waiting.insert(req_id, ev.reply);
-                match req {
-                    HookRequest::PreTool {
-                        session_id,
-                        transcript_path,
-                        cwd,
-                        tool_name,
-                        tool_use_id,
-                        tool_input,
-                    } => {
-                        loading.insert(req_id);
-                        let _ = jobs.send(Job::LoadEdit {
-                            req_id,
-                            req: PreToolReq {
-                                session_id,
-                                transcript_path,
-                                cwd,
-                                tool_name,
-                                tool_use_id,
-                                tool_input,
-                            },
-                            config: app.config.clone(),
-                        });
-                    }
-                    req => apply(
-                        app,
-                        Msg::Ipc {
-                            req_id,
-                            req,
-                            at: std::time::SystemTime::now(),
-                        },
-                        &jobs,
-                        &mut waiting,
-                    ),
-                }
+                sync_size(terminal, app, workers, waiting)?;
+                sweep(app, workers, waiting, loading)?;
+                on_ipc(app, ev, workers, waiting, loading)?;
                 dirty = true;
             }
             _ = tokio::time::sleep_until(next_frame), if dirty => {
@@ -162,19 +203,136 @@ async fn event_loop(
                     hl.set_theme(app.theme());
                     hl_theme = app.theme().name.clone();
                 }
-                sync_size(terminal, app, &jobs, &mut waiting);
+                sync_size(terminal, app, workers, waiting)?;
                 terminal.draw(|f| crate::ui::draw(f, app, &mut hl))?;
                 dirty = false;
                 next_frame = Instant::now() + FRAME;
             }
         }
     }
-    // Let queued saves and sends finish before exit.
-    drop(jobs);
-    let save_failed = worker.join().ok().flatten();
-    // `claude` calls still running are of no use once aq is gone.
-    children.kill_all();
-    Ok(save_failed)
+    Ok(())
+}
+
+/// aq cannot go on: permission hooks get "no decision", so the normal
+/// prompt stays; every other hook is let go without an answer, so a
+/// step-mode edit is refused rather than let through.
+fn abandon_hooks(app: &App, waiting: &mut Waiting) {
+    for (req_id, reply) in waiting.drain() {
+        let permission = app
+            .queue
+            .iter()
+            .any(|c| matches!(&c.kind, crate::model::CardKind::Permission(p) if p.req_id == req_id));
+        if permission {
+            let _ = reply.send(HookReply::NoDecision);
+        }
+    }
+}
+
+/// A hook asks something. A tool that already ran, or an edit that cannot
+/// touch a step-mode checkout, is answered at once; other requests wait for
+/// a card.
+fn on_ipc(
+    app: &mut App,
+    ev: ipc::IpcEvent,
+    workers: &Workers,
+    waiting: &mut Waiting,
+    loading: &mut HashSet<u64>,
+) -> Result<(), WorkerGone> {
+    let (req_id, reply) = (ev.req_id, ev.reply);
+    match ev.req {
+        HookRequest::PostTool {
+            session_id,
+            cwd,
+            tool_name,
+            tool_input,
+        } => {
+            // A tool that already ran never waits for an answer.
+            let _ = reply.send(HookReply::NoDecision);
+            if may_be_step(&app.config, &cwd, &tool_input) {
+                workers.load(Load::Post(PostToolReq {
+                    session_id,
+                    cwd,
+                    tool_name,
+                    tool_input,
+                }))?;
+            }
+            Ok(())
+        }
+        HookRequest::PreTool {
+            session_id,
+            transcript_path,
+            cwd,
+            tool_name,
+            tool_use_id,
+            tool_input,
+        } => {
+            if !may_be_step(&app.config, &cwd, &tool_input) {
+                let _ = reply.send(HookReply::NoDecision);
+                return Ok(());
+            }
+            waiting.insert(req_id, reply);
+            loading.insert(req_id);
+            workers.load(Load::Edit {
+                req_id,
+                req: PreToolReq {
+                    session_id,
+                    transcript_path,
+                    cwd,
+                    tool_name,
+                    tool_use_id,
+                    tool_input,
+                },
+                config: app.config.clone(),
+            })
+        }
+        req => {
+            waiting.insert(req_id, reply);
+            apply(
+                app,
+                Msg::Ipc {
+                    req_id,
+                    req,
+                    at: std::time::SystemTime::now(),
+                },
+                workers,
+                waiting,
+            )
+        }
+    }
+}
+
+/// Whether a tool could touch a step-mode checkout: its cwd or its file
+/// lies inside one. Path checks against the config only, no git, so the
+/// answer is quick. A false answer is certain; a true one is checked
+/// properly once the file is read.
+fn may_be_step(config: &Config, cwd: &str, tool_input: &serde_json::Value) -> bool {
+    let roots: Vec<&PathBuf> = config
+        .modes
+        .iter()
+        .filter(|(_, m)| **m == Mode::Step)
+        .map(|(p, _)| p)
+        .collect();
+    if roots.is_empty() {
+        return false;
+    }
+    let cwd = Path::new(cwd);
+    let mut places = vec![cwd.to_path_buf()];
+    places.extend(file_dir(cwd));
+    if let Some(f) = edited_file(tool_input) {
+        let file = cwd.join(f);
+        places.extend(file_dir(&file));
+        places.push(file);
+    }
+    places
+        .iter()
+        .any(|p| roots.iter().any(|r| p.starts_with(r)))
+}
+
+/// The file an edit tool's input names.
+fn edited_file(tool_input: &serde_json::Value) -> Option<&str> {
+    ["file_path", "notebook_path"]
+        .iter()
+        .find_map(|k| tool_input.get(k).and_then(serde_json::Value::as_str))
 }
 
 /// Tells the app the terminal size when it changed, so it can judge how
@@ -182,47 +340,48 @@ async fn event_loop(
 fn sync_size(
     terminal: &DefaultTerminal,
     app: &mut App,
-    jobs: &std::sync::mpsc::Sender<Job>,
-    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
-) {
+    workers: &Workers,
+    waiting: &mut Waiting,
+) -> Result<(), WorkerGone> {
     if let Ok(size) = terminal.size()
         && app.screen != Some((size.width, size.height))
     {
         let (width, height) = (size.width, size.height);
-        apply(app, Msg::Resize { width, height }, jobs, waiting);
+        apply(app, Msg::Resize { width, height }, workers, waiting)?;
     }
+    Ok(())
 }
 
 /// Runs a message from the runtime's own channel through the app.
 fn on_msg(
     app: &mut App,
     msg: Msg,
-    jobs: &std::sync::mpsc::Sender<Job>,
-    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
+    workers: &Workers,
+    waiting: &mut Waiting,
     loading: &mut HashSet<u64>,
-) {
+) -> Result<(), WorkerGone> {
     let loaded = match &msg {
         Msg::PreTool { req_id, .. } => Some(*req_id),
         _ => None,
     };
     // Before: a decision sees which hooks still wait.
-    sweep(app, jobs, waiting, loading);
-    apply(app, msg, jobs, waiting);
+    sweep(app, workers, waiting, loading)?;
+    apply(app, msg, workers, waiting)?;
     // After: a hook that left while its file was read is reported now that
     // its card exists, so the card keeps its decision for the retry.
     if let Some(req_id) = loaded {
         loading.remove(&req_id);
     }
-    sweep(app, jobs, waiting, loading);
+    sweep(app, workers, waiting, loading)
 }
 
 /// Tells the app about hooks that went away without an answer.
 fn sweep(
     app: &mut App,
-    jobs: &std::sync::mpsc::Sender<Job>,
-    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
+    workers: &Workers,
+    waiting: &mut Waiting,
     loading: &HashSet<u64>,
-) {
+) -> Result<(), WorkerGone> {
     let gone: Vec<u64> = waiting
         .iter()
         .filter(|(id, reply)| reply.is_closed() && !loading.contains(id))
@@ -230,17 +389,18 @@ fn sweep(
         .collect();
     for req_id in gone {
         waiting.remove(&req_id);
-        apply(app, Msg::HookGone { req_id }, jobs, waiting);
+        apply(app, Msg::HookGone { req_id }, workers, waiting)?;
     }
+    Ok(())
 }
 
 /// Runs `msg` through `update` and carries out its effects.
 fn apply(
     app: &mut App,
     msg: Msg,
-    jobs: &std::sync::mpsc::Sender<Job>,
-    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
-) {
+    workers: &Workers,
+    waiting: &mut Waiting,
+) -> Result<(), WorkerGone> {
     for effect in app.update(msg) {
         let job = match effect {
             Effect::Send { agent, text, card } => Job::Send { agent, text, card },
@@ -268,12 +428,51 @@ fn apply(
                 continue;
             }
         };
-        // The worker outlives the loop, so this cannot fail while we run.
-        let _ = jobs.send(job);
+        workers.job(job)?;
     }
     if let Some(state) = app.state_to_save() {
-        let _ = jobs.send(Job::SaveState(state));
+        workers.job(Job::SaveState(state))?;
     }
+    Ok(())
+}
+
+/// Reads for hooks, done in order on the loader thread.
+enum Load {
+    /// Read what a step card needs. `config` is a snapshot, used only to
+    /// skip reading the transcript outside step mode.
+    Edit {
+        req_id: u64,
+        req: PreToolReq,
+        config: Config,
+    },
+    /// Find the checkout a finished tool worked in.
+    Post(PostToolReq),
+}
+
+/// Reads files for hooks on its own thread, so an edit never waits behind
+/// a diff, a snapshot or a send. Stops when the event loop goes.
+fn spawn_loader(tx: UnboundedSender<Msg>) -> std::sync::mpsc::Sender<Load> {
+    let (loads, rx) = std::sync::mpsc::channel::<Load>();
+    std::thread::spawn(move || {
+        while let Ok(load) = rx.recv() {
+            let msg = match load {
+                Load::Edit {
+                    req_id,
+                    req,
+                    config,
+                } => Msg::PreTool {
+                    req_id,
+                    edit: load_edit(req, &config),
+                    at: std::time::Instant::now(),
+                },
+                Load::Post(req) => load_post(req),
+            };
+            if tx.send(msg).is_err() {
+                return;
+            }
+        }
+    });
+    loads
 }
 
 /// Blocking effect work, done in order on the effect worker.
@@ -287,19 +486,10 @@ enum Job {
     /// Written at most once a second; the latest state wins.
     SaveState(SavedState),
     Review(ReviewRequest),
-    /// Read what a step card needs. `config` is a snapshot, used only to
-    /// skip reading the transcript outside step mode.
-    LoadEdit {
-        req_id: u64,
-        req: PreToolReq,
-        config: Config,
-    },
     Grep {
         checkout: Checkout,
         ident: String,
     },
-    /// Find the checkout a finished tool worked in.
-    LoadPost(PostToolReq),
     Snapshot(SnapshotRequest),
     GoTo(String),
     Quiz {
@@ -412,16 +602,6 @@ fn spawn_effect_worker(
                     });
                     None
                 }
-                Job::LoadEdit {
-                    req_id,
-                    req,
-                    config,
-                } => Some(Msg::PreTool {
-                    req_id,
-                    edit: load_edit(req, &config),
-                    at: std::time::Instant::now(),
-                }),
-                Job::LoadPost(req) => Some(load_post(req)),
                 Job::Snapshot(req) => Some(take_snapshot(req)),
                 Job::GoTo(pane) => crate::permission::go_to_window(&pane, &[])
                     .err()
@@ -515,8 +695,7 @@ fn read_code(req: CodeRequest) -> Msg {
 fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
     let cwd = Path::new(&req.cwd);
     let checkout = agents::checkout_of(cwd);
-    let field = |k| req.tool_input.get(k).and_then(serde_json::Value::as_str);
-    let path = cwd.join(field("file_path").or(field("notebook_path")).unwrap_or(""));
+    let path = cwd.join(edited_file(&req.tool_input).unwrap_or(""));
     let file_checkout = file_dir(&path).and_then(|d| agents::checkout_of(&d));
     let current = std::fs::read_to_string(&path).ok();
     let step = |c: &Option<Checkout>| c.as_ref().is_some_and(|c| config.mode_for(c) == Mode::Step);
@@ -541,10 +720,7 @@ fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
 /// else the cwd's (Bash has no file).
 fn load_post(req: PostToolReq) -> Msg {
     let cwd = Path::new(&req.cwd);
-    let file = ["file_path", "notebook_path"]
-        .iter()
-        .find_map(|k| req.tool_input.get(k).and_then(serde_json::Value::as_str))
-        .map(|f| cwd.join(f));
+    let file = edited_file(&req.tool_input).map(|f| cwd.join(f));
     // The file with every link resolved; a file not there yet is its
     // resolved parent plus its name.
     let edited = file.as_ref().and_then(|f| {
@@ -669,13 +845,45 @@ fn spawn_ticker(tx: UnboundedSender<Msg>) {
 mod tests {
     use super::*;
 
+    /// Workers whose threads never take anything: a wedged effect worker
+    /// and loader. The receivers are returned so the channels stay open.
+    fn wedged() -> (
+        Workers,
+        std::sync::mpsc::Receiver<Job>,
+        std::sync::mpsc::Receiver<Load>,
+    ) {
+        let (jobs, job_rx) = std::sync::mpsc::channel();
+        let (loads, load_rx) = std::sync::mpsc::channel();
+        (Workers { jobs, loads }, job_rx, load_rx)
+    }
+
+    /// A hook request as the socket hands it over, and the hook's end.
+    fn ipc_event(
+        req_id: u64,
+        req: HookRequest,
+    ) -> (ipc::IpcEvent, oneshot::Receiver<HookReply>) {
+        let (reply, hook) = oneshot::channel();
+        (ipc::IpcEvent { req_id, req, reply }, hook)
+    }
+
+    fn pre_tool_req(cwd: &str, file: &str) -> HookRequest {
+        HookRequest::PreTool {
+            session_id: "s1".into(),
+            transcript_path: String::new(),
+            cwd: cwd.into(),
+            tool_name: "Write".into(),
+            tool_use_id: "t1".into(),
+            tool_input: serde_json::json!({"file_path": file, "content": "x"}),
+        }
+    }
+
     #[test]
     fn hook_gone_while_loading_keeps_the_decision_for_the_retry() {
         use crate::step::tests::{input, pending};
         use crossterm::event::{KeyCode, KeyEvent};
         let mut app = App::new(Config::default(), crate::theme::builtin_themes());
         app.config.set_mode(&Checkout("/a".into()), Mode::Step);
-        let (jobs, _job_rx) = std::sync::mpsc::channel();
+        let (workers, _jobs, _loads) = wedged();
         let mut waiting = HashMap::new();
         let mut loading = HashSet::from([1]);
         let (reply, hook) = oneshot::channel();
@@ -683,7 +891,7 @@ mod tests {
         // The hook leaves while the worker reads its file.
         drop(hook);
         let t = std::time::Instant::now();
-        on_msg(&mut app, Msg::Tick(t), &jobs, &mut waiting, &mut loading);
+        on_msg(&mut app, Msg::Tick(t), &workers, &mut waiting, &mut loading).unwrap();
         assert!(
             waiting.contains_key(&1),
             "not reported before its card exists"
@@ -694,7 +902,7 @@ mod tests {
             edit: edit.clone(),
             at: t,
         };
-        on_msg(&mut app, msg, &jobs, &mut waiting, &mut loading);
+        on_msg(&mut app, msg, &workers, &mut waiting, &mut loading).unwrap();
         assert!(waiting.is_empty() && loading.is_empty());
         let y = KeyEvent::from(KeyCode::Char('y'));
         let later = t + Duration::from_secs(1);
@@ -713,6 +921,128 @@ mod tests {
                 decision: HookReply::Allow
             }]
         );
+    }
+
+    #[test]
+    fn edit_outside_step_mode_is_answered_while_the_workers_are_wedged() {
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
+        let (workers, _jobs, _loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let (ev, mut hook) = ipc_event(1, pre_tool_req("/w/other", "/w/other/a.rs"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        assert_eq!(hook.try_recv(), Ok(HookReply::NoDecision));
+        assert!(waiting.is_empty() && loading.is_empty());
+        // No step-mode checkout at all: the same, and nothing is read.
+        app.config = Config::default();
+        let (ev, mut hook) = ipc_event(2, pre_tool_req("/w/step", "/w/step/a.rs"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        assert_eq!(hook.try_recv(), Ok(HookReply::NoDecision));
+    }
+
+    #[test]
+    fn edit_into_a_step_checkout_waits_for_its_card() {
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
+        let (workers, _jobs, loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        // From another checkout, into the step one.
+        let (ev, mut hook) = ipc_event(1, pre_tool_req("/w/other", "/w/step/src/a.rs"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(hook.try_recv().is_err(), "no answer yet");
+        assert!(waiting.contains_key(&1) && loading.contains(&1));
+        assert!(matches!(loads.try_recv(), Ok(Load::Edit { req_id: 1, .. })));
+    }
+
+    #[test]
+    fn step_edit_loads_while_the_effect_worker_is_wedged() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init(dir.path());
+        let checkout = Checkout::new(dir.path());
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&checkout, Mode::Step);
+        let (tx, mut rx) = unbounded_channel();
+        let (jobs, _wedged) = std::sync::mpsc::channel();
+        let workers = Workers {
+            jobs,
+            loads: spawn_loader(tx),
+        };
+        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let cwd = checkout.0.display().to_string();
+        let file = checkout.0.join("a.rs").display().to_string();
+        let (ev, _hook) = ipc_event(1, pre_tool_req(&cwd, &file));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let start = std::time::Instant::now();
+        let msg = loop {
+            match rx.try_recv() {
+                Ok(msg) => break msg,
+                Err(_) if start.elapsed() > Duration::from_secs(5) => panic!("no card loaded"),
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        assert!(matches!(msg, Msg::PreTool { req_id: 1, .. }), "{msg:?}");
+    }
+
+    #[test]
+    fn a_dead_worker_is_fatal_and_permission_hooks_get_no_decision() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
+        let (workers, jobs, _loads) = wedged();
+        drop(jobs);
+        let (mut waiting, mut loading) = (Waiting::new(), HashSet::new());
+        let ask = HookRequest::Permission {
+            session_id: "s1".into(),
+            cwd: "/w/api".into(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({"command": "ls"}),
+            pane: None,
+        };
+        let (ev, mut asked) = ipc_event(1, ask);
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let (ev, mut edit) = ipc_event(2, pre_tool_req("/w/step", "/w/step/a.rs"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        // `T` saves the config, which needs the worker.
+        let t = KeyEvent::from(KeyCode::Char('T'));
+        let msg = Msg::Key(t, std::time::Instant::now());
+        assert_eq!(
+            on_msg(&mut app, msg, &workers, &mut waiting, &mut loading),
+            Err(WorkerGone)
+        );
+        abandon_hooks(&app, &mut waiting);
+        assert_eq!(asked.try_recv(), Ok(HookReply::NoDecision));
+        // The step-mode edit's hook is let go unanswered, so it refuses.
+        assert_eq!(edit.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+        assert!(waiting.is_empty());
+    }
+
+    #[test]
+    fn may_be_step_sees_links_and_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        let mut config = Config::default();
+        config.set_mode(&Checkout(real.clone()), Mode::Step);
+        let input = |f: &Path| serde_json::json!({"file_path": f});
+        let other = tempfile::tempdir().unwrap();
+        let link = other.path().join("l");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let elsewhere = other.path().display().to_string();
+        assert!(may_be_step(&config, &elsewhere, &input(&link.join("new/a.rs"))));
+        assert!(may_be_step(&config, &link.display().to_string(), &input(Path::new("b.rs"))));
+        assert!(!may_be_step(&config, &elsewhere, &input(&other.path().join("c.rs"))));
+        config.set_mode(&Checkout(real), Mode::Review);
+        assert!(!may_be_step(&config, &elsewhere, &input(&link.join("a.rs"))));
+    }
+
+    fn git_init(dir: &Path) {
+        let out = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
     }
 
     #[test]
