@@ -45,24 +45,38 @@ pub fn parse_unified(bytes: &[u8]) -> Vec<FileDiff> {
     for raw in lines {
         let in_hunk = rem.0 > 0 || rem.1 > 0;
         if in_hunk {
-            let Some(file) = files.last_mut() else { continue };
-            let Some(hunk) = file.hunks.last_mut() else { continue };
+            let Some(file) = files.last_mut() else {
+                continue;
+            };
+            let Some(hunk) = file.hunks.last_mut() else {
+                continue;
+            };
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             match raw.first() {
                 Some(b'+') => {
-                    hunk.lines.push(DiffLine::Add { new: next.1, text: text(&raw[1..]) });
+                    hunk.lines.push(DiffLine::Add {
+                        new: next.1,
+                        text: text(&raw[1..]),
+                    });
                     next.1 += 1;
                     rem.1 = rem.1.saturating_sub(1);
                 }
                 Some(b'-') => {
-                    hunk.lines.push(DiffLine::Del { old: next.0, text: text(&raw[1..]) });
+                    hunk.lines.push(DiffLine::Del {
+                        old: next.0,
+                        text: text(&raw[1..]),
+                    });
                     next.0 += 1;
                     rem.0 = rem.0.saturating_sub(1);
                 }
                 Some(b'\\') => {}
                 first => {
                     let body = if first.is_some() { &raw[1..] } else { raw };
-                    hunk.lines.push(DiffLine::Context { old: next.0, new: next.1, text: text(body) });
+                    hunk.lines.push(DiffLine::Context {
+                        old: next.0,
+                        new: next.1,
+                        text: text(body),
+                    });
                     next.0 += 1;
                     next.1 += 1;
                     rem.0 = rem.0.saturating_sub(1);
@@ -84,7 +98,9 @@ pub fn parse_unified(bytes: &[u8]) -> Vec<FileDiff> {
             });
             continue;
         }
-        let Some(file) = files.last_mut() else { continue };
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
         if line.starts_with("new file mode") {
             file.status = FileStatus::Added;
             file.old_path = None;
@@ -229,14 +245,31 @@ mod tests {
         assert_eq!(f.status, FileStatus::Modified);
         assert_eq!(f.new_path.as_deref(), Some(Path::new("src/a.rs")));
         let h = &f.hunks[0];
-        assert_eq!((h.old_start, h.old_len, h.new_start, h.new_len), (1, 3, 1, 3));
+        assert_eq!(
+            (h.old_start, h.old_len, h.new_start, h.new_len),
+            (1, 3, 1, 3)
+        );
         assert_eq!(
             h.lines,
             vec![
-                DiffLine::Context { old: 1, new: 1, text: "one".into() },
-                DiffLine::Del { old: 2, text: "two".into() },
-                DiffLine::Add { new: 2, text: "TWO".into() },
-                DiffLine::Context { old: 3, new: 3, text: "three".into() },
+                DiffLine::Context {
+                    old: 1,
+                    new: 1,
+                    text: "one".into()
+                },
+                DiffLine::Del {
+                    old: 2,
+                    text: "two".into()
+                },
+                DiffLine::Add {
+                    new: 2,
+                    text: "TWO".into()
+                },
+                DiffLine::Context {
+                    old: 3,
+                    new: 3,
+                    text: "three".into()
+                },
             ]
         );
     }
@@ -295,9 +328,18 @@ Binary files \"a/q\\303\\251.txt\" and \"b/q\\303\\251.txt\" differ
         assert_eq!(f[1].new_path.as_deref(), Some(Path::new("new.txt")));
         assert_eq!(f[2].status, FileStatus::Deleted);
         assert_eq!(f[2].new_path, None);
-        assert_eq!(f[2].hunks[0].lines, vec![DiffLine::Del { old: 1, text: "bye".into() }]);
+        assert_eq!(
+            f[2].hunks[0].lines,
+            vec![DiffLine::Del {
+                old: 1,
+                text: "bye".into()
+            }]
+        );
         assert_eq!(f[3].status, FileStatus::Added);
-        assert_eq!(f[3].new_path.as_deref(), Some(Path::new("dir with space/ü.txt")));
+        assert_eq!(
+            f[3].new_path.as_deref(),
+            Some(Path::new("dir with space/ü.txt"))
+        );
         assert_eq!(f[3].hunks[0].lines.len(), 2);
         assert!(f[4].binary);
         assert_eq!(f[4].new_path.as_deref(), Some(Path::new("qé.txt")));

@@ -39,6 +39,7 @@ pub enum Msg {
         req: HookRequest,
         /// When the runtime received it.
         at: SystemTime,
+        now: Instant,
     },
     /// A PreToolUse hook is waiting for `Effect::Reply` with this `req_id`;
     /// the runtime has read the file and transcript for it.
@@ -211,15 +212,25 @@ pub struct App {
     pub shell: Shell,
     /// The latest time a message carried.
     pub(crate) now: Option<Instant>,
-    /// The card on screen, and when it got there. The time is `None` until
-    /// a message with a time arrives after the card changed.
-    pub(crate) shown: Option<(u64, Option<Instant>)>,
+    /// The card on screen, and when and how it got there.
+    pub(crate) shown: Option<Shown>,
     pub(crate) next_card_id: u64,
     /// Saved drafts and quizzes waiting for their card to come back.
     pub(crate) unclaimed: crate::persist::Unclaimed,
     /// The state as last handed out to be written; `None` after a failed
     /// write, so the next look writes it again.
     pub(crate) saved: Option<crate::persist::SavedState>,
+}
+
+/// The card on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Shown {
+    pub id: u64,
+    /// When it got there; `None` until a message with a time arrives after
+    /// the card changed.
+    pub at: Option<Instant>,
+    /// It took the screen from another card without a key of the user's.
+    pub preempted: bool,
 }
 
 /// How long a status message stays on screen.
@@ -292,14 +303,19 @@ impl App {
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
+        // The user's own doing: a key, or the send a key started landing.
+        let by_user = matches!(msg, Msg::Key(..) | Msg::SendDone { .. });
         let at = match &msg {
-            Msg::Key(_, t) | Msg::Tick(t) | Msg::PreTool { at: t, .. } => Some(*t),
+            Msg::Key(_, t)
+            | Msg::Tick(t)
+            | Msg::PreTool { at: t, .. }
+            | Msg::Ipc { now: t, .. } => Some(*t),
             _ => None,
         };
         if let Some(t) = at {
             self.now = Some(t);
-            if let Some((_, shown_at @ None)) = &mut self.shown {
-                *shown_at = Some(t);
+            if let Some(Shown { at: at @ None, .. }) = &mut self.shown {
+                *at = Some(t);
             }
             self.expire_step_decisions(t);
         }
@@ -312,8 +328,9 @@ impl App {
             }
         }
         let current = self.queue.current().map(|c| c.id);
-        if self.shown.map(|(id, _)| id) != current {
-            self.shown = current.map(|id| (id, at));
+        if self.shown.map(|s| s.id) != current {
+            let preempted = !by_user && self.shown.is_some();
+            self.shown = current.map(|id| Shown { id, at, preempted });
         }
         effects
     }
@@ -350,6 +367,7 @@ impl App {
                         pane,
                     },
                 at,
+                ..
             } => self.on_permission(
                 req_id,
                 at,
@@ -644,6 +662,13 @@ impl App {
             return Vec::new();
         };
         let id = card.id;
+        if matches!(key.code, KeyCode::Char('S' | 'A')) && !self.settled(id) {
+            self.too_quick("review");
+            return Vec::new();
+        }
+        let Some(card) = self.queue.current_mut() else {
+            return Vec::new();
+        };
         let CardKind::Review(rc) = &mut card.kind else {
             return Vec::new();
         };
@@ -992,7 +1017,8 @@ pub(crate) mod tests {
             a.update(Msg::Ipc {
                 req_id: 7,
                 req,
-                at: SystemTime::UNIX_EPOCH
+                at: SystemTime::UNIX_EPOCH,
+                now: Instant::now(),
             }),
             [Effect::Reply {
                 req_id: 7,
@@ -1371,6 +1397,57 @@ pub(crate) mod tests {
         approve(&mut a);
         a.update(computed(r, "t1", "t4", fixture_files()));
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn review_card_back_on_screen_by_itself_waits_before_approve() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        let t = Instant::now();
+        let ask = HookRequest::Permission {
+            session_id: "s1".into(),
+            cwd: "/a".into(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({"command": "ls"}),
+            pane: Some("%1".into()),
+        };
+        a.update(Msg::Ipc {
+            req_id: 9,
+            req: ask,
+            at: SystemTime::UNIX_EPOCH,
+            now: t,
+        });
+        // Answered in the window: the review card comes back by itself.
+        a.update(Msg::HookGone { req_id: 9 });
+        // The runtime's next tick stamps when it came back.
+        a.update(Msg::Tick(t + Duration::from_millis(100)));
+        assert!(matches!(
+            a.queue.current().unwrap().kind,
+            CardKind::Review(_)
+        ));
+        assert!(a.preempted());
+        let screen = crate::ui::tests::render(&a, 90, 10);
+        assert!(
+            screen.lines().next().unwrap().contains("new card"),
+            "{screen}"
+        );
+        let at = |ms| {
+            Msg::Key(
+                KeyEvent::from(KeyCode::Char('A')),
+                t + Duration::from_millis(ms),
+            )
+        };
+        assert!(a.update(at(500)).is_empty());
+        assert_eq!(a.queue.len(), 1);
+        assert_eq!(
+            a.status_text(),
+            Some("New card: look at it before deciding")
+        );
+        assert!(matches!(
+            a.update(at(1600)).as_slice(),
+            [Effect::Send { .. }]
+        ));
     }
 
     #[test]

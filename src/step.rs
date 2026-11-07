@@ -27,6 +27,10 @@ pub const RETRY_FOR: Duration = Duration::from_secs(10 * 60);
 /// How long a step card must be on screen before `y`, `n` or `e` count, so
 /// a key typed ahead does not decide a card nobody saw.
 pub const LOOK_FOR: Duration = Duration::from_millis(300);
+/// How long a card that took the screen without a key of the user's (one
+/// that jumped ahead, or came up when the card before it went) ignores
+/// decision keys, so a key meant for the card before cannot decide it.
+pub const PREEMPT_FOR: Duration = Duration::from_millis(1500);
 /// Lines in the changed middle of a file above which no line diff is tried.
 const DIFF_MAX: usize = 4000;
 
@@ -562,14 +566,46 @@ impl App {
         });
     }
 
-    /// Whether card `id` has been on screen long enough to be decided.
+    /// Whether card `id` has been on screen long enough to be decided:
+    /// `LOOK_FOR`, or `PREEMPT_FOR` when it took the screen by itself.
     pub(crate) fn looked_at(&self, id: u64) -> bool {
-        match (self.shown, self.now) {
-            (Some((shown, Some(at))), Some(now)) if shown == id => {
-                now.saturating_duration_since(at) >= LOOK_FOR
-            }
+        self.on_screen_for(id, LOOK_FOR)
+    }
+
+    /// Whether card `id` is out of its `PREEMPT_FOR` window, for cards that
+    /// need no `LOOK_FOR` otherwise.
+    pub(crate) fn settled(&self, id: u64) -> bool {
+        self.on_screen_for(id, Duration::ZERO)
+    }
+
+    fn on_screen_for(&self, id: u64, base: Duration) -> bool {
+        let Some(shown) = self.shown.filter(|s| s.id == id) else {
+            return false;
+        };
+        let need = if shown.preempted { PREEMPT_FOR } else { base };
+        match (shown.at, self.now) {
+            _ if need.is_zero() => true,
+            (Some(at), Some(now)) => now.saturating_duration_since(at) >= need,
             _ => false,
         }
+    }
+
+    /// Says why a decision key did nothing: the card is new, or `what` was
+    /// not looked at long enough.
+    pub(crate) fn too_quick(&mut self, what: &str) {
+        let text = if self.preempted() {
+            "New card: look at it before deciding".to_string()
+        } else {
+            format!("Too quick: look at this {what} first")
+        };
+        self.set_status(text);
+    }
+
+    /// Whether the card on screen took it without a key of the user's and
+    /// is still in its `PREEMPT_FOR` window; the queue bar flags it.
+    pub fn preempted(&self) -> bool {
+        self.shown
+            .is_some_and(|s| s.preempted && !self.on_screen_for(s.id, Duration::ZERO))
     }
 
     /// A hook gave up waiting. Its card stays for Claude's retry.
@@ -611,7 +647,7 @@ impl App {
         };
         let action = on_key(sc, key);
         if matches!(action, Action::Allow | Action::Reject | Action::Change) && !looked {
-            self.set_status("Too quick: look at this step first");
+            self.too_quick("step");
             return Vec::new();
         }
         match action {

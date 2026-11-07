@@ -83,7 +83,9 @@ impl Background {
             let _ = tx.send(worker.join());
         });
         let problem = match rx.recv_timeout(wait) {
-            Ok(Ok(save_failed)) => save_failed.map(|e| format!("could not save state on exit: {e}")),
+            Ok(Ok(save_failed)) => {
+                save_failed.map(|e| format!("could not save state on exit: {e}"))
+            }
             Ok(Err(_)) => Some("the effect worker had stopped".to_string()),
             Err(_) => Some(format!(
                 "saves and sends still running after {} s; quitting anyway",
@@ -220,10 +222,9 @@ async fn serve(
 /// step-mode edit is refused rather than let through.
 fn abandon_hooks(app: &App, waiting: &mut Waiting) {
     for (req_id, reply) in waiting.drain() {
-        let permission = app
-            .queue
-            .iter()
-            .any(|c| matches!(&c.kind, crate::model::CardKind::Permission(p) if p.req_id == req_id));
+        let permission = app.queue.iter().any(
+            |c| matches!(&c.kind, crate::model::CardKind::Permission(p) if p.req_id == req_id),
+        );
         if permission {
             let _ = reply.send(HookReply::NoDecision);
         }
@@ -295,6 +296,7 @@ fn on_ipc(
                     req_id,
                     req,
                     at: std::time::SystemTime::now(),
+                    now: std::time::Instant::now(),
                 },
                 workers,
                 waiting,
@@ -915,10 +917,7 @@ mod tests {
     }
 
     /// A hook request as the socket hands it over, and the hook's end.
-    fn ipc_event(
-        req_id: u64,
-        req: HookRequest,
-    ) -> (ipc::IpcEvent, oneshot::Receiver<HookReply>) {
+    fn ipc_event(req_id: u64, req: HookRequest) -> (ipc::IpcEvent, oneshot::Receiver<HookReply>) {
         let (reply, hook) = oneshot::channel();
         (ipc::IpcEvent { req_id, req, reply }, hook)
     }
@@ -1084,11 +1083,27 @@ mod tests {
         let link = other.path().join("l");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let elsewhere = other.path().display().to_string();
-        assert!(may_be_step(&config, &elsewhere, &input(&link.join("new/a.rs"))));
-        assert!(may_be_step(&config, &link.display().to_string(), &input(Path::new("b.rs"))));
-        assert!(!may_be_step(&config, &elsewhere, &input(&other.path().join("c.rs"))));
+        assert!(may_be_step(
+            &config,
+            &elsewhere,
+            &input(&link.join("new/a.rs"))
+        ));
+        assert!(may_be_step(
+            &config,
+            &link.display().to_string(),
+            &input(Path::new("b.rs"))
+        ));
+        assert!(!may_be_step(
+            &config,
+            &elsewhere,
+            &input(&other.path().join("c.rs"))
+        ));
         config.set_mode(&Checkout(real), Mode::Review);
-        assert!(!may_be_step(&config, &elsewhere, &input(&link.join("a.rs"))));
+        assert!(!may_be_step(
+            &config,
+            &elsewhere,
+            &input(&link.join("a.rs"))
+        ));
     }
 
     fn git_init(dir: &Path) {

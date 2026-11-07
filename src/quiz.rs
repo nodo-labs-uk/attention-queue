@@ -549,10 +549,20 @@ impl App {
     }
 
     pub(crate) fn on_quiz_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(id) = self.queue.current().map(|c| c.id) else {
+            return Vec::new();
+        };
+        let decides = matches!(
+            key.code,
+            KeyCode::Char('1'..='4' | 'c' | 'y' | 'x') | KeyCode::Enter
+        );
+        if decides && !self.settled(id) {
+            self.too_quick("question");
+            return Vec::new();
+        }
         let Some(card) = self.queue.current_mut() else {
             return Vec::new();
         };
-        let id = card.id;
         let checkout = card.checkout.clone();
         let CardKind::Quiz(qc) = &mut card.kind else {
             return Vec::new();

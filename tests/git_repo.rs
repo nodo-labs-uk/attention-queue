@@ -5,8 +5,18 @@ use aq::git::*;
 use aq::model::Checkout;
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").env_remove("GIT_DIR").arg("-C").arg(dir).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("git")
+        .env_remove("GIT_DIR")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -22,7 +32,10 @@ fn commit_all(dir: &Path, msg: &str) {
 }
 
 fn tree_files(dir: &Path, tree: &str) -> Vec<String> {
-    git(dir, &["ls-tree", "-r", "--name-only", tree]).lines().map(String::from).collect()
+    git(dir, &["ls-tree", "-r", "--name-only", tree])
+        .lines()
+        .map(String::from)
+        .collect()
 }
 
 fn check_snapshot(dir: &Path) {
@@ -32,9 +45,15 @@ fn check_snapshot(dir: &Path) {
     std::fs::write(dir.join("c.txt"), "new\n").unwrap();
     let c = Checkout::new(dir);
     let tree = snapshot_tree(&c).unwrap();
-    assert_eq!(git(dir, &["diff", "--cached", "--name-only"]).trim(), "a.txt");
+    assert_eq!(
+        git(dir, &["diff", "--cached", "--name-only"]).trim(),
+        "a.txt"
+    );
     assert_eq!(tree_files(dir, &tree), ["a.txt", "b.txt", "c.txt"]);
-    assert_eq!(file_at(&c, &tree, Path::new("b.txt")).unwrap().as_deref(), Some("b2\n"));
+    assert_eq!(
+        file_at(&c, &tree, Path::new("b.txt")).unwrap().as_deref(),
+        Some("b2\n")
+    );
     assert_eq!(file_at(&c, &tree, Path::new("nope.txt")).unwrap(), None);
 }
 
@@ -58,7 +77,17 @@ fn snapshot_works_in_a_worktree() {
     let t = seeded_repo();
     let wt = tempfile::tempdir().unwrap();
     let wt_path = wt.path().join("wt");
-    git(t.path(), &["worktree", "add", "-q", "-b", "feat", wt_path.to_str().unwrap()]);
+    git(
+        t.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat",
+            wt_path.to_str().unwrap(),
+        ],
+    );
     check_snapshot(&wt_path);
 }
 
@@ -79,7 +108,13 @@ fn round_two_diff_shows_only_new_change() {
         .flat_map(|h| &h.lines)
         .filter(|l| matches!(l, DiffLine::Add { .. }))
         .collect();
-    assert_eq!(adds, [&DiffLine::Add { new: 3, text: "line3".into() }]);
+    assert_eq!(
+        adds,
+        [&DiffLine::Add {
+            new: 3,
+            text: "line3".into()
+        }]
+    );
 }
 
 #[test]
@@ -114,7 +149,14 @@ fn file_at_missing_path_is_none_and_bad_tree_is_err() {
     let c = Checkout::new(t.path());
     let tree = snapshot_tree(&c).unwrap();
     assert_eq!(file_at(&c, &tree, Path::new("nope.txt")).unwrap(), None);
-    assert!(file_at(&c, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", Path::new("a.txt")).is_err());
+    assert!(
+        file_at(
+            &c,
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            Path::new("a.txt")
+        )
+        .is_err()
+    );
     assert!(file_at(&c, "not-a-tree", Path::new("a.txt")).is_err());
 }
 

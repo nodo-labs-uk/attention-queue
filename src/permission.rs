@@ -372,7 +372,7 @@ impl App {
         let id = card.id;
         match key.code {
             KeyCode::Char('y' | 'n') if !self.looked_at(id) => {
-                self.set_status("Too quick: look at this request first");
+                self.too_quick("request");
             }
             KeyCode::Char('y') if !self.read_to_end() => {
                 self.set_status("Scroll to the end before allowing");
@@ -535,6 +535,7 @@ mod tests {
     use crate::ipc::{HookReply, HookRequest};
     use crate::model::CardKind;
     use crate::queue::tests::card;
+    use crate::step::PREEMPT_FOR;
     use crate::theme::builtin_themes;
 
     fn app() -> App {
@@ -558,10 +559,15 @@ mod tests {
     }
 
     fn ipc(a: &mut App, req_id: u64, req: HookRequest) -> Vec<Effect> {
+        ipc_at(a, req_id, req, Instant::now())
+    }
+
+    fn ipc_at(a: &mut App, req_id: u64, req: HookRequest, now: Instant) -> Vec<Effect> {
         a.update(Msg::Ipc {
             req_id,
             req,
             at: SystemTime::UNIX_EPOCH + Duration::from_secs(req_id),
+            now,
         })
     }
 
@@ -645,6 +651,61 @@ mod tests {
         assert_eq!(first.agent.pane, "%5");
         assert_eq!(perm(&a).req_id, 9);
         assert_eq!(perm(&a).summary, "ls");
+    }
+
+    #[test]
+    fn a_card_that_jumps_ahead_ignores_decision_keys_for_a_while() {
+        use crate::step::tests::{input, pending};
+        let mut a = app();
+        a.config
+            .set_mode(&Checkout("/w/api".into()), crate::model::Mode::Step);
+        let t0 = Instant::now();
+        a.update(Msg::PreTool {
+            req_id: 1,
+            edit: pending("s1", "/w/api", input()),
+            at: t0,
+        });
+        assert!(matches!(a.queue.current().unwrap().kind, CardKind::Step(_)));
+        // The user is on the step card and about to press `y` when a
+        // permission request takes the screen.
+        let t1 = t0 + Duration::from_secs(5);
+        ipc_at(
+            &mut a,
+            2,
+            ask("Bash", json!({"command": "rm -rf /"}), Some("%5"), "s5"),
+            t1,
+        );
+        assert_eq!(perm(&a).req_id, 2);
+        assert!(a.preempted(), "the bar flags the new card");
+        assert!(
+            a.update(key('y', t1 + Duration::from_millis(400)))
+                .is_empty()
+        );
+        assert_eq!(a.queue.len(), 2, "neither card decided");
+        assert!(
+            a.status_text().unwrap().contains("New card"),
+            "{:?}",
+            a.status_text()
+        );
+        assert!(
+            a.update(key('n', t1 + Duration::from_millis(1400)))
+                .is_empty()
+        );
+        assert!(a.overlay.is_none());
+        let late = t1 + PREEMPT_FOR;
+        a.update(Msg::Tick(late));
+        assert!(!a.preempted(), "the flag goes after a while");
+        assert_eq!(
+            a.update(key('y', late)),
+            [Effect::Reply {
+                req_id: 2,
+                decision: HookReply::Allow
+            }]
+        );
+        // Back on the step card by the user's own key: the usual short look.
+        let back = late + Duration::from_millis(300);
+        assert!(!a.preempted());
+        assert_eq!(a.update(key('y', back)).len(), 1);
     }
 
     #[test]

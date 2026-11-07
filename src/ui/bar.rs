@@ -48,6 +48,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
         None => left.push(Span::styled(" nothing waiting", Style::new().fg(t.dim))),
     }
+    if app.preempted() {
+        left.push(Span::styled(
+            " new card ",
+            Style::new().fg(t.bg).bg(t.hi).add_modifier(Modifier::BOLD),
+        ));
+    }
     frame.render_widget(Paragraph::new(Line::from(left)).style(base), area);
 
     let cards: Vec<&Card> = app.queue.iter().collect();
