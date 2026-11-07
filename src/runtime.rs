@@ -40,6 +40,8 @@ const FRAME: Duration = Duration::from_millis(33);
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// How long quitting waits for saves and sends still running.
 const QUIT_WAIT: Duration = Duration::from_secs(3);
+/// Files larger than this are not read for a step card.
+const READ_MAX: u64 = 10 * 1024 * 1024;
 
 pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     // Loaded before raw mode: bad theme files warn on stderr.
@@ -697,14 +699,18 @@ fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
     let checkout = agents::checkout_of(cwd);
     let path = cwd.join(edited_file(&req.tool_input).unwrap_or(""));
     let file_checkout = file_dir(&path).and_then(|d| agents::checkout_of(&d));
-    let current = std::fs::read_to_string(&path).ok();
+    let current = read_file(&path);
     let step = |c: &Option<Checkout>| c.as_ref().is_some_and(|c| config.mode_for(c) == Mode::Step);
     let step = step(&checkout) || step(&file_checkout);
     let description = step
         .then(|| description_before(Path::new(&req.transcript_path), &req.tool_use_id))
         .flatten();
+    let preview = match &current {
+        Ok(text) => apply_edit(&req.tool_name, &req.tool_input, text.as_deref()),
+        Err(why) => unreadable(apply_edit(&req.tool_name, &req.tool_input, None), why),
+    };
     PendingEdit {
-        preview: apply_edit(&req.tool_name, &req.tool_input, current.as_deref()),
+        preview,
         session_id: req.session_id,
         checkout,
         file_checkout,
@@ -713,6 +719,57 @@ fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
         path,
         description,
         at: std::time::SystemTime::now(),
+    }
+}
+
+/// The text of the file an edit is about: `None` when it does not exist
+/// yet, an error saying why when it is not a regular UTF-8 file of at most
+/// `READ_MAX` bytes. Opened without blocking, so a FIFO cannot hold the
+/// loader, and checked on the open file, so it cannot be swapped between.
+fn read_file(path: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path);
+    let file = match file {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read: {e}")),
+    };
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("could not read: {e}"))?;
+    if !meta.is_file() {
+        return Err("could not read: not a regular file".into());
+    }
+    if meta.len() > READ_MAX {
+        return Err("could not read: too large".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(READ_MAX + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read: {e}"))?;
+    if bytes.len() as u64 > READ_MAX {
+        return Err("could not read: too large".into());
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "could not read: not UTF-8".into())
+}
+
+/// `preview`, worked out as if the file were new, shown unplaced with `why`.
+fn unreadable(preview: crate::edit::EditPreview, why: &str) -> crate::edit::EditPreview {
+    use crate::edit::EditPreview;
+    let (old, new) = match preview {
+        EditPreview::Placed { after, .. } => (String::new(), after),
+        EditPreview::Unplaced { old, new, .. } => (old, new),
+    };
+    EditPreview::Unplaced {
+        old,
+        new,
+        why: why.to_string(),
     }
 }
 
@@ -1093,6 +1150,72 @@ mod tests {
         config.set_mode(&checkout, Mode::Step);
         let e = load_edit(req(), &config);
         assert!(e.description.unwrap().starts_with("Return 429"));
+    }
+
+    /// `load_edit` of a Write to `path`, on a thread so a read that blocks
+    /// fails the test instead of hanging it.
+    fn load_write(path: &Path) -> crate::edit::EditPreview {
+        let req = PreToolReq {
+            session_id: "s1".into(),
+            transcript_path: String::new(),
+            cwd: "/".into(),
+            tool_name: "Write".into(),
+            tool_use_id: "t1".into(),
+            tool_input: serde_json::json!({"file_path": path, "content": "new\n"}),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_edit(req, &Config::default()).preview);
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("reading the file blocked")
+    }
+
+    fn why(p: crate::edit::EditPreview) -> String {
+        match p {
+            crate::edit::EditPreview::Unplaced { why, new, .. } => {
+                assert_eq!(new, "new\n", "the edit is still shown");
+                why
+            }
+            p => panic!("expected an unplaced edit, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn load_edit_reads_only_small_regular_utf8_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a valid C string and mode.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(why(load_write(&fifo)), "could not read: not a regular file");
+        assert_eq!(
+            why(load_write(dir.path())),
+            "could not read: not a regular file"
+        );
+        let big = dir.path().join("big");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(READ_MAX + 1)
+            .unwrap();
+        assert_eq!(why(load_write(&big)), "could not read: too large");
+        let bin = dir.path().join("bin");
+        std::fs::write(&bin, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(why(load_write(&bin)), "could not read: not UTF-8");
+        // A link to a small text file is read through.
+        let text = dir.path().join("t.txt");
+        std::fs::write(&text, "old\n").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&text, &link).unwrap();
+        match load_write(&link) {
+            crate::edit::EditPreview::Placed { before, .. } => assert_eq!(before, "old\n"),
+            p => panic!("{p:?}"),
+        }
+        // A file not there yet is a new file.
+        match load_write(&dir.path().join("none")) {
+            crate::edit::EditPreview::Placed { before, .. } => assert_eq!(before, ""),
+            p => panic!("{p:?}"),
+        }
     }
 
     #[test]
