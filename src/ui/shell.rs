@@ -24,7 +24,10 @@ pub fn render(
     let mut head = card_header(app, card);
     let mut lines = sc.command.lines();
     let sigil = if sc.outside { "" } else { "$ " };
-    let mut title = format!("{sigil}{}", lines.next().unwrap_or_default());
+    let mut title = format!(
+        "{sigil}{}",
+        crate::visible::visible_code(lines.next().unwrap_or_default())
+    );
     if lines.next().is_some() {
         title.push_str(" ...");
     }
@@ -34,7 +37,7 @@ pub fn render(
     )));
     if let Some(w) = sc.warning() {
         head.push(Line::styled(
-            w,
+            crate::visible::visible_code(&w),
             Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
         ));
     }

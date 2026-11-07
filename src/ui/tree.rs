@@ -44,6 +44,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
         let y = area.y + (k - top) as u16;
         match row {
             Row::Dir(d) => {
+                let d = crate::visible::visible_code(d);
                 buf.set_stringn(area.x + 1, y, d, width, Style::new().fg(t.dim));
             }
             Row::File(i) => {
@@ -79,7 +80,13 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
                     Style::new().fg(colour)
                 };
                 let room = width.saturating_sub(count_w);
-                let (x, _) = buf.set_stringn(area.x + 1, y, format!("{indent}{name}"), room, style);
+                let (x, _) = buf.set_stringn(
+                    area.x + 1,
+                    y,
+                    format!("{indent}{}", crate::visible::visible_code(&name)),
+                    room,
+                    style,
+                );
                 buf.set_stringn(x, y, count, width, Style::new().fg(t.hi));
             }
         }

@@ -19,8 +19,7 @@ use crate::highlight::Highlighter;
 use crate::model::Card;
 use crate::step::{RowKind, SearchList, StepCard};
 use crate::theme::Theme;
-
-const TAB: &str = "    ";
+use crate::visible::visible_code;
 
 pub fn render(
     frame: &mut Frame,
@@ -40,17 +39,17 @@ pub fn render(
     let dim = Style::new().fg(t.dim);
     match sc.description.as_deref().map(split_description) {
         Some((title, why)) => {
-            head.push(Line::styled(title, bold));
+            head.push(Line::styled(visible_code(&title), bold));
             if let Some(why) = why {
                 head.push(Line::from(vec![
                     Span::styled("Why: ", dim),
-                    Span::styled(why, Style::new().fg(t.fg)),
+                    Span::styled(visible_code(&why), Style::new().fg(t.fg)),
                 ]));
             }
         }
         None => {
             head.push(Line::styled(
-                format!("{} {}", sc.tool_name, file_name(&sc.path)),
+                visible_code(&format!("{} {}", sc.tool_name, file_name(&sc.path))),
                 bold,
             ));
             head.push(Line::styled(
@@ -91,11 +90,12 @@ fn split_description(d: &str) -> (String, Option<String>) {
     (title.trim().to_string(), (!rest.is_empty()).then_some(rest))
 }
 
+/// The last part of `path`, safe to show.
 fn file_name(path: &Path) -> String {
-    path.file_name().map_or_else(
+    visible_code(&path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
-    )
+    ))
 }
 
 /// "this change": where the edit lands. "earlier": this session's decided steps.
@@ -160,7 +160,7 @@ fn render_file(
     let (x, _) = buf.set_stringn(
         head.x + 1,
         head.y,
-        rel.display().to_string(),
+        visible_code(&rel.display().to_string()),
         head.width.saturating_sub(1) as usize,
         Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
     );
@@ -183,7 +183,7 @@ fn render_file(
     let w = body.width as usize;
     if sc.view.raw {
         for (i, l) in sc.raw.lines().take(h).enumerate() {
-            let text = l.replace('\t', TAB);
+            let text = visible_code(l);
             buf.set_stringn(
                 body.x + 1,
                 body.y + i as u16,
@@ -245,7 +245,7 @@ fn render_file(
             } else {
                 style
             };
-            (x, _) = buf.set_stringn(x, y, text.replace('\t', TAB), room, style);
+            (x, _) = buf.set_stringn(x, y, visible_code(&text), room, style);
         }
     }
 }
@@ -290,10 +290,10 @@ pub fn render_search(frame: &mut Frame, area: Rect, list: &SearchList, t: &Theme
                 Style::new().bg(t.sel),
             );
         }
-        let place = format!("{}:{}", hit.path.display(), hit.line);
+        let place = visible_code(&format!("{}:{}", hit.path.display(), hit.line));
         let (x, _) = buf.set_stringn(inner.x + 1, y, &place, w, Style::new().fg(t.key));
         let room = inner.right().saturating_sub(x + 2) as usize;
-        let text = hit.text.trim().replace('\t', TAB);
+        let text = visible_code(hit.text.trim());
         buf.set_stringn(x + 2, y, text, room, Style::new().fg(t.fg));
     }
 }
@@ -319,6 +319,32 @@ mod tests {
             ("Return 429.".into(), Some("The plan says so.".into()))
         );
         assert_eq!(split_description("Just this"), ("Just this".into(), None));
+    }
+
+    #[test]
+    fn hidden_characters_in_a_step_card_are_spelled_out() {
+        let mut a = step_app();
+        let mut i = input();
+        i["new_string"] = "        2 => 404,\n        3 => 4\u{202e}29,\n".into();
+        let mut e = pending("s1", "/a", i);
+        e.description = Some("Return\u{2066} 429.\nWhy\u{200b} not.".into());
+        a.update(Msg::PreTool {
+            req_id: 1,
+            edit: e,
+            at: crate::step::tests::tick(),
+        });
+        let screen = render(&a, 100, 30);
+        assert!(screen.contains("3 => 4\\u{202e}29,"), "{screen}");
+        assert!(screen.contains("Return\\u{2066} 429."), "{screen}");
+        assert!(screen.contains("Why\\u{200b} not."), "{screen}");
+        assert!(!screen.contains('\u{202e}'));
+        // The raw input too.
+        a.update(Msg::Key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('m')),
+            crate::step::tests::tick(),
+        ));
+        let screen = render(&a, 100, 30);
+        assert!(!screen.contains('\u{202e}'), "{screen}");
     }
 
     #[test]

@@ -264,7 +264,7 @@ fn code_lines(
             let mut spans = vec![Span::styled(format!("{n:>5} "), num_style)];
             for (style, piece) in hl.highlight_line(&s.path, n, text) {
                 let style = if target { style.bg(t.sel) } else { style };
-                spans.push(Span::styled(piece, style));
+                spans.push(Span::styled(crate::visible::visible_code(&piece), style));
             }
             Line::from(spans)
         })

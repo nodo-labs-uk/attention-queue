@@ -102,6 +102,25 @@ mod tests {
         a
     }
 
+    #[test]
+    fn hidden_characters_in_a_diff_line_and_comment_are_spelled_out() {
+        for view in [DiffView::Unified, DiffView::Split] {
+            let mut rc = fixture_card(1);
+            rc.view = view;
+            for l in rc.files[0].hunks[0].lines.iter_mut() {
+                if let DiffLine::Add { text, .. } = l {
+                    *text = format!("let ok = 1; // \u{202e}esrever\u{202c}{text}");
+                    break;
+                }
+            }
+            rc.comments = vec![comment("src/limit.rs", 40, 40, "see\u{200b}this", 1)];
+            let screen = render(&review_app(rc), 160, 30);
+            assert!(screen.contains("\\u{202e}esrever\\u{202c}"), "{screen}");
+            assert!(screen.contains("see\\u{200b}this"), "{screen}");
+            assert!(!screen.contains('\u{202e}'));
+        }
+    }
+
     fn fixture_with_comments(view: DiffView) -> ReviewCard {
         let mut rc = fixture_card(2);
         rc.view = view;

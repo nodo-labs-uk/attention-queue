@@ -15,8 +15,7 @@ use crate::review::{
     DiffView, Pair, ReviewCard, Side, comment_anchors, file_path, line_text, lines, split_rows,
 };
 use crate::theme::Theme;
-
-const TAB: &str = "    ";
+use crate::visible::visible_code;
 
 enum Row {
     Hunk(usize),
@@ -65,7 +64,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mu
             header(buf, r, new_path, "after", t);
         }
         DiffView::Unified if f.status == FileStatus::Renamed => {
-            let from = format!("from {}", old_path.display());
+            let from = visible_code(&format!("from {}", old_path.display()));
             header(buf, head, new_path, &from, t);
         }
         DiffView::Unified => header(buf, head, new_path, status_label(f.status), t),
@@ -188,7 +187,7 @@ fn header(buf: &mut Buffer, area: Rect, path: &Path, label: &str, t: &Theme) {
     let (x, _) = buf.set_stringn(
         area.x + 1,
         area.y,
-        path.display().to_string(),
+        visible_code(&path.display().to_string()),
         area.width.saturating_sub(1) as usize,
         Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
     );
@@ -316,7 +315,7 @@ impl Ctx<'_> {
             } else {
                 style
             };
-            (x, _) = buf.set_stringn(x, area.y, text.replace('\t', TAB), room, style);
+            (x, _) = buf.set_stringn(x, area.y, visible_code(&text), room, style);
         }
     }
 
@@ -349,12 +348,6 @@ impl Ctx<'_> {
         let text = c.body.lines().nth(part).unwrap_or("");
         let fg = if old { t.dim } else { t.fg };
         let rest = area.right().saturating_sub(x) as usize;
-        buf.set_stringn(
-            x,
-            area.y,
-            text.replace('\t', TAB),
-            rest,
-            Style::new().fg(fg),
-        );
+        buf.set_stringn(x, area.y, visible_code(text), rest, Style::new().fg(fg));
     }
 }

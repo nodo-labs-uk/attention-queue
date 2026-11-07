@@ -10,13 +10,14 @@ use super::window_of;
 use crate::app::{App, project_name};
 use crate::model::Card;
 use crate::permission::{LineKind, PermissionCard};
+use crate::visible::visible_code;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, pc: &PermissionCard) {
     let t = app.theme();
     let bold = Style::new().fg(t.fg).add_modifier(Modifier::BOLD);
     let head = vec![
         Line::styled(
-            format!("Permission: {}", pc.tool_name),
+            format!("Permission: {}", visible_code(&pc.tool_name)),
             Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
         ),
         Line::from(vec![

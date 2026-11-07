@@ -11,9 +11,9 @@ use crate::app::{App, Effect, Overlay};
 use crate::edit::EditPreview;
 use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, valid_session_id};
 use crate::model::{Card, CardKind, Checkout};
-use crate::permission::visible_lines;
 use crate::quiz::{QuizState, diff_text, fenced};
 use crate::ui::input::{InputEvent, TextInput};
+use crate::visible::{visible_lines, wrap};
 
 pub const ASK_PROMPT: &str = include_str!("../prompts/ask.md");
 
@@ -136,15 +136,13 @@ fn visible_text(text: &str) -> String {
     visible_lines(text).join("\n")
 }
 
-/// `text` wrapped to `width` characters, the first row after `mark`.
+/// `text` wrapped to `width` columns, the first row after `mark`.
 fn wrap_into(out: &mut Vec<(LineKind, String)>, kind: LineKind, mark: &str, text: &str, w: usize) {
     for (i, line) in text.split('\n').enumerate() {
         let mark = if i == 0 { mark } else { "" };
-        let chars: Vec<char> = mark.chars().chain(line.chars()).collect();
-        if chars.is_empty() {
-            out.push((kind, String::new()));
-        }
-        out.extend(chars.chunks(w.max(1)).map(|c| (kind, c.iter().collect())));
+        wrap(&format!("{mark}{line}"), w, &mut |row| {
+            out.push((kind, row))
+        });
     }
 }
 

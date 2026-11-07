@@ -20,3 +20,4 @@ pub mod step;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
+pub mod visible;

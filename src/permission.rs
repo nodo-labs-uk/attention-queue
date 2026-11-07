@@ -7,13 +7,13 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::text::Line;
 use serde_json::Value;
 
 use crate::app::{App, Effect, Overlay};
 use crate::ipc::HookReply;
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::ui::input::{InputEvent, TextInput};
+use crate::visible::{push_visible, visible_lines, wrap};
 
 /// What `n` sends when nothing is typed.
 pub const DENY_DEFAULT: &str = "Denied in aq.";
@@ -170,100 +170,6 @@ impl PermissionCard {
         }
         rows
     }
-}
-
-/// A character's width in columns.
-fn cols(c: char) -> usize {
-    Line::from(c.to_string()).width()
-}
-
-fn wrap(line: &str, width: usize, push: &mut impl FnMut(String)) {
-    let width = width.max(1);
-    let (mut row, mut used) = (String::new(), 0);
-    for c in line.chars() {
-        let w = cols(c);
-        if used + w > width && !row.is_empty() {
-            push(std::mem::take(&mut row));
-            used = 0;
-        }
-        row.push(c);
-        used += w;
-    }
-    push(row);
-}
-
-/// Characters that read as nothing or as something else: format (bidi,
-/// zero-width, BOM, tags), line and paragraph separators, and every space but
-/// U+0020, by Unicode general category; plus the default-ignorable ones the
-/// categories miss (variation selectors, combining grapheme joiner, Hangul
-/// fillers), the blank braille pattern, and unassigned or private-use code
-/// points, which can be default-ignorable in a later Unicode version.
-fn is_format(c: char) -> bool {
-    use unicode_properties::{GeneralCategory as G, UnicodeGeneralCategory};
-    match c.general_category() {
-        G::Format | G::LineSeparator | G::ParagraphSeparator | G::Unassigned | G::PrivateUse => {
-            true
-        }
-        G::SpaceSeparator => c != ' ',
-        _ => matches!(c as u32,
-            0xFE00..=0xFE0F
-                | 0xE0100..=0xE01EF
-                | 0x34F
-                | 0x115F
-                | 0x1160
-                | 0x3164
-                | 0xFFA0
-                | 0x2800
-                | 0x2060..=0x206F
-                | 0xFFF0..=0xFFFB
-                | 0xE0000..=0xE0FFF
-                | 0x180B..=0x180F
-                | 0x17B4
-                | 0x17B5),
-    }
-}
-
-/// One character, with control characters spelled out so they cannot hide
-/// anything: tab as →, return as ⏎, others as ^X or \u{..}.
-fn visible(c: char, out: &mut String) {
-    match c {
-        '\t' => out.push('→'),
-        '\r' => out.push('⏎'),
-        '\u{7f}' => out.push_str("^?"),
-        c if (c as u32) < 0x20 => {
-            out.push('^');
-            out.push(char::from(c as u8 ^ 0x40));
-        }
-        c if c.is_control() || is_format(c) => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
-        c => out.push(c),
-    }
-}
-
-/// `text` as visible lines; three or more blank lines in a row become one
-/// "[N blank lines]" line.
-pub(crate) fn visible_lines(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut blanks = 0;
-    let flush = |out: &mut Vec<String>, blanks: &mut usize| {
-        match *blanks {
-            0 => {}
-            1 | 2 => out.extend((0..*blanks).map(|_| String::new())),
-            n => out.push(format!("[{n} blank lines]")),
-        }
-        *blanks = 0;
-    };
-    for line in text.split('\n') {
-        if line.chars().all(|c| c == ' ' || c == '\t') {
-            blanks += 1;
-            continue;
-        }
-        flush(&mut out, &mut blanks);
-        let mut shown = String::new();
-        line.chars().for_each(|c| visible(c, &mut shown));
-        out.push(shown);
-    }
-    flush(&mut out, &mut blanks);
-    out
 }
 
 /// The input field that says what the tool will do: the command of Bash, the
@@ -489,7 +395,7 @@ impl App {
         pc.summary
             .replace('\n', " ")
             .chars()
-            .for_each(|c| visible(c, &mut what));
+            .for_each(|c| push_visible(c, &mut what));
         self.set_status(format!("{verb} {}: {what}", pc.tool_name));
         vec![Effect::Reply {
             req_id: pc.req_id,
