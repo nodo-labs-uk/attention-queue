@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod app;
 pub mod config;
+pub mod edit;
 pub mod git;
 pub mod highlight;
 pub mod hook;
@@ -10,5 +11,7 @@ pub mod model;
 pub mod queue;
 pub mod review;
 pub mod runtime;
+pub mod step;
 pub mod theme;
+pub mod transcript;
 pub mod ui;

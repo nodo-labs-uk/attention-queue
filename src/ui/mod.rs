@@ -1,9 +1,11 @@
 mod bar;
 mod diffview;
 mod empty;
+pub mod fold;
 pub mod input;
 mod keys;
 mod review;
+mod step;
 mod tree;
 
 use ratatui::Frame;
@@ -44,6 +46,15 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             let title = format!("Comment on {}:{lines}", target.path.display());
             input::render(frame, body, &d.input, &title, t);
         }
+        Some(Overlay::StepReason(d)) => {
+            let title = if d.change {
+                "Ask Claude for a different change"
+            } else {
+                "Reject: tell Claude why"
+            };
+            input::render(frame, body, &d.input, title, t);
+        }
+        Some(Overlay::Search(list)) => step::render_search(frame, body, list, t),
         None => {}
     }
 }
@@ -91,8 +102,10 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
 }
 
 fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut Highlighter) {
-    if let CardKind::Review(rc) = &card.kind {
-        return review::render(frame, area, app, card, rc, hl);
+    match &card.kind {
+        CardKind::Review(rc) => return review::render(frame, area, app, card, rc, hl),
+        CardKind::Step(sc) => return step::render(frame, area, app, card, sc, hl),
+        _ => {}
     }
     let inner = area.inner(ratatui::layout::Margin::new(1, 1));
     frame.render_widget(Paragraph::new(card_header(app, card)), inner);
@@ -129,7 +142,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::app::tests::agent;
     use crate::config::Config;
-    use crate::model::{PermissionCard, ReviewCard, StepCard};
+    use crate::model::{PermissionCard, ReviewCard};
     use crate::queue::tests::card;
     use crate::theme::builtin_themes;
 
@@ -165,7 +178,7 @@ pub(crate) mod tests {
             20,
         ));
         a.queue
-            .push(card(3, "/w/web", CardKind::Step(StepCard), 10));
+            .push(card(3, "/w/web", CardKind::Step(Box::default()), 10));
         let mut perm = card(4, "/w/api", CardKind::Permission(PermissionCard), 5);
         perm.agent = a.agents[0].id.clone();
         a.queue.push(perm);

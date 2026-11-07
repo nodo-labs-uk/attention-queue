@@ -16,7 +16,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "new line".into()),
             ("Esc", "cancel".into()),
         ],
+        (Some(Overlay::StepReason(_)), _) => {
+            vec![("Enter", "send".into()), ("Esc", "cancel".into())]
+        }
+        (Some(Overlay::Search(_)), _) => vec![
+            ("j/k", "move".into()),
+            ("Enter", "show".into()),
+            ("Esc", "close".into()),
+        ],
         (Some(_), _) => vec![("q", "close".into())],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Step(sc),
+                ..
+            }),
+        ) => vec![
+            ("y", "allow".into()),
+            ("n", "reject".into()),
+            ("e", "change".into()),
+            ("tab", "next".into()),
+            ("za", "fold".into()),
+            ("zR", "unfold all".into()),
+            (
+                "gd",
+                sc.word()
+                    .map_or_else(|| "find".into(), |w| format!("find {w}")),
+            ),
+            ("w/b", "word".into()),
+            ("m", if sc.view.raw { "file" } else { "raw" }.into()),
+            ("s", "skip".into()),
+        ],
         (
             None,
             Some(Card {

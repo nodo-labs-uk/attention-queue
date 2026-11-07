@@ -1,7 +1,7 @@
 //! The impure shell around `App::update`: terminal, agent polling, key input,
 //! rendering and effects.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -15,15 +15,18 @@ use tokio::sync::mpsc::{UnboundedSender, channel, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use crate::agents::AgentConn;
+use crate::agents::{self, AgentConn};
 use crate::app::{App, Effect, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
+use crate::edit::apply_edit;
 use crate::git;
 use crate::highlight::Highlighter;
-use crate::ipc::{self, HookReply};
-use crate::model::AgentId;
+use crate::ipc::{self, HookReply, HookRequest};
+use crate::model::{AgentId, Checkout, Mode};
 use crate::review::LastRound;
+use crate::step::PendingEdit;
 use crate::theme::load_themes;
+use crate::transcript::description_before;
 
 const AGENT_POLL: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_secs(1);
@@ -62,6 +65,8 @@ async fn event_loop(
     tokio::spawn(ipc::accept_loop(listener, ipc_tx));
     // Hooks waiting for an answer, by request id.
     let mut waiting: HashMap<u64, oneshot::Sender<HookReply>> = HashMap::new();
+    // PreToolUse requests the effect worker is still reading files for.
+    let mut loading: HashSet<u64> = HashSet::new();
     let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone());
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
@@ -75,14 +80,44 @@ async fn event_loop(
         tokio::select! {
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
+                if let Msg::PreTool { req_id, .. } = &msg {
+                    loading.remove(req_id);
+                }
+                // Before and after: a decision sees which hooks still wait,
+                // and a card made for a hook that already left hears of it.
+                sweep(app, &jobs, &mut waiting, &loading);
                 apply(app, msg, &jobs, &mut waiting);
+                sweep(app, &jobs, &mut waiting, &loading);
                 dirty = true;
             }
             Some(ev) = ipc_rx.recv() => {
-                // Forget hooks that went away without an answer.
-                waiting.retain(|_, reply| !reply.is_closed());
+                sweep(app, &jobs, &mut waiting, &loading);
                 waiting.insert(ev.req_id, ev.reply);
-                apply(app, Msg::Ipc { req_id: ev.req_id, req: ev.req }, &jobs, &mut waiting);
+                match ev.req {
+                    HookRequest::PreTool {
+                        session_id,
+                        transcript_path,
+                        cwd,
+                        tool_name,
+                        tool_use_id,
+                        tool_input,
+                    } => {
+                        loading.insert(ev.req_id);
+                        let _ = jobs.send(Job::LoadEdit {
+                            req_id: ev.req_id,
+                            req: PreToolReq {
+                                session_id,
+                                transcript_path,
+                                cwd,
+                                tool_name,
+                                tool_use_id,
+                                tool_input,
+                            },
+                            config: app.config.clone(),
+                        });
+                    }
+                    req => apply(app, Msg::Ipc { req_id: ev.req_id, req }, &jobs, &mut waiting),
+                }
                 dirty = true;
             }
             _ = tokio::time::sleep_until(next_frame), if dirty => {
@@ -102,6 +137,24 @@ async fn event_loop(
     Ok(())
 }
 
+/// Tells the app about hooks that went away without an answer.
+fn sweep(
+    app: &mut App,
+    jobs: &std::sync::mpsc::Sender<Job>,
+    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
+    loading: &HashSet<u64>,
+) {
+    let gone: Vec<u64> = waiting
+        .iter()
+        .filter(|(id, reply)| reply.is_closed() && !loading.contains(id))
+        .map(|(id, _)| *id)
+        .collect();
+    for req_id in gone {
+        waiting.remove(&req_id);
+        apply(app, Msg::HookGone { req_id }, jobs, waiting);
+    }
+}
+
 /// Runs `msg` through `update` and carries out its effects.
 fn apply(
     app: &mut App,
@@ -115,6 +168,7 @@ fn apply(
             Effect::SaveState => Job::Save(app.config.clone()),
             Effect::ComputeReview(req) => Job::Review(req),
             Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
+            Effect::Grep { checkout, ident } => Job::Grep { checkout, ident },
             Effect::Reply { req_id, decision } => {
                 // The hook may have gone; then nobody is listening.
                 if let Some(reply) = waiting.remove(&req_id) {
@@ -140,6 +194,27 @@ enum Job {
     Save(Config),
     Review(ReviewRequest),
     SaveRounds(BTreeMap<PathBuf, LastRound>),
+    /// Read what a step card needs. `config` is a snapshot, used only to
+    /// skip reading the transcript outside step mode.
+    LoadEdit {
+        req_id: u64,
+        req: PreToolReq,
+        config: Config,
+    },
+    Grep {
+        checkout: Checkout,
+        ident: String,
+    },
+}
+
+/// The fields of `HookRequest::PreTool`.
+struct PreToolReq {
+    session_id: String,
+    transcript_path: String,
+    cwd: String,
+    tool_name: String,
+    tool_use_id: String,
+    tool_input: serde_json::Value,
 }
 
 /// Runs effects off the event loop, one at a time so they land in order.
@@ -175,6 +250,19 @@ fn spawn_effect_worker(
                 Job::SaveRounds(rounds) => save_rounds(&rounds_file(&paths), &rounds)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not save review rounds: {e:#}"))),
+                Job::LoadEdit {
+                    req_id,
+                    req,
+                    config,
+                } => Some(Msg::PreTool {
+                    req_id,
+                    edit: load_edit(req, &config),
+                }),
+                Job::Grep { checkout, ident } => Some(Msg::GrepDone {
+                    result: git::grep_word(&checkout, &ident)
+                        .map_err(|e| format!("Could not search for {ident}: {e:#}")),
+                    ident,
+                }),
             };
             if let Some(msg) = msg
                 && tx.send(msg).is_err()
@@ -210,6 +298,32 @@ fn compute_review(req: ReviewRequest) -> Msg {
             "Could not diff {}: {e:#}",
             crate::app::project_name(c)
         )),
+    }
+}
+
+/// Finds the request's checkout and reads the file it edits and, in step
+/// mode, Claude's description of the edit.
+fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
+    let cwd = Path::new(&req.cwd);
+    let checkout = agents::checkout_of(cwd);
+    let field = |k| req.tool_input.get(k).and_then(serde_json::Value::as_str);
+    let path = cwd.join(field("file_path").or(field("notebook_path")).unwrap_or(""));
+    let current = std::fs::read_to_string(&path).ok();
+    let step = checkout
+        .as_ref()
+        .is_some_and(|c| config.mode_for(c) == Mode::Step);
+    let description = step
+        .then(|| description_before(Path::new(&req.transcript_path), &req.tool_use_id))
+        .flatten();
+    PendingEdit {
+        preview: apply_edit(&req.tool_name, &req.tool_input, current.as_deref()),
+        session_id: req.session_id,
+        checkout,
+        tool_name: req.tool_name,
+        tool_input: req.tool_input,
+        path,
+        description,
+        at: std::time::SystemTime::now(),
     }
 }
 
@@ -311,6 +425,43 @@ mod tests {
         );
         save_rounds(&file, &rounds).unwrap();
         assert_eq!(load_rounds(&file).unwrap(), rounds);
+    }
+
+    #[test]
+    fn load_edit_reads_file_and_description_in_step_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "one\ntwo\n").unwrap();
+        let transcript = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/transcript.jsonl"
+        );
+        let req = || PreToolReq {
+            session_id: "s1".into(),
+            transcript_path: transcript.into(),
+            cwd: dir.path().join("src").display().to_string(),
+            tool_name: "Edit".into(),
+            tool_use_id: "toolu_edit".into(),
+            tool_input: serde_json::json!({"file_path": "a.rs", "old_string": "two", "new_string": "2"}),
+        };
+        let checkout = Checkout::new(dir.path());
+        let mut config = Config::default();
+        let e = load_edit(req(), &config);
+        assert_eq!(e.checkout.as_ref(), Some(&checkout));
+        assert_eq!(e.path, dir.path().join("src/a.rs"));
+        assert!(matches!(e.preview, crate::edit::EditPreview::Placed { .. }));
+        assert_eq!(e.description, None, "not read outside step mode");
+        config.set_mode(&checkout, Mode::Step);
+        let e = load_edit(req(), &config);
+        assert!(e.description.unwrap().starts_with("Return 429"));
     }
 
     #[test]

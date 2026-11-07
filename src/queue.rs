@@ -102,7 +102,7 @@ pub(crate) mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
-    use crate::model::{AgentId, Checkout, PermissionCard, ReviewCard, ShellCard, StepCard};
+    use crate::model::{AgentId, Checkout, PermissionCard, ReviewCard, ShellCard};
 
     pub(crate) fn card(id: u64, checkout: &str, kind: CardKind, age_secs: u64) -> Card {
         Card {
@@ -121,7 +121,7 @@ pub(crate) mod tests {
         CardKind::Review(ReviewCard::default())
     }
     fn step() -> CardKind {
-        CardKind::Step(StepCard)
+        CardKind::Step(Box::default())
     }
 
     fn ids(q: &Queue) -> Vec<u64> {

@@ -6,12 +6,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::agents::Agent;
 use crate::config::Config;
-use crate::git::FileDiff;
+use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::queue::Queue;
 use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
+use crate::step::{PendingEdit, ReasonDraft, SearchList, Steps};
 use crate::theme::Theme;
 use crate::ui::input::{InputEvent, TextInput};
 
@@ -29,6 +30,21 @@ pub enum Msg {
     Ipc {
         req_id: u64,
         req: HookRequest,
+    },
+    /// A PreToolUse hook is waiting for `Effect::Reply` with this `req_id`;
+    /// the runtime has read the file and transcript for it.
+    PreTool {
+        req_id: u64,
+        edit: PendingEdit,
+    },
+    /// The hook waiting on `req_id` went away without an answer.
+    HookGone {
+        req_id: u64,
+    },
+    /// The result of an `Effect::Grep`.
+    GrepDone {
+        ident: String,
+        result: Result<Vec<GrepHit>, String>,
     },
     Llm(LlmEvent),
     /// A `Send` for a review card reached the agent.
@@ -82,6 +98,11 @@ pub enum Effect {
     ComputeReview(ReviewRequest),
     /// Write `App::rounds` to the state dir.
     SaveRounds,
+    /// `git grep` for a whole word in the checkout (`gd` on a step card).
+    Grep {
+        checkout: Checkout,
+        ident: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +111,10 @@ pub enum Overlay {
     Ask,
     /// `c` on the review board: typing a comment.
     Comment(CommentDraft),
+    /// `n` or `e` on a step card: typing the reason.
+    StepReason(ReasonDraft),
+    /// `gd` on a step card: where the identifier appears.
+    Search(SearchList),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +137,8 @@ pub struct App {
     pub rounds: BTreeMap<PathBuf, LastRound>,
     /// Review cards whose message is on its way, with the status to show once it lands.
     sending: BTreeMap<u64, String>,
-    next_card_id: u64,
+    pub steps: Steps,
+    pub(crate) next_card_id: u64,
 }
 
 /// How long a status message stays on screen.
@@ -144,6 +170,7 @@ impl App {
             quit: false,
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
+            steps: Steps::default(),
             next_card_id: 0,
         }
     }
@@ -198,6 +225,15 @@ impl App {
                 req_id,
                 decision: HookReply::NoDecision,
             }],
+            Msg::PreTool { req_id, edit } => self.on_pre_tool(req_id, edit),
+            Msg::HookGone { req_id } => {
+                self.on_hook_gone(req_id);
+                Vec::new()
+            }
+            Msg::GrepDone { ident, result } => {
+                self.on_grep_done(ident, result);
+                Vec::new()
+            }
             Msg::Llm(LlmEvent::Noop) => Vec::new(),
             Msg::SendDone { card } => self.on_send_result(card, None),
             Msg::SendFailed { card, error } => self.on_send_result(card, Some(error)),
@@ -218,9 +254,17 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
-        if let Some(Overlay::Comment(_)) = &self.overlay {
-            self.on_comment_key(key);
-            return Vec::new();
+        match &self.overlay {
+            Some(Overlay::Comment(_)) => {
+                self.on_comment_key(key);
+                return Vec::new();
+            }
+            Some(Overlay::StepReason(_)) => return self.on_reason_key(key),
+            Some(Overlay::Search(_)) => {
+                self.on_search_key(key);
+                return Vec::new();
+            }
+            _ => {}
         }
         if key
             .modifiers
@@ -249,7 +293,10 @@ impl App {
                 self.queue.skip();
                 Vec::new()
             }
-            _ if self.overlay.is_none() => self.on_review_key(key),
+            _ if self.overlay.is_none() => match self.queue.current().map(|c| &c.kind) {
+                Some(CardKind::Step(_)) => self.on_step_key(key),
+                _ => self.on_review_key(key),
+            },
             _ => Vec::new(),
         }
     }

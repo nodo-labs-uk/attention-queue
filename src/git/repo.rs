@@ -142,3 +142,69 @@ pub fn file_at(c: &Checkout, tree: &str, path: &Path) -> Result<Option<String>> 
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
+
+/// One `git grep` match. `path` is relative to the checkout root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrepHit {
+    pub path: PathBuf,
+    pub line: u32,
+    pub text: String,
+}
+
+/// At most this many matches come back from `grep_word`.
+const GREP_MAX: usize = 200;
+
+/// Tracked files' lines containing `word` as a whole word.
+pub fn grep_word(c: &Checkout, word: &str) -> Result<Vec<GrepHit>> {
+    let mut cmd = git_cmd(c);
+    cmd.args(["grep", "-n", "-w", "-z", "-I", "--no-color", "-e", word]);
+    let out = run(cmd)?;
+    // Exit 1 means no match.
+    if !out.status.success() && out.status.code() != Some(1) {
+        bail!(
+            "git grep failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(parse_grep(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// `git grep -n -z` output: `path\0line\0text` per line.
+fn parse_grep(out: &str) -> Vec<GrepHit> {
+    out.lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\0');
+            Some(GrepHit {
+                path: PathBuf::from(parts.next()?),
+                line: parts.next()?.parse().ok()?,
+                text: parts.next()?.to_string(),
+            })
+        })
+        .take(GREP_MAX)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grep_output_keeps_colons_in_paths_and_text() {
+        let hits = parse_grep("a:b.rs\x0012\x00let x: u32 = 1;\nsrc/c.rs\x003\x00x\n");
+        assert_eq!(
+            hits,
+            [
+                GrepHit {
+                    path: "a:b.rs".into(),
+                    line: 12,
+                    text: "let x: u32 = 1;".into()
+                },
+                GrepHit {
+                    path: "src/c.rs".into(),
+                    line: 3,
+                    text: "x".into()
+                },
+            ]
+        );
+    }
+}
