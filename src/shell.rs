@@ -30,14 +30,6 @@ pub const OUTSIDE_TITLE: &str = "Changed outside a reviewed edit";
 /// Shown on a card when git's own settings changed.
 pub const GIT_WARNING: &str = "Git settings or hooks changed (.git/config, hooks or info)";
 
-/// Hash of a file's text, to tell whether it is as an approved edit left it.
-pub fn text_hash(text: &str) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    text.hash(&mut h);
-    h.finish()
-}
-
 /// Hashes of git's config, hooks and info files, by name.
 pub type Guard = BTreeMap<String, u64>;
 
@@ -86,9 +78,9 @@ pub struct SnapshotRequest {
     /// edit), and the agent that ran it.
     pub command: Option<(String, AgentId)>,
     /// A file an approved edit touched, relative to the checkout, and the
-    /// hash of its text as that edit leaves it. Left out of the diff only if
-    /// the new snapshot holds exactly that text.
-    pub approved: Option<(PathBuf, u64)>,
+    /// its text as that edit leaves it. Left out of the diff only if the new
+    /// snapshot holds exactly that text.
+    pub approved: Option<(PathBuf, String)>,
 }
 
 /// A snapshot taken: the new tree, its diff from the request's tree (without
@@ -124,7 +116,7 @@ pub fn without_path(files: Vec<FileDiff>, path: &Path) -> Vec<FileDiff> {
 }
 
 /// A snapshot waiting its turn: the command (`None`: a baseline) and edited file.
-type Queued = (Option<(String, AgentId)>, Option<(PathBuf, u64)>);
+type Queued = (Option<(String, AgentId)>, Option<(PathBuf, String)>);
 
 #[derive(Debug, Default)]
 pub struct Shell {
@@ -192,7 +184,7 @@ impl App {
         tool_input: &Value,
         edited: Option<&Path>,
         checkout: &Checkout,
-    ) -> Option<(PathBuf, u64)> {
+    ) -> Option<(PathBuf, String)> {
         let key = EditKey::new(session_id, tool_name, tool_input);
         let at = self
             .steps
@@ -222,7 +214,7 @@ impl App {
         &mut self,
         checkout: Checkout,
         command: Option<(String, AgentId)>,
-        approved: Option<(PathBuf, u64)>,
+        approved: Option<(PathBuf, String)>,
     ) -> Vec<Effect> {
         if self.shell.busy.contains(&checkout) {
             let queue = self.shell.queued.entry(checkout).or_default();
@@ -512,7 +504,7 @@ mod tests {
             path: PathBuf::from("/a").join(file),
             allowed: true,
             key: EditKey::new("s1", "Edit", &edit_input(file)),
-            after: Some(text_hash("two\n")),
+            after: Some("two\n".to_string()),
         });
     }
 
@@ -523,7 +515,7 @@ mod tests {
         let req = only_request(post_edit(&mut a, "a.txt"));
         assert_eq!(
             (req.from.as_deref(), req.approved.clone()),
-            (Some("t0"), Some(("a.txt".into(), text_hash("two\n"))))
+            (Some("t0"), Some(("a.txt".into(), "two\n".to_string())))
         );
         // The edited file is left out of the diff, so nothing else changed.
         snapshot(&mut a, req, "t1", Vec::new());

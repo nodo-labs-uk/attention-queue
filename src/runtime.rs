@@ -530,7 +530,7 @@ fn take_snapshot(req: SnapshotRequest) -> Msg {
                 // The edited file is explained only if it holds what was approved.
                 if let Some((path, approved)) = &req.approved {
                     let text = git::file_at(c, &tree, path)?;
-                    if text.as_deref().map(crate::shell::text_hash) == Some(*approved) {
+                    if text.as_deref() == Some(approved.as_str()) {
                         files = crate::shell::without_path(files, path);
                     }
                 }
@@ -789,13 +789,13 @@ mod tests {
             pane: "%1".into(),
             claude_pid: 1,
         };
-        let snap = |from: Option<&Taken>, command: bool, approved: Option<(&str, u64)>| {
+        let snap = |from: Option<&Taken>, command: bool, approved: Option<(&str, &str)>| {
             let Msg::Snapshot { result, .. } = take_snapshot(SnapshotRequest {
                 checkout: checkout.clone(),
                 from: from.map(|t| t.tree.clone()),
                 from_guard: from.map(|t| t.guard.clone()),
                 command: command.then(|| ("echo".to_string(), agent.clone())),
-                approved: approved.map(|(p, h)| (p.into(), h)),
+                approved: approved.map(|(p, t)| (p.into(), t.to_string())),
             }) else {
                 panic!("expected a snapshot");
             };
@@ -813,12 +813,11 @@ mod tests {
         std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
         assert_eq!(snap(Some(&base), true, None).files.len(), 2);
         // After an approved edit of a.txt only the unrelated b.txt is left.
-        let two = crate::shell::text_hash("two\n");
-        let t = snap(Some(&base), true, Some(("a.txt", two)));
+        let t = snap(Some(&base), true, Some(("a.txt", "two\n")));
         assert_eq!(t.files.len(), 1);
         assert_eq!(t.files[0].new_path.as_deref(), Some(Path::new("b.txt")));
         // Not what was approved: the file stays on the card.
-        let other = crate::shell::text_hash("something else\n");
+        let other = "something else\n";
         assert_eq!(
             snap(Some(&base), true, Some(("a.txt", other))).files.len(),
             2

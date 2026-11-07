@@ -438,8 +438,9 @@ pub struct Done {
     pub allowed: bool,
     /// The edit's identity, to match its PostToolUse report.
     pub key: EditKey,
-    /// Hash of the file as the allowed edit leaves it (`shell::text_hash`).
-    pub after: Option<u64>,
+    /// The file as the allowed edit leaves it, to check what a command or
+    /// the edit itself really wrote. Dropped with the history entry.
+    pub after: Option<String>,
 }
 
 /// Step state the app keeps outside the queue.
@@ -729,9 +730,7 @@ impl App {
             allowed,
             key: sc.key,
             after: match &sc.preview {
-                EditPreview::Placed { after, .. } if allowed => {
-                    Some(crate::shell::text_hash(after))
-                }
+                EditPreview::Placed { after, .. } if allowed => Some(after.clone()),
                 _ => None,
             },
         });

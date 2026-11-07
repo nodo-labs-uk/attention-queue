@@ -41,6 +41,7 @@ pub trait AgentConn: Send + Sync {
 /// Worktree root containing `dir`, if it is inside a git checkout.
 pub fn checkout_of(dir: &Path) -> Option<Checkout> {
     let out = crate::git::git_in(dir)
+        .ok()?
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()?;
