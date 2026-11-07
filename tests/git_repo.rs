@@ -4,6 +4,11 @@ use std::process::Command;
 use aq::git::*;
 use aq::model::Checkout;
 
+/// The branch base to a snapshot of the working tree, as a round-1 review sees it.
+fn branch_diff(c: &Checkout) -> anyhow::Result<Vec<FileDiff>> {
+    diff_trees(c, &base_tree(c)?, &snapshot_tree(c)?)
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .env_remove("GIT_DIR")

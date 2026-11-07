@@ -336,12 +336,6 @@ pub fn diff_trees(c: &Checkout, from: &str, to: &str) -> Result<Vec<FileDiff>> {
     Ok(parse_unified(&out.stdout))
 }
 
-pub fn branch_diff(c: &Checkout) -> Result<Vec<FileDiff>> {
-    let base = base_tree(c)?;
-    let snap = snapshot_tree(c)?;
-    diff_trees(c, &base, &snap)
-}
-
 /// File contents at `tree`, or `None` if the path does not exist there.
 /// Any other git failure (bad tree id, corrupt object) is an error.
 pub fn file_at(c: &Checkout, tree: &str, path: &Path) -> Result<Option<String>> {
