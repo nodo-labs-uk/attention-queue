@@ -66,7 +66,7 @@ async fn event_loop(
                 let Some(msg) = msg else { break };
                 for effect in app.update(msg) {
                     let job = match effect {
-                        Effect::Send { agent, text } => Job::Send { agent, text },
+                        Effect::Send { agent, text, card } => Job::Send { agent, text, card },
                         Effect::SaveState => Job::Save(app.config.clone()),
                         Effect::ComputeReview(req) => Job::Review(req),
                         Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
@@ -97,7 +97,11 @@ async fn event_loop(
 
 /// Blocking effect work, done in order on the effect worker.
 enum Job {
-    Send { agent: AgentId, text: String },
+    Send {
+        agent: AgentId,
+        text: String,
+        card: Option<u64>,
+    },
     Save(Config),
     Review(ReviewRequest),
     SaveRounds(BTreeMap<PathBuf, LastRound>),
@@ -114,13 +118,20 @@ fn spawn_effect_worker(
     let worker = std::thread::spawn(move || {
         for job in rx {
             let msg = match job {
-                Job::Send { agent, .. } if !conn.is_alive(&agent) => {
-                    Some(Msg::EffectFailed("agent gone".into()))
+                Job::Send { agent, text, card } => {
+                    let sent = if conn.is_alive(&agent) {
+                        conn.send_text(&agent, &text)
+                            .map_err(|e| format!("Could not send to {}: {e:#}", agent.pane))
+                    } else {
+                        Err("agent gone".to_string())
+                    };
+                    match (card, sent) {
+                        (Some(card), Ok(())) => Some(Msg::SendDone { card }),
+                        (Some(card), Err(error)) => Some(Msg::SendFailed { card, error }),
+                        (None, Ok(())) => None,
+                        (None, Err(e)) => Some(Msg::EffectFailed(e)),
+                    }
                 }
-                Job::Send { agent, text } => conn
-                    .send_text(&agent, &text)
-                    .err()
-                    .map(|e| Msg::EffectFailed(format!("Could not send to {}: {e:#}", agent.pane))),
                 Job::Save(config) => config
                     .save(&paths.config_file)
                     .err()

@@ -27,6 +27,15 @@ pub enum Msg {
     EffectFailed(String),
     Ipc(IpcEvent),
     Llm(LlmEvent),
+    /// A `Send` for a review card reached the agent.
+    SendDone {
+        card: u64,
+    },
+    /// A `Send` for a review card failed; the card stays.
+    SendFailed {
+        card: u64,
+        error: String,
+    },
     /// The diff a `ComputeReview` effect asked for.
     ReviewComputed {
         req: ReviewRequest,
@@ -56,6 +65,8 @@ pub enum Effect {
     Send {
         agent: AgentId,
         text: String,
+        /// The review card this sends; it closes only once the send succeeds.
+        card: Option<u64>,
     },
     Reply {
         req_id: u64,
@@ -95,6 +106,8 @@ pub struct App {
     pub quit: bool,
     /// Last sent review round per checkout root.
     pub rounds: BTreeMap<PathBuf, LastRound>,
+    /// Review cards whose message is on its way, with the status to show once it lands.
+    sending: BTreeMap<u64, String>,
     next_card_id: u64,
 }
 
@@ -126,6 +139,7 @@ impl App {
             status_msg: None,
             quit: false,
             rounds: BTreeMap::new(),
+            sending: BTreeMap::new(),
             next_card_id: 0,
         }
     }
@@ -177,6 +191,8 @@ impl App {
             }
             Msg::Ipc(IpcEvent::Noop) => Vec::new(),
             Msg::Llm(LlmEvent::Noop) => Vec::new(),
+            Msg::SendDone { card } => self.on_send_result(card, None),
+            Msg::SendFailed { card, error } => self.on_send_result(card, Some(error)),
             Msg::ReviewComputed {
                 req,
                 from_tree,
@@ -388,8 +404,10 @@ impl App {
         }
     }
 
-    /// `S` (send this round's comments) or `A` (approve). Either way the card
-    /// closes and its snapshot becomes the start of the next round.
+    /// `S` (send this round's comments) or `A` (approve). The card closes,
+    /// and its snapshot becomes the start of the next round, only once the
+    /// message has reached the agent (`Msg::SendDone`), or at once when
+    /// nothing is sent: approving an agent that is working or gone.
     fn finish_review(&mut self, approve: bool) -> Vec<Effect> {
         let Some(card) = self.queue.current() else {
             return Vec::new();
@@ -397,30 +415,60 @@ impl App {
         let CardKind::Review(rc) = &card.kind else {
             return Vec::new();
         };
-        let Some(agent) = self.agent(&card.agent) else {
-            self.set_status("agent gone");
+        let id = card.id;
+        if self.sending.contains_key(&id) {
+            self.set_status("Still sending");
             return Vec::new();
-        };
-        let n = rc.current_comments().count();
-        let (text, status) = if approve {
-            (
-                agent.waiting.then(|| APPROVE_MESSAGE.to_string()),
-                "Approved".to_string(),
-            )
-        } else if n == 0 {
-            self.set_status("No comments to send; A approves");
-            return Vec::new();
+        }
+        let agent = self.agent(&card.agent);
+        let (text, done) = if approve {
+            if !agent.is_some_and(|a| a.waiting) {
+                return self.close_review(id, "Approved".into());
+            }
+            (APPROVE_MESSAGE.to_string(), "Approved".to_string())
         } else {
+            let Some(agent) = agent else {
+                self.set_status("agent gone");
+                return Vec::new();
+            };
+            let n = rc.current_comments().count();
+            if n == 0 {
+                self.set_status("No comments to send; A approves");
+                return Vec::new();
+            }
             let s = if n == 1 { "" } else { "s" };
             (
-                Some(review::compose_message(rc)),
+                review::compose_message(rc),
                 format!("Sent {n} comment{s} to {}", agent.window_name),
             )
         };
-        let id = card.id;
+        let agent = card.agent.clone();
+        self.sending.insert(id, done);
+        self.set_status("Sending");
+        vec![Effect::Send {
+            agent,
+            text,
+            card: Some(id),
+        }]
+    }
+
+    fn on_send_result(&mut self, card: u64, error: Option<String>) -> Vec<Effect> {
+        let Some(done) = self.sending.remove(&card) else {
+            return Vec::new();
+        };
+        match error {
+            None => self.close_review(card, done),
+            Some(e) => {
+                self.set_status(e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Removes review card `id` and records its round.
+    fn close_review(&mut self, id: u64, status: String) -> Vec<Effect> {
         let Some(Card {
             checkout,
-            agent,
             kind: CardKind::Review(rc),
             ..
         }) = self.queue.remove(id)
@@ -436,12 +484,7 @@ impl App {
             },
         );
         self.set_status(status);
-        let mut effects: Vec<Effect> = text
-            .map(|text| Effect::Send { agent, text })
-            .into_iter()
-            .collect();
-        effects.push(Effect::SaveRounds);
-        effects
+        vec![Effect::SaveRounds]
     }
 
     fn toggle_full_branch(&mut self) -> Vec<Effect> {
@@ -785,19 +828,25 @@ pub(crate) mod tests {
         a.update(ctrl('s'));
         assert_eq!(a.overlay, None);
         assert_eq!(review(&a).comments[0].body, "store down?S");
+        let id = a.queue.current().unwrap().id;
         let effects = a.update(key('S'));
         assert_eq!(
             effects,
-            [
-                Effect::Send {
-                    agent: a.agents[0].id.clone(),
-                    text: "Review comments (round 1):\n\nsrc/limit.rs:40\n\
-                           > let b = store.get(key).unwrap_or_default();\nstore down?S"
-                        .into(),
-                },
-                Effect::SaveRounds,
-            ]
+            [Effect::Send {
+                agent: a.agents[0].id.clone(),
+                text: "Review comments (round 1):\n\nsrc/limit.rs:40\n\
+                       > let b = store.get(key).unwrap_or_default();\nstore down?S"
+                    .into(),
+                card: Some(id),
+            }]
         );
+        assert_eq!(a.queue.len(), 1, "the card waits for the send");
+        assert!(a.rounds.is_empty());
+        assert!(
+            a.update(key('S')).is_empty(),
+            "no second send while sending"
+        );
+        assert_eq!(a.update(Msg::SendDone { card: id }), [Effect::SaveRounds]);
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
         assert_eq!(a.status_text(), Some("Sent 1 comment to api"));
@@ -829,8 +878,59 @@ pub(crate) mod tests {
         );
         assert_eq!(a.status_text(), Some("agent gone"));
         assert_eq!(a.queue.len(), 1, "the card stays");
-        assert!(a.update(key('A')).is_empty());
+    }
+
+    #[test]
+    fn approve_with_gone_agent_closes_without_sending() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        a.update(Msg::Agents(Vec::new()));
+        assert_eq!(a.update(key('A')), [Effect::SaveRounds]);
+        assert!(a.queue.is_empty());
+        assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
+    }
+
+    #[test]
+    fn failed_send_keeps_card_comments_and_baseline() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        a.update(key('c'));
+        typed(&mut a, "keep me");
+        a.update(ctrl('s'));
+        let id = a.queue.current().unwrap().id;
+        a.update(key('S'));
+        let effects = a.update(Msg::SendFailed {
+            card: id,
+            error: "agent gone".into(),
+        });
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(a.status_text(), Some("agent gone"));
         assert_eq!(a.queue.len(), 1);
+        assert_eq!(review(&a).comments[0].body, "keep me");
+        assert_eq!(review(&a).current_comments().count(), 1);
+        assert!(a.rounds.is_empty());
+        // The user can try again.
+        assert!(matches!(
+            a.update(key('S')).as_slice(),
+            [Effect::Send { .. }]
+        ));
+    }
+
+    #[test]
+    fn send_done_closes_card_and_records_round() {
+        let mut a = app();
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
+        let id = a.queue.current().unwrap().id;
+        a.update(key('A'));
+        assert_eq!(a.queue.len(), 1);
+        assert_eq!(a.update(Msg::SendDone { card: id }), [Effect::SaveRounds]);
+        assert!(a.queue.is_empty());
+        let last = &a.rounds[&PathBuf::from("/a")];
+        assert_eq!((last.tree.as_str(), last.round), ("t1", 1));
+        assert_eq!(a.status_text(), Some("Approved"));
     }
 
     #[test]
@@ -838,16 +938,16 @@ pub(crate) mod tests {
         let mut a = app();
         let req = finish_round(&mut a);
         a.update(computed(req.clone(), "base", "t1", fixture_files()));
+        let id = a.queue.current().unwrap().id;
         assert_eq!(
             a.update(key('A')),
-            [
-                Effect::Send {
-                    agent: a.agents[0].id.clone(),
-                    text: "Approved, carry on.".into()
-                },
-                Effect::SaveRounds
-            ]
+            [Effect::Send {
+                agent: a.agents[0].id.clone(),
+                text: "Approved, carry on.".into(),
+                card: Some(id),
+            }]
         );
+        a.update(Msg::SendDone { card: id });
         assert!(a.queue.is_empty());
         // The agent is working again by the time the user approves the next round.
         a.update(computed(req, "t1", "t2", fixture_files()));
@@ -865,7 +965,9 @@ pub(crate) mod tests {
         a.update(key('c'));
         typed(&mut a, "first");
         a.update(ctrl('s'));
+        let id = a.queue.current().unwrap().id;
         a.update(key('S'));
+        a.update(Msg::SendDone { card: id });
 
         let req = finish_round(&mut a);
         assert_eq!(req.from_tree.as_deref(), Some("t1"));
@@ -876,6 +978,14 @@ pub(crate) mod tests {
         assert_eq!(rc.comments.len(), 1, "round 1 comment shown as old");
         assert_eq!(rc.comments[0].round, 1);
         assert_eq!(rc.current_comments().count(), 0, "and not resent");
+    }
+
+    /// `A`, and the send (if any) succeeds.
+    fn approve(a: &mut App) {
+        let id = a.queue.current().unwrap().id;
+        if !a.update(key('A')).is_empty() {
+            a.update(Msg::SendDone { card: id });
+        }
     }
 
     fn toggle(a: &mut App) -> ReviewRequest {
@@ -894,7 +1004,7 @@ pub(crate) mod tests {
             a.update(key('R')).is_empty(),
             "round 1 is already the whole branch"
         );
-        a.update(key('A'));
+        approve(&mut a);
 
         let req = finish_round(&mut a);
         a.update(computed(req, "t1", "t2", fixture_files()));
@@ -910,7 +1020,7 @@ pub(crate) mod tests {
         let r = toggle(&mut a);
         assert_eq!((r.from_tree.as_deref(), r.full_branch), (Some("t1"), false));
         // A recompute for a card closed meanwhile makes no new card.
-        a.update(key('A'));
+        approve(&mut a);
         a.update(computed(r, "t1", "t4", fixture_files()));
         assert!(a.queue.is_empty());
     }

@@ -121,6 +121,16 @@ fn join(
     agents
 }
 
+/// `text` without control characters other than newline and tab, C1 controls
+/// (U+0080 to U+009F) included. Text pasted into a pane may come from diffs;
+/// an escape sequence such as `ESC [201~` (end of bracketed paste) would
+/// otherwise be read by the terminal as keystrokes.
+pub fn strip_controls(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+        .collect()
+}
+
 impl AgentConn for TmuxConn {
     fn list(&self) -> Result<Vec<Agent>> {
         let panes = self.list_panes()?;
@@ -140,7 +150,7 @@ impl AgentConn for TmuxConn {
         load.stdin
             .take()
             .context("no stdin")?
-            .write_all(text.as_bytes())?;
+            .write_all(strip_controls(text).as_bytes())?;
         let out = load.wait_with_output()?;
         anyhow::ensure!(out.status.success(), "tmux load-buffer failed");
         self.run(&["paste-buffer", "-p", "-d", "-b", "aq", "-t", pane])?;
@@ -159,6 +169,18 @@ impl AgentConn for TmuxConn {
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};
     use super::*;
+
+    #[test]
+    fn strip_controls_keeps_only_newline_and_tab() {
+        assert_eq!(
+            strip_controls("a\x1b[201~b\x1bc\r\0d\u{9b}31m\u{80}\u{9f}e\x7f"),
+            "a[201~bcd31me"
+        );
+        assert_eq!(
+            strip_controls("line one\n\tindented, ünïcode\nend"),
+            "line one\n\tindented, ünïcode\nend"
+        );
+    }
 
     #[test]
     fn parses_pane_lines() {
