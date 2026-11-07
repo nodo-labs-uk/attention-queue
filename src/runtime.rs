@@ -1,7 +1,9 @@
 //! The impure shell around `App::update`: terminal, agent polling, key input,
 //! rendering and effects.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -13,6 +15,7 @@ use tokio::time::Instant;
 use crate::agents::AgentConn;
 use crate::app::{App, Effect, Msg};
 use crate::config::{Config, Paths};
+use crate::model::AgentId;
 use crate::theme::load_themes;
 
 const AGENT_POLL: Duration = Duration::from_secs(1);
@@ -40,7 +43,8 @@ async fn event_loop(
     conn: Arc<dyn AgentConn>,
 ) -> Result<()> {
     let (tx, mut rx) = unbounded_channel();
-    spawn_agent_poll(tx.clone(), conn.clone());
+    let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.config_file.clone());
+    spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
     spawn_ticker(tx);
 
@@ -51,7 +55,14 @@ async fn event_loop(
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
                 for effect in app.update(msg) {
-                    run_effect(app, paths, conn.as_ref(), effect);
+                    let job = match effect {
+                        Effect::Send { agent, text } => Job::Send { agent, text },
+                        Effect::SaveState => Job::Save(app.config.clone()),
+                        // Hook replies and LLM work arrive with the socket server and the LLM worker.
+                        Effect::Reply { .. } | Effect::Llm(_) => continue,
+                    };
+                    // The worker outlives the loop, so this cannot fail while we run.
+                    let _ = jobs.send(job);
                 }
                 dirty = true;
             }
@@ -62,26 +73,46 @@ async fn event_loop(
             }
         }
     }
+    // Let queued saves and sends finish before exit.
+    drop(jobs);
+    let _ = worker.join();
     Ok(())
 }
 
-fn run_effect(app: &mut App, paths: &Paths, conn: &dyn AgentConn, effect: Effect) {
-    let failed = match effect {
-        Effect::Send { agent, text } => conn
-            .send_text(&agent, &text)
-            .err()
-            .map(|e| format!("Could not send to {}: {e:#}", agent.pane)),
-        Effect::SaveState => app
-            .config
-            .save(&paths.config_file)
-            .err()
-            .map(|e| format!("Could not save settings: {e:#}")),
-        // Hook replies and LLM work arrive with the socket server and the LLM worker.
-        Effect::Reply { .. } | Effect::Llm(_) => None,
-    };
-    if failed.is_some() {
-        app.status_msg = failed;
-    }
+/// Blocking effect work, done in order on the effect worker.
+enum Job {
+    Send { agent: AgentId, text: String },
+    Save(Config),
+}
+
+/// Runs effects off the event loop, one at a time so they land in order.
+/// Failures come back as `Msg::EffectFailed`.
+fn spawn_effect_worker(
+    tx: UnboundedSender<Msg>,
+    conn: Arc<dyn AgentConn>,
+    config_file: PathBuf,
+) -> (std::sync::mpsc::Sender<Job>, JoinHandle<()>) {
+    let (jobs, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        for job in rx {
+            let failed = match job {
+                Job::Send { agent, text } => conn
+                    .send_text(&agent, &text)
+                    .err()
+                    .map(|e| format!("Could not send to {}: {e:#}", agent.pane)),
+                Job::Save(config) => config
+                    .save(&config_file)
+                    .err()
+                    .map(|e| format!("Could not save settings: {e:#}")),
+            };
+            if let Some(e) = failed
+                && tx.send(Msg::EffectFailed(e)).is_err()
+            {
+                return;
+            }
+        }
+    });
+    (jobs, worker)
 }
 
 fn spawn_agent_poll(tx: UnboundedSender<Msg>, conn: Arc<dyn AgentConn>) {
@@ -89,9 +120,12 @@ fn spawn_agent_poll(tx: UnboundedSender<Msg>, conn: Arc<dyn AgentConn>) {
         loop {
             let conn = conn.clone();
             // A failed poll keeps the last known list; the next poll retries.
-            if let Ok(Ok(agents)) = tokio::task::spawn_blocking(move || conn.list()).await
-                && tx.send(Msg::Agents(agents)).is_err()
-            {
+            let msg = match tokio::task::spawn_blocking(move || conn.list()).await {
+                Ok(Ok(agents)) => Msg::Agents(agents),
+                Ok(Err(e)) => Msg::AgentsFailed(format!("{e:#}")),
+                Err(e) => Msg::AgentsFailed(e.to_string()),
+            };
+            if tx.send(msg).is_err() {
                 return;
             }
             tokio::time::sleep(AGENT_POLL).await;
@@ -106,7 +140,7 @@ fn spawn_key_reader(tx: UnboundedSender<Msg>) {
             let msg = match ev {
                 Event::Key(key) => Msg::Key(key),
                 // A tick redraws, which picks up the new size.
-                Event::Resize(..) => Msg::Tick,
+                Event::Resize(..) => Msg::Tick(std::time::Instant::now()),
                 _ => continue,
             };
             if tx.send(msg).is_err() {
@@ -121,7 +155,7 @@ fn spawn_ticker(tx: UnboundedSender<Msg>) {
         let mut every = tokio::time::interval(TICK);
         loop {
             every.tick().await;
-            if tx.send(Msg::Tick).is_err() {
+            if tx.send(Msg::Tick(std::time::Instant::now())).is_err() {
                 return;
             }
         }

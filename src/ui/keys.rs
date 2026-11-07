@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -31,13 +31,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(format!(" {label}   "), Style::new().fg(t.dim)));
     }
     let base = Style::new().bg(t.panel).fg(t.fg);
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(base), area);
-    if let Some(msg) = &app.status_msg {
+    let keys = Line::from(spans);
+    let keys_w = (keys.width() as u16).min(area.width);
+    frame.render_widget(Paragraph::new(keys).style(base), area);
+    if let Some(msg) = app.status_text() {
+        // Only the space right of the keys; a message too long for it is cut at the end.
+        let [_, rest] =
+            Layout::horizontal([Constraint::Length(keys_w), Constraint::Fill(1)]).areas(area);
+        let text = format!("{msg} ");
+        let align = if text.chars().count() > rest.width as usize {
+            Alignment::Left
+        } else {
+            Alignment::Right
+        };
         frame.render_widget(
-            Paragraph::new(format!("{msg} "))
+            Paragraph::new(text)
                 .style(Style::new().fg(t.hi))
-                .alignment(Alignment::Right),
-            area,
+                .alignment(align),
+            rest,
         );
     }
 }

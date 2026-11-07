@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::agents::Agent;
@@ -11,8 +13,13 @@ use crate::theme::Theme;
 #[derive(Debug)]
 pub enum Msg {
     Key(KeyEvent),
-    Tick,
+    /// Time passes; `now` comes from the runtime so `update` stays pure.
+    Tick(Instant),
     Agents(Vec<Agent>),
+    /// Listing agents failed; the last known list stays.
+    AgentsFailed(String),
+    /// A `Send` or `SaveState` effect failed in the runtime.
+    EffectFailed(String),
     Ipc(IpcEvent),
     Llm(LlmEvent),
 }
@@ -46,8 +53,19 @@ pub struct App {
     pub themes: Vec<Theme>,
     pub theme_idx: usize,
     pub overlay: Option<Overlay>,
-    pub status_msg: Option<String>,
+    pub status_msg: Option<Status>,
     pub quit: bool,
+}
+
+/// How long a status message stays on screen.
+pub const STATUS_FOR: Duration = Duration::from_secs(5);
+
+/// A status line message. Its clock starts at the first tick after it is set,
+/// so `update` never reads the real clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub text: String,
+    shown_at: Option<Instant>,
 }
 
 impl App {
@@ -73,6 +91,27 @@ impl App {
         &self.themes[self.theme_idx]
     }
 
+    pub fn status_text(&self) -> Option<&str> {
+        self.status_msg.as_ref().map(|s| s.text.as_str())
+    }
+
+    fn set_status(&mut self, text: impl Into<String>) {
+        self.status_msg = Some(Status {
+            text: text.into(),
+            shown_at: None,
+        });
+    }
+
+    fn expire_status(&mut self, now: Instant) {
+        let Some(status) = &mut self.status_msg else {
+            return;
+        };
+        let shown_at = *status.shown_at.get_or_insert(now);
+        if now.duration_since(shown_at) >= STATUS_FOR {
+            self.status_msg = None;
+        }
+    }
+
     pub fn agent(&self, id: &AgentId) -> Option<&Agent> {
         self.agents.iter().find(|a| &a.id == id)
     }
@@ -80,8 +119,19 @@ impl App {
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
             Msg::Key(key) => self.on_key(key),
-            Msg::Tick => Vec::new(),
+            Msg::Tick(now) => {
+                self.expire_status(now);
+                Vec::new()
+            }
             Msg::Agents(agents) => self.on_agents(agents),
+            Msg::AgentsFailed(e) => {
+                self.set_status(format!("Could not list agents: {e}"));
+                Vec::new()
+            }
+            Msg::EffectFailed(e) => {
+                self.set_status(e);
+                Vec::new()
+            }
             Msg::Ipc(IpcEvent::Noop) => Vec::new(),
             Msg::Llm(LlmEvent::Noop) => Vec::new(),
         }
@@ -125,13 +175,13 @@ impl App {
     fn next_theme(&mut self) -> Vec<Effect> {
         self.theme_idx = (self.theme_idx + 1) % self.themes.len();
         self.config.theme = self.theme().name.clone();
-        self.status_msg = Some(format!("Theme: {}", self.config.theme));
+        self.set_status(format!("Theme: {}", self.config.theme));
         vec![Effect::SaveState]
     }
 
     fn cycle_mode(&mut self) -> Vec<Effect> {
         let Some(checkout) = self.queue.current().map(|c| c.checkout.clone()) else {
-            self.status_msg = Some("No card, so no project to set a mode for".into());
+            self.set_status("No card, so no project to set a mode for");
             return Vec::new();
         };
         let mode = match self.config.mode_for(&checkout) {
@@ -140,7 +190,7 @@ impl App {
             Mode::Quiz => Mode::Review,
         };
         self.config.set_mode(&checkout, mode);
-        self.status_msg = Some(format!("{}: {}", project_name(&checkout), mode_label(mode)));
+        self.set_status(format!("{}: {}", project_name(&checkout), mode_label(mode)));
         vec![Effect::SaveState]
     }
 
@@ -281,6 +331,43 @@ pub(crate) mod tests {
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
         assert!(a.agents[0].waiting);
+    }
+
+    #[test]
+    fn agents_failure_shows_and_keeps_list() {
+        let mut a = app();
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        a.update(Msg::AgentsFailed("tmux not found".into()));
+        assert_eq!(
+            a.status_text(),
+            Some("Could not list agents: tmux not found")
+        );
+        assert_eq!(a.agents.len(), 1);
+    }
+
+    #[test]
+    fn effect_failure_shows() {
+        let mut a = app();
+        a.update(Msg::EffectFailed("Could not send: pane gone".into()));
+        assert_eq!(a.status_text(), Some("Could not send: pane gone"));
+    }
+
+    #[test]
+    fn status_expires_five_seconds_after_first_tick() {
+        let mut a = app();
+        let t0 = Instant::now();
+        a.update(key('T'));
+        a.update(Msg::Tick(t0));
+        a.update(Msg::Tick(t0 + Duration::from_millis(4900)));
+        assert!(a.status_text().is_some());
+        a.update(Msg::Tick(t0 + Duration::from_secs(5)));
+        assert_eq!(a.status_text(), None);
+        // A new message starts its own five seconds.
+        a.update(key('T'));
+        a.update(Msg::Tick(t0 + Duration::from_secs(9)));
+        assert!(a.status_text().is_some());
+        a.update(Msg::Tick(t0 + Duration::from_secs(14)));
+        assert_eq!(a.status_text(), None);
     }
 
     #[test]

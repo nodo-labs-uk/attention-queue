@@ -156,6 +156,18 @@ mod tests {
     }
 
     #[test]
+    fn long_status_leaves_keys_visible() {
+        let mut a = app();
+        a.update(crate::app::Msg::AgentsFailed(
+            "running tmux list-panes: No such file or directory (os error 2)".into(),
+        ));
+        let screen = render(&a, 60, 3);
+        let last = screen.lines().last().unwrap();
+        assert!(last.contains("Q quit"), "{last}");
+        assert!(last.contains("Could not list agents"), "{last}");
+    }
+
+    #[test]
     fn empty_state_without_agents() {
         insta::assert_snapshot!(render(&app(), 50, 7));
     }
