@@ -3,6 +3,8 @@ pub mod procs;
 pub mod tmux;
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
+use std::time::Duration;
 
 use anyhow::Result;
 
@@ -36,6 +38,16 @@ pub trait AgentConn: Send + Sync {
     fn list(&self) -> Result<Vec<Agent>>;
     fn send_text(&self, agent: &AgentId, text: &str) -> Result<()>;
     fn is_alive(&self, agent: &AgentId) -> bool;
+}
+
+/// Runs `cmd` with `input` on stdin and returns its status, stdout and
+/// stderr; past `timeout` it is killed and this is an error.
+pub fn run_for(
+    cmd: Command,
+    input: &str,
+    timeout: Duration,
+) -> Result<(ExitStatus, String, String)> {
+    crate::llm::run_child(cmd, input, timeout, &crate::llm::Children::default())
 }
 
 /// Worktree root containing `dir`, if it is inside a git checkout.

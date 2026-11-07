@@ -1,6 +1,7 @@
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -52,10 +53,42 @@ fn parse_line(line: &str) -> Option<Pane> {
     })
 }
 
+/// The most a tmux call may take.
+const TMUX_TIMEOUT: Duration = Duration::from_secs(5);
+/// `claude agents --json` is costly (a node process, about 150 MB), so it
+/// runs again only when the panes change, or after this long.
+const PROCS_EVERY: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone, Default)]
 pub struct TmuxConn {
     /// `Some(name)` adds `-L name` (private server, used by tests).
     pub socket: Option<String>,
+    /// The last `claude agents --json` list and what it was taken for.
+    pub procs: Arc<Mutex<Option<ProcsSeen>>>,
+}
+
+/// A `claude agents --json` list, the panes it was taken with and when.
+#[derive(Debug, Clone)]
+pub struct ProcsSeen {
+    pub panes: Vec<PaneKey>,
+    pub at: Instant,
+    pub procs: Vec<ClaudeProc>,
+}
+
+/// What of a pane says the agents in it may have changed: its id, pid,
+/// command and waiting flag (a turn ending changes `claude`'s status).
+pub type PaneKey = (String, u32, String, bool);
+
+pub fn pane_keys(panes: &[Pane]) -> Vec<PaneKey> {
+    panes
+        .iter()
+        .map(|p| (p.pane_id.clone(), p.pane_pid, p.command.clone(), p.waiting))
+        .collect()
+}
+
+/// Whether `seen` can stand for the agents in `panes` at `now`.
+pub fn procs_fresh(seen: Option<&ProcsSeen>, panes: &[PaneKey], now: Instant) -> bool {
+    seen.is_some_and(|s| s.panes == panes && now.saturating_duration_since(s.at) < PROCS_EVERY)
 }
 
 impl TmuxConn {
@@ -68,24 +101,40 @@ impl TmuxConn {
     }
 
     fn list_panes(&self) -> Result<Vec<Pane>> {
-        let out = self
-            .cmd()
-            .args(["list-panes", "-a", "-F", LIST_PANES_FORMAT])
-            .output()
-            .context("running tmux list-panes")?;
-        anyhow::ensure!(out.status.success(), "tmux list-panes failed");
-        Ok(parse_list_panes(&String::from_utf8_lossy(&out.stdout)))
+        let mut cmd = self.cmd();
+        cmd.args(["list-panes", "-a", "-F", LIST_PANES_FORMAT]);
+        let (status, out, _) =
+            super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux list-panes")?;
+        anyhow::ensure!(status.success(), "tmux list-panes failed");
+        Ok(parse_list_panes(&out))
     }
 
-    fn run(&self, args: &[&str]) -> Result<()> {
-        let out = self.cmd().args(args).output().context("running tmux")?;
-        anyhow::ensure!(
-            out.status.success(),
-            "tmux {} failed: {}",
-            args[0],
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+    /// Runs tmux with `args` and `input` on stdin, for at most `TMUX_TIMEOUT`.
+    fn run(&self, args: &[&str], input: &str) -> Result<()> {
+        let mut cmd = self.cmd();
+        cmd.args(args);
+        let (status, _, err) = super::run_for(cmd, input, TMUX_TIMEOUT)
+            .with_context(|| format!("running tmux {}", args[0]))?;
+        anyhow::ensure!(status.success(), "tmux {} failed: {}", args[0], err.trim());
         Ok(())
+    }
+
+    /// The claude processes, from the last list while the panes look the same.
+    fn procs(&self, panes: &[Pane]) -> Result<Vec<ClaudeProc>> {
+        let keys = pane_keys(panes);
+        let mut seen = self.procs.lock().unwrap_or_else(|e| e.into_inner());
+        if procs_fresh(seen.as_ref(), &keys, Instant::now())
+            && let Some(s) = seen.as_ref()
+        {
+            return Ok(s.procs.clone());
+        }
+        let procs = list_claude_procs()?;
+        *seen = Some(ProcsSeen {
+            panes: keys,
+            at: Instant::now(),
+            procs: procs.clone(),
+        });
+        Ok(procs)
     }
 }
 
@@ -134,27 +183,15 @@ pub fn strip_controls(text: &str) -> String {
 impl AgentConn for TmuxConn {
     fn list(&self) -> Result<Vec<Agent>> {
         let panes = self.list_panes()?;
-        let procs = list_claude_procs()?;
+        let procs = self.procs(&panes)?;
         Ok(join(&panes, &procs, is_ancestor))
     }
 
     fn send_text(&self, agent: &AgentId, text: &str) -> Result<()> {
         let pane = agent.pane.as_str();
-        let mut load = self
-            .cmd()
-            .args(["load-buffer", "-b", "aq", "-"])
-            .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("running tmux load-buffer")?;
-        load.stdin
-            .take()
-            .context("no stdin")?
-            .write_all(strip_controls(text).as_bytes())?;
-        let out = load.wait_with_output()?;
-        anyhow::ensure!(out.status.success(), "tmux load-buffer failed");
-        self.run(&["paste-buffer", "-p", "-d", "-b", "aq", "-t", pane])?;
-        self.run(&["send-keys", "-t", pane, "Enter"])
+        self.run(&["load-buffer", "-b", "aq", "-"], &strip_controls(text))?;
+        self.run(&["paste-buffer", "-p", "-d", "-b", "aq", "-t", pane], "")?;
+        self.run(&["send-keys", "-t", pane, "Enter"], "")
     }
 
     fn is_alive(&self, agent: &AgentId) -> bool {
@@ -251,6 +288,30 @@ mod tests {
     #[test]
     fn join_drops_process_without_pane() {
         assert!(join(&fixture_panes(), &fixture_procs(), |_, _| false).is_empty());
+    }
+
+    #[test]
+    fn claude_agents_runs_again_only_when_panes_change_or_after_ten_seconds() {
+        let panes = fixture_panes();
+        let keys = pane_keys(&panes);
+        let t = Instant::now();
+        let seen = ProcsSeen {
+            panes: keys.clone(),
+            at: t,
+            procs: Vec::new(),
+        };
+        assert!(!procs_fresh(None, &keys, t));
+        assert!(procs_fresh(Some(&seen), &keys, t + Duration::from_secs(9)));
+        assert!(!procs_fresh(Some(&seen), &keys, t + PROCS_EVERY));
+        let mut waiting = panes.clone();
+        waiting[0].waiting = !waiting[0].waiting;
+        assert!(!procs_fresh(Some(&seen), &pane_keys(&waiting), t));
+        let mut fewer = panes.clone();
+        fewer.pop();
+        assert!(!procs_fresh(Some(&seen), &pane_keys(&fewer), t));
+        let mut started = panes;
+        started[7].command = "claude".into();
+        assert!(!procs_fresh(Some(&seen), &pane_keys(&started), t));
     }
 
     #[test]

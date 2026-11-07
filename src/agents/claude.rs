@@ -5,6 +5,9 @@ use std::process::Command;
 
 use super::AgentStatus;
 
+/// The most `claude agents --json` may take.
+const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeProc {
     pub pid: u32,
@@ -65,12 +68,12 @@ pub fn list_claude_procs() -> Result<Vec<ClaudeProc>> {
             .with_context(|| format!("reading {}", path.to_string_lossy()))?;
         return parse_agents_json(&text);
     }
-    let out = Command::new("claude")
-        .args(["agents", "--json"])
-        .output()
-        .context("running claude agents --json")?;
-    anyhow::ensure!(out.status.success(), "claude agents --json failed");
-    parse_agents_json(&String::from_utf8_lossy(&out.stdout))
+    let mut cmd = Command::new("claude");
+    cmd.args(["agents", "--json"]);
+    let (status, out, _) =
+        super::run_for(cmd, "", LIST_TIMEOUT).context("running claude agents --json")?;
+    anyhow::ensure!(status.success(), "claude agents --json failed");
+    parse_agents_json(&out)
 }
 
 #[cfg(test)]

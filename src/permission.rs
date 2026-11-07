@@ -2,7 +2,7 @@
 //! waits here for y or n. Pure apart from `go_to_window`.
 
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -412,13 +412,12 @@ pub fn go_to_window(pane: &str, server: &[&str]) -> Result<()> {
         bail!("no pane to go to");
     }
     let tmux = |args: &[&str]| -> Result<()> {
-        let out = Command::new("tmux")
-            .args(server)
-            .args(args)
-            .output()
-            .context("running tmux")?;
-        if !out.status.success() {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        let mut cmd = Command::new("tmux");
+        cmd.args(server).args(args);
+        let (status, _, err) =
+            crate::agents::run_for(cmd, "", Duration::from_secs(5)).context("running tmux")?;
+        if !status.success() {
+            bail!("{}", err.trim());
         }
         Ok(())
     };

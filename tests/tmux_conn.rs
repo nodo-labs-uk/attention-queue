@@ -30,6 +30,7 @@ fn send_text_reaches_pane() {
 
     let conn = TmuxConn {
         socket: Some(socket.clone()),
+        ..Default::default()
     };
     let id = AgentId {
         pane,
