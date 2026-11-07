@@ -1,6 +1,12 @@
 pub mod agents;
+pub mod app;
 pub mod config;
 pub mod git;
 pub mod highlight;
+pub mod ipc;
+pub mod llm;
 pub mod model;
+pub mod queue;
+pub mod runtime;
 pub mod theme;
+pub mod ui;

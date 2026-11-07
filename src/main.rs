@@ -1,6 +1,6 @@
-// Scaffolding: later tasks consume the model and config items.
-#![allow(dead_code)]
+use std::sync::Arc;
 
+use aq::agents::TmuxConn;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -32,11 +32,14 @@ enum HookKind {
     Permission,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        None => println!("not yet"),
+        None => {
+            let conn = Arc::new(TmuxConn::default());
+            tokio::runtime::Runtime::new()?.block_on(aq::runtime::run(aq::config::paths(), conn))
+        }
         // With no aq listening a hook must exit 0 silently.
-        Some(Command::Hook { .. }) => {}
+        Some(Command::Hook { .. }) => Ok(()),
     }
 }

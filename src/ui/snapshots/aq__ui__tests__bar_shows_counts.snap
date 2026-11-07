@@ -1,0 +1,10 @@
+---
+source: src/ui/mod.rs
+expression: "render(&a, 90, 6)"
+---
+" aq  permission api · api                                 1 permission  1 step  2 review  "
+"                                                                                          "
+" permission  api  window api  review board                                                "
+" shared checkout: diff may mix work from windows api and api-tests                        "
+"                                                                                          "
+" ? ask   s skip   M mode   T theme   Q quit                                               "
