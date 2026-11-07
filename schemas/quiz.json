@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "questions": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["choice", "free"] },
+          "question": { "type": "string" },
+          "choices": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": { "type": "string" }
+          },
+          "answer_index": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "explanation": { "type": "string" },
+          "must_cover": { "type": "array", "items": { "type": "string" } },
+          "code_ref": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["path", "line"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["kind", "question", "explanation", "code_ref"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["questions"],
+  "additionalProperties": false
+}

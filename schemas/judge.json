@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["right", "partial", "wrong"] },
+    "gap": { "type": "string" },
+    "gap_in": { "type": "string", "enum": ["code", "understanding", "none"] },
+    "explanation": { "type": "string" }
+  },
+  "required": ["verdict", "gap", "gap_in", "explanation"],
+  "additionalProperties": false
+}

@@ -5,6 +5,7 @@ pub mod fold;
 pub mod input;
 mod keys;
 mod permission;
+mod quiz;
 mod review;
 mod shell;
 mod step;
@@ -60,6 +61,12 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render(frame, body, &d.input, "Deny: tell Claude why", t);
         }
         Some(Overlay::Search(list)) => step::render_search(frame, body, list, t),
+        Some(Overlay::QuizAnswer(d)) => {
+            input::render(frame, body, &d.input, "Your answer", t);
+        }
+        Some(Overlay::QuizCode { card, question }) => {
+            quiz::render_code(frame, body, app, *card, *question, hl);
+        }
         None => {}
     }
 }
@@ -108,14 +115,12 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
 
 fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut Highlighter) {
     match &card.kind {
-        CardKind::Review(rc) => return review::render(frame, area, app, card, rc, hl),
-        CardKind::Step(sc) => return step::render(frame, area, app, card, sc, hl),
-        CardKind::ShellChange(sc) => return shell::render(frame, area, app, card, sc, hl),
-        CardKind::Permission(pc) => return permission::render(frame, area, app, card, pc),
-        _ => {}
+        CardKind::Review(rc) => review::render(frame, area, app, card, rc, hl),
+        CardKind::Step(sc) => step::render(frame, area, app, card, sc, hl),
+        CardKind::ShellChange(sc) => shell::render(frame, area, app, card, sc, hl),
+        CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
+        CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }
-    let inner = area.inner(ratatui::layout::Margin::new(1, 1));
-    frame.render_widget(Paragraph::new(card_header(app, card)), inner);
 }
 
 fn render_ask(frame: &mut Frame, area: Rect, app: &App) {

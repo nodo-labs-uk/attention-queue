@@ -22,7 +22,9 @@ use crate::edit::apply_edit;
 use crate::git;
 use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
+use crate::llm::{ClaudeCli, Llm, LlmJob, run_job};
 use crate::model::{AgentId, Checkout, Mode};
+use crate::quiz::{CodeRequest, snippet};
 use crate::review::LastRound;
 use crate::shell::{SnapshotRequest, Taken};
 use crate::step::PendingEdit;
@@ -68,7 +70,8 @@ async fn event_loop(
     let mut waiting: HashMap<u64, oneshot::Sender<HookReply>> = HashMap::new();
     // PreToolUse requests the effect worker is still reading files for.
     let mut loading: HashSet<u64> = HashSet::new();
-    let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone());
+    let llm: Arc<dyn Llm> = Arc::new(ClaudeCli);
+    let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone(), llm);
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
     spawn_ticker(tx);
@@ -235,6 +238,17 @@ fn apply(
             Effect::Grep { checkout, ident } => Job::Grep { checkout, ident },
             Effect::Snapshot(req) => Job::Snapshot(req),
             Effect::GoToWindow { pane } => Job::GoTo(pane),
+            Effect::ComputeQuiz {
+                checkout,
+                agent,
+                from_tree,
+            } => Job::Quiz {
+                checkout,
+                agent,
+                from_tree,
+            },
+            Effect::ReadCode(req) => Job::ReadCode(req),
+            Effect::Llm(job) => Job::Llm(job),
             Effect::Reply { req_id, decision } => {
                 // The hook may have gone; then nobody is listening.
                 if let Some(reply) = waiting.remove(&req_id) {
@@ -242,8 +256,6 @@ fn apply(
                 }
                 continue;
             }
-            // LLM work arrives with the LLM worker.
-            Effect::Llm(_) => continue,
         };
         // The worker outlives the loop, so this cannot fail while we run.
         let _ = jobs.send(job);
@@ -275,6 +287,14 @@ enum Job {
     LoadPost(PostToolReq),
     Snapshot(SnapshotRequest),
     GoTo(String),
+    Quiz {
+        checkout: Checkout,
+        agent: AgentId,
+        from_tree: Option<String>,
+    },
+    ReadCode(CodeRequest),
+    /// Started on its own thread: it can take minutes.
+    Llm(LlmJob),
 }
 
 /// The fields of `HookRequest::PostTool`.
@@ -295,12 +315,14 @@ struct PreToolReq {
     tool_input: serde_json::Value,
 }
 
-/// Runs effects off the event loop, one at a time so they land in order.
+/// Runs effects off the event loop, one at a time so they land in order,
+/// except LLM calls, which each get a thread so nothing waits behind them.
 /// Failures come back as `Msg::EffectFailed`.
 fn spawn_effect_worker(
     tx: UnboundedSender<Msg>,
     conn: Arc<dyn AgentConn>,
     paths: Paths,
+    llm: Arc<dyn Llm>,
 ) -> (std::sync::mpsc::Sender<Job>, JoinHandle<()>) {
     let (jobs, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
@@ -325,6 +347,19 @@ fn spawn_effect_worker(
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not save settings: {e:#}"))),
                 Job::Review(req) => Some(compute_review(req)),
+                Job::Quiz {
+                    checkout,
+                    agent,
+                    from_tree,
+                } => Some(compute_quiz(checkout, agent, from_tree)),
+                Job::ReadCode(req) => Some(read_code(req)),
+                Job::Llm(job) => {
+                    let (llm, tx) = (llm.clone(), tx.clone());
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Msg::Llm(run_job(&*llm, job)));
+                    });
+                    None
+                }
                 Job::SaveRounds(rounds) => save_rounds(&rounds_file(&paths), &rounds)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not save review rounds: {e:#}"))),
@@ -358,19 +393,22 @@ fn spawn_effect_worker(
     (jobs, worker)
 }
 
+/// Diff from `from` (or the branch base) to a fresh snapshot: the from
+/// tree, the snapshot, and the files.
+fn diff_since(c: &Checkout, from: Option<&str>) -> Result<(String, String, Vec<git::FileDiff>)> {
+    let from = match from {
+        Some(t) => t.to_string(),
+        None => git::base_tree(c)?,
+    };
+    let to = git::snapshot_tree(c)?;
+    let files = git::diff_trees(c, &from, &to)?;
+    Ok((from, to, files))
+}
+
 /// Diff from the request's tree (or the branch base) to a fresh snapshot.
 fn compute_review(req: ReviewRequest) -> Msg {
     let c = &req.checkout;
-    let result = (|| {
-        let from = match &req.from_tree {
-            Some(t) => t.clone(),
-            None => git::base_tree(c)?,
-        };
-        let to = git::snapshot_tree(c)?;
-        let files = git::diff_trees(c, &from, &to)?;
-        anyhow::Ok((from, to, files))
-    })();
-    match result {
+    match diff_since(c, req.from_tree.as_deref()) {
         Ok((from_tree, to_tree, files)) => Msg::ReviewComputed {
             req,
             from_tree,
@@ -382,6 +420,44 @@ fn compute_review(req: ReviewRequest) -> Msg {
             "Could not diff {}: {e:#}",
             crate::app::project_name(c)
         )),
+    }
+}
+
+/// The diff a quiz is about.
+fn compute_quiz(checkout: Checkout, agent: AgentId, from_tree: Option<String>) -> Msg {
+    match diff_since(&checkout, from_tree.as_deref()) {
+        Ok((from_tree, to_tree, files)) => Msg::QuizDiff {
+            checkout,
+            agent,
+            from_tree,
+            to_tree,
+            files,
+            at: std::time::SystemTime::now(),
+        },
+        Err(e) => Msg::EffectFailed(format!(
+            "Could not diff {}: {e:#}",
+            crate::app::project_name(&checkout)
+        )),
+    }
+}
+
+/// The lines around a quiz question's `code_ref`, from the quiz's tree.
+fn read_code(req: CodeRequest) -> Msg {
+    // The model may give a path from the checkout root, or an absolute one in it.
+    let path = req
+        .path
+        .strip_prefix(&req.checkout.0)
+        .unwrap_or(&req.path)
+        .to_path_buf();
+    let result = match git::file_at(&req.checkout, &req.tree, &path) {
+        Ok(Some(text)) => Ok(snippet(&path, &text, req.line)),
+        Ok(None) => Err(format!("{} is not in the change", path.display())),
+        Err(e) => Err(format!("Could not read {}: {e:#}", path.display())),
+    };
+    Msg::CodeRead {
+        card: req.card,
+        question: req.question,
+        result,
     }
 }
 

@@ -10,6 +10,7 @@ pub mod llm;
 pub mod model;
 pub mod permission;
 pub mod queue;
+pub mod quiz;
 pub mod review;
 pub mod runtime;
 pub mod shell;

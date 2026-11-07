@@ -6,6 +6,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{App, Overlay};
 use crate::model::{Card, CardKind};
+use crate::quiz::{QuestionKind, QuizCard, QuizState, Verdict};
 
 /// Bottom row: the keys that work right now, and the latest status message.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -19,6 +20,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::StepReason(_) | Overlay::Deny(_)), _) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }
+        (Some(Overlay::QuizAnswer(_)), _) => vec![
+            ("Ctrl-S", "submit".into()),
+            ("Enter Enter", "submit".into()),
+            ("Esc", "cancel".into()),
+        ],
+        (Some(Overlay::QuizCode { .. }), _) => vec![("Esc", "close".into())],
         (Some(Overlay::Search(_)), _) => vec![
             ("j/k", "move".into()),
             ("Enter", "show".into()),
@@ -103,13 +110,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("j/k", "line".into()),
             ("s", "skip".into()),
         ],
-        (None, Some(_)) => vec![
-            ("?", "ask".into()),
-            ("s", "skip".into()),
-            ("M", "mode".into()),
-            ("T", "theme".into()),
-            ("Q", "quit".into()),
-        ],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Quiz(qc),
+                ..
+            }),
+        ) => quiz_keys(qc),
         (None, None) => vec![("T", "theme".into()), ("Q", "quit".into())],
     };
     let mut spans = vec![Span::raw(" ")];
@@ -141,4 +148,32 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             rest,
         );
     }
+}
+
+fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
+    let mut keys: Vec<(&str, String)> = match &qc.state {
+        QuizState::Generating => Vec::new(),
+        QuizState::Failed(_) => vec![("r", "try again".into())],
+        QuizState::Done => vec![("Enter", "send".into())],
+        QuizState::Asking(_) if qc.code_gap().is_some() => vec![
+            ("y", "fine as is".into()),
+            ("c", "fix it".into()),
+            ("m", "show the code".into()),
+        ],
+        QuizState::Asking(i) => match (qc.answers.get(*i), qc.questions[*i].kind) {
+            (Some(a), _) if matches!(a.verdict, Verdict::JudgeFailed(_)) => vec![
+                ("r", "judge again".into()),
+                ("Enter", "skip question".into()),
+            ],
+            (Some(_), _) => vec![("m", "show code".into())],
+            (None, QuestionKind::Choice) => {
+                vec![("1-4", "pick".into()), ("m", "show code".into())]
+            }
+            (None, QuestionKind::Free) => {
+                vec![("i", "type an answer".into()), ("m", "show code".into())]
+            }
+        },
+    };
+    keys.extend([("s", "skip".into()), ("M", "mode".into())]);
+    keys
 }

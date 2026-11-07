@@ -36,6 +36,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 format!(" · {}", window_of(app, card)),
                 Style::new().fg(t.dim),
             ));
+            if let CardKind::Quiz(qc) = &card.kind
+                && let Some((which, score)) = super::quiz::progress(qc)
+            {
+                left.push(Span::styled(format!("  {which}"), Style::new().fg(t.fg)));
+                left.push(Span::styled(
+                    format!("  {score}"),
+                    Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
+                ));
+            }
         }
         None => left.push(Span::styled(" nothing waiting", Style::new().fg(t.dim))),
     }

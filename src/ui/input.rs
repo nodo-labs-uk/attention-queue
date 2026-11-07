@@ -117,6 +117,11 @@ impl TextInput {
         InputEvent::Editing
     }
 
+    /// The cursor is on the last line, and that line is empty.
+    pub fn on_empty_last_line(&self) -> bool {
+        self.row + 1 == self.lines.len() && self.lines[self.row].is_empty()
+    }
+
     fn len(&self, row: usize) -> usize {
         self.lines[row].chars().count()
     }

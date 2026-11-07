@@ -12,6 +12,7 @@ use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::permission::{DenyDraft, PermissionRequest};
 use crate::queue::Queue;
+use crate::quiz::{AnswerDraft, CodeRequest, Snippet};
 use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
 use crate::shell::{Shell, Snapshot, SnapshotRequest};
 use crate::step::{PendingEdit, ReasonDraft, SearchList, Steps};
@@ -84,6 +85,21 @@ pub enum Msg {
         card: u64,
         error: String,
     },
+    /// The diff a `ComputeQuiz` effect asked for.
+    QuizDiff {
+        checkout: Checkout,
+        agent: AgentId,
+        from_tree: String,
+        to_tree: String,
+        files: Vec<FileDiff>,
+        at: SystemTime,
+    },
+    /// The code an `Effect::ReadCode` asked for.
+    CodeRead {
+        card: u64,
+        question: usize,
+        result: Result<Snippet, String>,
+    },
     /// The diff a `ComputeReview` effect asked for.
     ReviewComputed {
         req: ReviewRequest,
@@ -124,6 +140,15 @@ pub enum Effect {
     /// Write the config (and, later, drafts and quiz progress) to disk.
     SaveState,
     ComputeReview(ReviewRequest),
+    /// Diff a quiz-mode checkout from `from_tree` (the branch base when
+    /// `None`) to a fresh snapshot, for a quiz card.
+    ComputeQuiz {
+        checkout: Checkout,
+        agent: AgentId,
+        from_tree: Option<String>,
+    },
+    /// Read the code around a quiz question's `code_ref`.
+    ReadCode(CodeRequest),
     /// Write `App::rounds` to the state dir.
     SaveRounds,
     /// Snapshot a step-mode checkout's working tree, and diff it from the
@@ -152,6 +177,10 @@ pub enum Overlay {
     Search(SearchList),
     /// `n` on a permission card: typing the reason Claude reads.
     Deny(DenyDraft),
+    /// `i` on a quiz card: typing a free-text answer.
+    QuizAnswer(AnswerDraft),
+    /// `m` on a quiz card: the code behind a question.
+    QuizCode { card: u64, question: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,7 +381,20 @@ impl App {
                 self.on_grep_done(ident, result);
                 Vec::new()
             }
-            Msg::Llm(LlmEvent::Noop) => Vec::new(),
+            Msg::Llm(ev) => self.on_llm(ev),
+            Msg::QuizDiff {
+                checkout,
+                agent,
+                from_tree,
+                to_tree,
+                files,
+                at,
+            } => self.on_quiz_diff(checkout, agent, from_tree, to_tree, files, at),
+            Msg::CodeRead {
+                card,
+                question,
+                result,
+            } => self.on_code_read(card, question, result),
             Msg::SendDone { card } => self.on_send_result(card, None),
             Msg::SendFailed { card, error } => self.on_send_result(card, Some(error)),
             Msg::ReviewComputed {
@@ -379,6 +421,11 @@ impl App {
             }
             Some(Overlay::StepReason(_)) => return self.on_reason_key(key),
             Some(Overlay::Deny(_)) => return self.on_deny_key(key),
+            Some(Overlay::QuizAnswer(_)) => return self.on_quiz_answer_key(key),
+            Some(Overlay::QuizCode { .. }) => {
+                self.on_quiz_code_key(key);
+                return Vec::new();
+            }
             Some(Overlay::Search(_)) => {
                 self.on_search_key(key);
                 return Vec::new();
@@ -416,6 +463,7 @@ impl App {
                 Some(CardKind::Step(_)) => self.on_step_key(key),
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
+                Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
                 _ => self.on_review_key(key),
             },
             _ => Vec::new(),
@@ -476,21 +524,27 @@ impl App {
     }
 
     /// An agent just went from working to waiting. Review cards and quiz
-    /// cards (Task 11) are created here, by the mode of its checkout.
+    /// cards are created here, by the mode of its checkout.
     fn on_agent_waiting(&mut self, agent: &Agent) -> Vec<Effect> {
         let Some(checkout) = &agent.checkout else {
             return Vec::new();
         };
-        if self.config.mode_for(checkout) != Mode::Review {
-            return Vec::new();
+        let from_tree = self.rounds.get(&checkout.0).map(|r| r.tree.clone());
+        match self.config.mode_for(checkout) {
+            Mode::Review => vec![Effect::ComputeReview(ReviewRequest {
+                checkout: checkout.clone(),
+                agent: agent.id.clone(),
+                from_tree,
+                full_branch: false,
+                card: None,
+            })],
+            Mode::Quiz => vec![Effect::ComputeQuiz {
+                checkout: checkout.clone(),
+                agent: agent.id.clone(),
+                from_tree,
+            }],
+            Mode::Step => Vec::new(),
         }
-        vec![Effect::ComputeReview(ReviewRequest {
-            checkout: checkout.clone(),
-            agent: agent.id.clone(),
-            from_tree: self.rounds.get(&checkout.0).map(|r| r.tree.clone()),
-            full_branch: false,
-            card: None,
-        })]
     }
 
     fn on_review_computed(
@@ -651,16 +705,18 @@ impl App {
         let Some(done) = self.sending.remove(&card) else {
             return Vec::new();
         };
-        let shell = self
-            .queue
-            .find_mut(|c| c.id == card)
-            .is_some_and(|c| matches!(c.kind, CardKind::ShellChange(_)));
+        let kind = self.queue.iter().find(|c| c.id == card).map(|c| &c.kind);
+        let (shell, quiz) = (
+            matches!(kind, Some(CardKind::ShellChange(_))),
+            matches!(kind, Some(CardKind::Quiz(_))),
+        );
         match error {
             None if shell => {
                 self.queue.remove(card);
                 self.set_status(done);
                 Vec::new()
             }
+            None if quiz => self.close_quiz(card, done),
             None => self.close_review(card, done),
             Some(e) => {
                 self.set_status(e);
@@ -1047,13 +1103,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn non_review_checkout_computes_nothing() {
+    fn quiz_checkout_computes_no_review() {
         let mut a = app();
         a.config.set_mode(&Checkout("/a".into()), Mode::Quiz);
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
         assert!(
-            a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]))
-                .is_empty()
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::ComputeReview(_))),
+            "{effects:?}"
         );
     }
 
