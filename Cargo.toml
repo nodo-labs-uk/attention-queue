@@ -1,0 +1,19 @@
+[package]
+name = "aq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+syntect = "5.3.0"
+tokio = { version = "1.54.1", features = ["full"] }
+toml = "1.2.1"
+
+[dev-dependencies]
+insta = "1.49.0"
+tempfile = "3.27.0"

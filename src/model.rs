@@ -1,0 +1,61 @@
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Review,
+    Step,
+    Quiz,
+}
+
+/// Worktree root, canonicalised.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Checkout(pub PathBuf);
+
+impl Checkout {
+    /// Canonicalises `path`; falls back to the path as given if it does not exist.
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        Checkout(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentId {
+    /// tmux pane id, like `%54`.
+    pub pane: String,
+    pub claude_pid: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewCard;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepCard;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellCard;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuizCard;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionCard;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardKind {
+    Review(ReviewCard),
+    Step(StepCard),
+    ShellChange(ShellCard),
+    Quiz(QuizCard),
+    Permission(PermissionCard),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Card {
+    pub id: u64,
+    pub checkout: Checkout,
+    pub agent: AgentId,
+    pub created: SystemTime,
+    pub kind: CardKind,
+}
