@@ -12,6 +12,16 @@ use crate::quiz::{QuestionKind, QuizCard, QuizState, Verdict};
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let keys: Vec<(&str, String)> = match (&app.overlay, app.queue.current()) {
+        (Some(Overlay::Ask(a)), _) if a.input.is_some() => {
+            vec![("Enter", "ask".into()), ("Esc", "cancel".into())]
+        }
+        (Some(Overlay::Ask(_)), _) => vec![
+            ("j/k", "scroll".into()),
+            ("PgUp/PgDn", "page".into()),
+            ("?", "ask again".into()),
+            ("r", "retry".into()),
+            ("q", "close".into()),
+        ],
         (Some(Overlay::Comment(_)), _) => vec![
             ("Ctrl-S", "save".into()),
             ("Enter", "new line".into()),
@@ -31,7 +41,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "show".into()),
             ("Esc", "close".into()),
         ],
-        (Some(_), _) => vec![("q", "close".into())],
         (
             None,
             Some(Card {

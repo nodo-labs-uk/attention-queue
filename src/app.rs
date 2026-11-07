@@ -167,8 +167,8 @@ pub enum Effect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
-    /// `?`: a side question about the current card.
-    Ask,
+    /// `?`: side questions about the current card.
+    Ask(Box<crate::ask::AskState>),
     /// `c` on the review board: typing a comment.
     Comment(CommentDraft),
     /// `n` or `e` on a step card: typing the reason.
@@ -381,6 +381,9 @@ impl App {
                 self.on_grep_done(ident, result);
                 Vec::new()
             }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Ask { .. }) => {
+                self.on_ask_result(ev)
+            }
             Msg::Llm(ev) => self.on_llm(ev),
             Msg::QuizDiff {
                 checkout,
@@ -415,6 +418,7 @@ impl App {
             return Vec::new();
         }
         match &self.overlay {
+            Some(Overlay::Ask(_)) => return self.on_ask_key(key),
             Some(Overlay::Comment(_)) => {
                 self.on_comment_key(key);
                 return Vec::new();
@@ -448,9 +452,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('?') => {
-                if self.queue.current().is_some() {
-                    self.overlay = Some(Overlay::Ask);
-                }
+                self.open_ask();
                 Vec::new()
             }
             KeyCode::Char('T') => self.next_theme(),
@@ -1007,8 +1009,8 @@ pub(crate) mod tests {
         a.queue
             .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
         a.update(key('?'));
-        assert_eq!(a.overlay, Some(Overlay::Ask));
-        a.update(key('q'));
+        assert!(matches!(a.overlay, Some(Overlay::Ask(_))));
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now()));
         assert_eq!(a.overlay, None);
         assert!(!a.quit);
         a.update(key('Q'));

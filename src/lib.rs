@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod app;
+pub mod ask;
 pub mod config;
 pub mod edit;
 pub mod git;

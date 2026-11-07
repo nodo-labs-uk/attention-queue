@@ -1,3 +1,4 @@
+mod ask;
 mod bar;
 mod diffview;
 mod empty;
@@ -12,10 +13,10 @@ mod step;
 mod tree;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::Block;
 
 use crate::app::{App, Overlay, mode_label, project_name, shared_checkout_warning};
 use crate::highlight::Highlighter;
@@ -38,7 +39,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
     }
     keys::render(frame, bottom, app);
     match &app.overlay {
-        Some(Overlay::Ask) => render_ask(frame, body, app),
+        Some(Overlay::Ask(ask)) => ask::render(frame, body, ask, app.theme()),
         Some(Overlay::Comment(d)) => {
             let target = &d.target;
             let lines = if target.end_line == target.line {
@@ -121,29 +122,6 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
         CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }
-}
-
-fn render_ask(frame: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme();
-    let [h] = Layout::horizontal([Constraint::Percentage(70)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [panel] = Layout::vertical([Constraint::Length(5)])
-        .flex(Flex::Center)
-        .areas(h);
-    frame.render_widget(Clear, panel);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.line))
-        .title(" Ask about this card ")
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    frame.render_widget(
-        Paragraph::new("Side questions are not available yet.")
-            .style(Style::new().fg(t.dim))
-            .wrap(Wrap { trim: true })
-            .block(block),
-        panel,
-    );
 }
 
 #[cfg(test)]

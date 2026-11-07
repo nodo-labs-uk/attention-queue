@@ -241,7 +241,7 @@ fn visible(c: char, out: &mut String) {
 
 /// `text` as visible lines; three or more blank lines in a row become one
 /// "[N blank lines]" line.
-fn visible_lines(text: &str) -> Vec<String> {
+pub(crate) fn visible_lines(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut blanks = 0;
     let flush = |out: &mut Vec<String>, blanks: &mut usize| {

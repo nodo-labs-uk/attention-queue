@@ -25,6 +25,12 @@ pub enum JobKind {
     Quiz,
     /// Judge the free-text answer to question `question`.
     Judge { question: usize },
+    /// A side question, number `index` of the ask overlay. With a session it
+    /// is a fork of that live session; without, a plain call.
+    Ask {
+        index: usize,
+        session_id: Option<String>,
+    },
 }
 
 /// One `claude -p` call: the prompt goes on stdin, run in `cwd`.
@@ -37,10 +43,12 @@ pub struct LlmJob {
 }
 
 impl LlmJob {
-    pub fn schema(&self) -> &'static str {
+    /// The JSON schema the answer must follow; side questions answer in text.
+    pub fn schema(&self) -> Option<&'static str> {
         match self.kind {
-            JobKind::Quiz => QUIZ_SCHEMA,
-            JobKind::Judge { .. } => JUDGE_SCHEMA,
+            JobKind::Quiz => Some(QUIZ_SCHEMA),
+            JobKind::Judge { .. } => Some(JUDGE_SCHEMA),
+            JobKind::Ask { .. } => None,
         }
     }
 }
@@ -113,39 +121,101 @@ pub struct ClaudeCli {
 
 impl Llm for ClaudeCli {
     fn run(&self, job: &LlmJob) -> Result<String> {
+        if matches!(job.kind, JobKind::Ask { .. }) {
+            return ask_with_fallback(job, |j| self.once(j, ask_output));
+        }
+        self.once(job, structured_output)
+    }
+}
+
+impl ClaudeCli {
+    fn once(&self, job: &LlmJob, parse: fn(&str) -> Result<String>) -> Result<String> {
         let (status, out, err) =
             run_child(claude_command(job), &job.prompt, TIMEOUT, &self.children)?;
         if !status.success() && out.trim().is_empty() {
             bail!("claude failed ({status}): {}", err.trim());
         }
-        structured_output(&out)
+        parse(&out)
     }
+}
+
+/// Runs a side question as a fork of its session; if that fails for any
+/// reason, once more as a plain call in the checkout.
+pub fn ask_with_fallback(
+    job: &LlmJob,
+    mut attempt: impl FnMut(&LlmJob) -> Result<String>,
+) -> Result<String> {
+    let JobKind::Ask { index, session_id } = &job.kind else {
+        return attempt(job);
+    };
+    if session_id.is_none() {
+        return attempt(job);
+    }
+    attempt(job).or_else(|fork_err| {
+        let plain = LlmJob {
+            kind: JobKind::Ask {
+                index: *index,
+                session_id: None,
+            },
+            ..job.clone()
+        };
+        attempt(&plain)
+            .map_err(|e| anyhow!("{e:#} (the fork of the live session failed first: {fork_err:#})"))
+    })
 }
 
 /// `claude -p` for `job`: read-only tools, no MCP servers, slash commands,
 /// skills or hooks, so text in the diff cannot make it change anything.
 pub fn claude_command(job: &LlmJob) -> Command {
     let mut cmd = Command::new("claude");
-    cmd.args(["-p", "--output-format", "json", "--json-schema"])
-        .arg(job.schema())
-        .args([
-            "--no-session-persistence",
-            "--permission-mode",
-            "plan",
-            "--tools",
-            "Read,Grep,Glob",
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-            "--settings",
-            r#"{"disableAllHooks":true}"#,
-        ])
-        .current_dir(&job.cwd)
-        // The user's Claude login, as in their own sessions; and no tmux,
-        // so nothing takes this for the user's live window.
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE");
+    cmd.args(["-p", "--output-format", "json"]);
+    if let Some(schema) = job.schema() {
+        cmd.arg("--json-schema").arg(schema);
+    }
+    // A fork of the live session. That session may allow writes, but the
+    // flags below still apply to the fork.
+    if let JobKind::Ask {
+        session_id: Some(id),
+        ..
+    } = &job.kind
+    {
+        cmd.args(["--resume", id, "--fork-session"]);
+    }
+    cmd.args([
+        "--no-session-persistence",
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "Read,Grep,Glob",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--settings",
+        r#"{"disableAllHooks":true}"#,
+    ])
+    .current_dir(&job.cwd)
+    // The user's Claude login, as in their own sessions; and no tmux,
+    // so nothing takes this for the user's live window.
+    .env_remove("ANTHROPIC_API_KEY")
+    .env_remove("TMUX")
+    .env_remove("TMUX_PANE");
     cmd
+}
+
+/// The `result` text of `claude -p --output-format json`.
+pub fn ask_output(stdout: &str) -> Result<String> {
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).context("claude printed no JSON")?;
+    let text = v.get("result").and_then(serde_json::Value::as_str);
+    if v.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+        bail!(
+            "claude reported an error: {}",
+            text.unwrap_or("unknown error")
+        );
+    }
+    match text {
+        Some(t) if !t.trim().is_empty() => Ok(t.to_string()),
+        _ => bail!("claude gave no answer"),
+    }
 }
 
 /// Runs `cmd` in its own process group with `input` on stdin, and returns
@@ -343,6 +413,86 @@ mod tests {
         for k in ["ANTHROPIC_API_KEY", "TMUX", "TMUX_PANE"] {
             assert!(removed.iter().any(|r| r == k), "{k} removed: {removed:?}");
         }
+    }
+
+    fn ask_args(session_id: Option<&str>) -> Vec<String> {
+        let job = LlmJob {
+            card: 1,
+            kind: JobKind::Ask {
+                index: 0,
+                session_id: session_id.map(Into::into),
+            },
+            cwd: "/tmp".into(),
+            prompt: String::new(),
+        };
+        claude_command(&job)
+            .get_args()
+            .map(|a| a.to_string_lossy().into())
+            .collect()
+    }
+
+    #[test]
+    fn ask_fork_is_locked_down_like_every_other_call() {
+        let args = ask_args(Some("abc"));
+        for pair in [
+            ["--resume", "abc"],
+            ["--tools", "Read,Grep,Glob"],
+            ["--permission-mode", "plan"],
+            ["--settings", r#"{"disableAllHooks":true}"#],
+            ["--output-format", "json"],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+        }
+        for flag in [
+            "--fork-session",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+        ] {
+            assert!(args.iter().any(|a| a == flag), "{flag} in {args:?}");
+        }
+        assert!(!args.iter().any(|a| a == "--json-schema"));
+        let plain = ask_args(None);
+        assert!(
+            !plain
+                .iter()
+                .any(|a| a == "--resume" || a == "--fork-session")
+        );
+        assert!(plain.iter().any(|a| a == "--tools"));
+    }
+
+    #[test]
+    fn ask_output_reads_the_result_text() {
+        let ok = r#"{"is_error":false,"result":"kiwi"}"#;
+        assert_eq!(ask_output(ok).unwrap(), "kiwi");
+        assert!(ask_output(r#"{"is_error":true,"result":"Not logged in"}"#).is_err());
+        assert!(ask_output(r#"{"is_error":false,"result":" "}"#).is_err());
+        assert!(ask_output("oops").is_err());
+    }
+
+    /// Needs a real session: `AQ_ASK_SESSION=<id> AQ_ASK_DIR=<its cwd>`.
+    #[test]
+    #[ignore = "calls the real claude"]
+    fn real_fork_answers_from_the_live_session() {
+        let (Ok(id), Ok(dir)) = (std::env::var("AQ_ASK_SESSION"), std::env::var("AQ_ASK_DIR"))
+        else {
+            return;
+        };
+        let cli = ClaudeCli {
+            children: Arc::new(Children::default()),
+        };
+        let job = LlmJob {
+            card: 1,
+            kind: JobKind::Ask {
+                index: 0,
+                session_id: Some(id),
+            },
+            cwd: dir.into(),
+            prompt: "what word did I ask you to remember?".into(),
+        };
+        let answer = cli.run(&job).unwrap();
+        println!("ANSWER: {answer}");
+        assert!(answer.to_lowercase().contains("kiwi"), "{answer}");
     }
 
     fn sh(script: &str) -> Command {
