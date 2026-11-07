@@ -153,7 +153,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
     let mut keys: Vec<(&str, String)> = match &qc.state {
         QuizState::Generating => Vec::new(),
-        QuizState::Failed(_) => vec![("r", "try again".into())],
+        QuizState::Failed(_) => vec![("r", "try again".into()), ("x", "dismiss".into())],
         QuizState::Done => vec![("Enter", "send".into())],
         QuizState::Asking(_) if qc.code_gap().is_some() => vec![
             ("y", "fine as is".into()),

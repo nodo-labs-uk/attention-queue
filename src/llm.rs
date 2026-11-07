@@ -1,10 +1,11 @@
 //! Background `claude -p` work: quiz questions and judging answers.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -66,47 +67,54 @@ pub fn run_job(llm: &dyn Llm, job: LlmJob) -> LlmEvent {
     }
 }
 
+/// Process groups of the `claude` children still running, so they can be
+/// killed when aq quits.
+#[derive(Debug, Default)]
+pub struct Children(Mutex<BTreeSet<i32>>);
+
+impl Children {
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().map_or(true, |s| s.is_empty())
+    }
+
+    /// SIGKILLs every registered process group.
+    pub fn kill_all(&self) {
+        if let Ok(groups) = self.0.lock() {
+            for &g in groups.iter() {
+                kill_group(g);
+            }
+        }
+    }
+
+    fn add(&self, g: i32) {
+        if let Ok(mut s) = self.0.lock() {
+            s.insert(g);
+        }
+    }
+
+    fn remove(&self, g: i32) {
+        if let Ok(mut s) = self.0.lock() {
+            s.remove(&g);
+        }
+    }
+}
+
+fn kill_group(g: i32) {
+    // SAFETY: killpg only sends a signal; `g` is a group this process made.
+    unsafe {
+        libc::killpg(g, libc::SIGKILL);
+    }
+}
+
 /// The real model, through the user's own `claude` login.
-pub struct ClaudeCli;
+pub struct ClaudeCli {
+    pub children: Arc<Children>,
+}
 
 impl Llm for ClaudeCli {
     fn run(&self, job: &LlmJob) -> Result<String> {
-        let mut child = Command::new("claude")
-            .args(["-p", "--output-format", "json", "--json-schema"])
-            .arg(job.schema())
-            .args(["--no-session-persistence", "--permission-mode", "plan"])
-            .current_dir(&job.cwd)
-            // The user's Claude login, as in their own sessions; and no tmux,
-            // so hooks do not take this for the user's live window.
-            .env_remove("ANTHROPIC_API_KEY")
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("starting claude")?;
-        // Every pipe on its own thread, so a full pipe never stalls the others.
-        let mut stdin = child.stdin.take().context("claude stdin")?;
-        let prompt = job.prompt.clone();
-        let writer = std::thread::spawn(move || stdin.write_all(prompt.as_bytes()));
-        let out = read_all(child.stdout.take().context("claude stdout")?);
-        let err = read_all(child.stderr.take().context("claude stderr")?);
-        let start = Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait().context("waiting for claude")? {
-                break status;
-            }
-            if start.elapsed() >= TIMEOUT {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("claude took longer than {} s", TIMEOUT.as_secs());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
-        let _ = writer.join();
-        let out = out.join().unwrap_or_default();
-        let err = err.join().unwrap_or_default();
+        let (status, out, err) =
+            run_child(claude_command(job), &job.prompt, TIMEOUT, &self.children)?;
         if !status.success() && out.trim().is_empty() {
             bail!("claude failed ({status}): {}", err.trim());
         }
@@ -114,12 +122,119 @@ impl Llm for ClaudeCli {
     }
 }
 
-fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+/// `claude -p` for `job`: read-only tools, no MCP servers, slash commands,
+/// skills or hooks, so text in the diff cannot make it change anything.
+pub fn claude_command(job: &LlmJob) -> Command {
+    let mut cmd = Command::new("claude");
+    cmd.args(["-p", "--output-format", "json", "--json-schema"])
+        .arg(job.schema())
+        .args([
+            "--no-session-persistence",
+            "--permission-mode",
+            "plan",
+            "--tools",
+            "Read,Grep,Glob",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--settings",
+            r#"{"disableAllHooks":true}"#,
+        ])
+        .current_dir(&job.cwd)
+        // The user's Claude login, as in their own sessions; and no tmux,
+        // so nothing takes this for the user's live window.
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE");
+    cmd
+}
+
+/// Runs `cmd` in its own process group with `input` on stdin, and returns
+/// its status, stdout and stderr. Past `timeout`, counting until both
+/// outputs close, the whole group is killed and this is an error. The
+/// group is in `children` while it runs; the child dies with aq.
+pub fn run_child(
+    mut cmd: Command,
+    input: &str,
+    timeout: Duration,
+    children: &Children,
+) -> Result<(ExitStatus, String, String)> {
+    let deadline = Instant::now() + timeout;
+    // SAFETY: getpid is async-signal-safe.
+    let parent = unsafe { libc::getpid() };
+    cmd.process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // aq died before the line above took effect.
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().context("starting the command")?;
+    let group = child.id() as i32;
+    children.add(group);
+    let result = wait_child(&mut child, group, input, deadline, timeout);
+    children.remove(group);
+    result
+}
+
+fn wait_child(
+    child: &mut Child,
+    group: i32,
+    input: &str,
+    deadline: Instant,
+    timeout: Duration,
+) -> Result<(ExitStatus, String, String)> {
+    let late = || anyhow!("took longer than {} s", timeout.as_secs());
+    // Every pipe on its own thread, so a full pipe never stalls the others.
+    // The writer is left alone: it ends when the pipe closes.
+    let mut stdin = child.stdin.take().context("child stdin")?;
+    let input = input.to_string();
+    std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let (tx, rx) = mpsc::channel();
+    read_all(child.stdout.take().context("child stdout")?, 0, tx.clone());
+    read_all(child.stderr.take().context("child stderr")?, 1, tx);
+    let status = loop {
+        if let Some(status) = child.try_wait().context("waiting for the child")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            kill_group(group);
+            let _ = child.wait();
+            return Err(late());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // Something the child started may still hold its output open.
+    let mut outs = [String::new(), String::new()];
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((i, s)) => outs[i] = s,
+            Err(_) => {
+                kill_group(group);
+                return Err(late());
+            }
+        }
+    }
+    let [out, err] = outs;
+    Ok((status, out, err))
+}
+
+fn read_all(mut pipe: impl Read + Send + 'static, i: usize, tx: mpsc::Sender<(usize, String)>) {
     std::thread::spawn(move || {
         let mut s = String::new();
         let _ = pipe.read_to_string(&mut s);
-        s
-    })
+        let _ = tx.send((i, s));
+    });
 }
 
 /// The `structured_output` object of `claude -p --output-format json`
@@ -193,5 +308,132 @@ mod tests {
         assert_eq!(run_job(&fake, job.clone()).result, Ok("a".into()));
         assert_eq!(run_job(&fake, job.clone()).result, Err("b".into()));
         assert!(run_job(&fake, job).result.is_err());
+    }
+
+    #[test]
+    fn claude_gets_only_read_tools_and_no_hooks() {
+        let job = LlmJob {
+            card: 1,
+            kind: JobKind::Judge { question: 0 },
+            cwd: "/tmp".into(),
+            prompt: String::new(),
+        };
+        let cmd = claude_command(&job);
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into()).collect();
+        for pair in [
+            ["--tools", "Read,Grep,Glob"],
+            ["--permission-mode", "plan"],
+            ["--settings", r#"{"disableAllHooks":true}"#],
+            ["--json-schema", JUDGE_SCHEMA],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+        }
+        for flag in [
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+        ] {
+            assert!(args.iter().any(|a| a == flag), "{flag} in {args:?}");
+        }
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into())
+            .collect();
+        for k in ["ANTHROPIC_API_KEY", "TMUX", "TMUX_PANE"] {
+            assert!(removed.iter().any(|r| r == k), "{k} removed: {removed:?}");
+        }
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    #[test]
+    fn child_output_and_registry_empty_after() {
+        let children = Children::default();
+        let out = run_child(sh("cat"), "hello", Duration::from_secs(10), &children).unwrap();
+        assert_eq!(out.1, "hello");
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn background_child_holding_stdout_times_out() {
+        let children = Children::default();
+        let start = Instant::now();
+        // The shell exits at once; its `sleep` keeps stdout open.
+        let r = run_child(
+            sh("sleep 600 & echo started"),
+            "",
+            Duration::from_secs(1),
+            &children,
+        );
+        let took = start.elapsed();
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("longer than"), "{e}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn slow_child_is_killed_with_its_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let children = Children::default();
+        let start = Instant::now();
+        let r = run_child(
+            sh(&format!(
+                "sleep 600 & echo $! > {}; wait",
+                pidfile.display()
+            )),
+            "",
+            Duration::from_secs(1),
+            &children,
+        );
+        assert!(r.is_err());
+        assert!(start.elapsed() < Duration::from_secs(4));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(gone(pid), "the background sleep was killed too");
+    }
+
+    /// Dead or a zombie.
+    fn gone(pid: i32) -> bool {
+        for _ in 0..50 {
+            let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+            let alive = state.is_some_and(|s| {
+                s.rsplit_once(") ")
+                    .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+            });
+            if !alive {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn kill_all_kills_a_running_child() {
+        let children = std::sync::Arc::new(Children::default());
+        let c = children.clone();
+        let start = Instant::now();
+        let job = std::thread::spawn(move || {
+            run_child(sh("sleep 600"), "", Duration::from_secs(600), &c)
+        });
+        while children.is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(5), "never registered");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        children.kill_all();
+        let r = job.join().unwrap();
+        assert!(r.is_ok_and(|(status, ..)| !status.success()));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(children.is_empty());
     }
 }

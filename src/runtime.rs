@@ -22,7 +22,7 @@ use crate::edit::apply_edit;
 use crate::git;
 use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
-use crate::llm::{ClaudeCli, Llm, LlmJob, run_job};
+use crate::llm::{Children, ClaudeCli, Llm, LlmJob, run_job};
 use crate::model::{AgentId, Checkout, Mode};
 use crate::quiz::{CodeRequest, snippet};
 use crate::review::LastRound;
@@ -70,7 +70,10 @@ async fn event_loop(
     let mut waiting: HashMap<u64, oneshot::Sender<HookReply>> = HashMap::new();
     // PreToolUse requests the effect worker is still reading files for.
     let mut loading: HashSet<u64> = HashSet::new();
-    let llm: Arc<dyn Llm> = Arc::new(ClaudeCli);
+    let children = Arc::new(Children::default());
+    let llm: Arc<dyn Llm> = Arc::new(ClaudeCli {
+        children: children.clone(),
+    });
     let (jobs, worker) = spawn_effect_worker(tx.clone(), conn.clone(), paths.clone(), llm);
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
@@ -162,6 +165,8 @@ async fn event_loop(
     // Let queued saves and sends finish before exit.
     drop(jobs);
     let _ = worker.join();
+    // `claude` calls still running are of no use once aq is gone.
+    children.kill_all();
     Ok(())
 }
 

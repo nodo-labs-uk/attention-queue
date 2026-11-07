@@ -61,7 +61,7 @@ pub fn render(
                 Style::new().fg(t.del),
                 "",
             );
-            lines.push(Line::styled("r tries again.", dim));
+            lines.push(Line::styled("r tries again; x dismisses the quiz.", dim));
         }
         QuizState::Asking(i) => {
             let i = *i;

@@ -162,3 +162,14 @@ The result object had both:
 
 Other fields seen: `type: "result"`, `subtype: "success"`, `is_error: false`,
 `session_id`, `total_cost_usd`, `usage`, `num_turns`.
+
+### Locked-down child for the quiz (Task 11 fix round)
+
+aq runs `claude -p` with `--tools Read,Grep,Glob --strict-mcp-config
+--disable-slash-commands --settings '{"disableAllHooks":true}'` on top of
+`--permission-mode plan`. A real run (`env -u ANTHROPIC_API_KEY -u TMUX -u
+TMUX_PANE`, `--output-format stream-json --verbose` to see the init message)
+showed `tools: [Glob, Grep, Read, StructuredOutput]`, `mcp_servers: []`,
+`slash_commands: []`, `skills: []`, and `structured_output` still came back
+(`{"answer": 5, "lines": 27}`). `--tools` is not in `claude --help` (2.1.319)
+but is honoured.
