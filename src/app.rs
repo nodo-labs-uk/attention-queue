@@ -18,7 +18,8 @@ use crate::ui::input::{InputEvent, TextInput};
 
 #[derive(Debug)]
 pub enum Msg {
-    Key(KeyEvent),
+    /// A key, stamped by the runtime when it was read.
+    Key(KeyEvent, Instant),
     /// Time passes; `now` comes from the runtime so `update` stays pure.
     Tick(Instant),
     Agents(Vec<Agent>),
@@ -36,6 +37,8 @@ pub enum Msg {
     PreTool {
         req_id: u64,
         edit: PendingEdit,
+        /// When the runtime handed it over.
+        at: Instant,
     },
     /// The hook waiting on `req_id` went away without an answer.
     HookGone {
@@ -138,6 +141,11 @@ pub struct App {
     /// Review cards whose message is on its way, with the status to show once it lands.
     sending: BTreeMap<u64, String>,
     pub steps: Steps,
+    /// The latest time a message carried.
+    pub(crate) now: Option<Instant>,
+    /// The card on screen, and when it got there. The time is `None` until
+    /// a message with a time arrives after the card changed.
+    pub(crate) shown: Option<(u64, Option<Instant>)>,
     pub(crate) next_card_id: u64,
 }
 
@@ -171,6 +179,8 @@ impl App {
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
             steps: Steps::default(),
+            now: None,
+            shown: None,
             next_card_id: 0,
         }
     }
@@ -205,8 +215,28 @@ impl App {
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
+        let at = match &msg {
+            Msg::Key(_, t) | Msg::Tick(t) | Msg::PreTool { at: t, .. } => Some(*t),
+            _ => None,
+        };
+        if let Some(t) = at {
+            self.now = Some(t);
+            if let Some((_, shown_at @ None)) = &mut self.shown {
+                *shown_at = Some(t);
+            }
+            self.expire_step_decisions(t);
+        }
+        let effects = self.handle(msg);
+        let current = self.queue.current().map(|c| c.id);
+        if self.shown.map(|(id, _)| id) != current {
+            self.shown = current.map(|id| (id, at));
+        }
+        effects
+    }
+
+    fn handle(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
-            Msg::Key(key) => self.on_key(key),
+            Msg::Key(key, _) => self.on_key(key),
             Msg::Tick(now) => {
                 self.expire_status(now);
                 Vec::new()
@@ -225,7 +255,7 @@ impl App {
                 req_id,
                 decision: HookReply::NoDecision,
             }],
-            Msg::PreTool { req_id, edit } => self.on_pre_tool(req_id, edit),
+            Msg::PreTool { req_id, edit, .. } => self.on_pre_tool(req_id, edit),
             Msg::HookGone { req_id } => {
                 self.on_hook_gone(req_id);
                 Vec::new()
@@ -655,7 +685,7 @@ pub(crate) mod tests {
     }
 
     fn key(c: char) -> Msg {
-        Msg::Key(KeyEvent::from(KeyCode::Char(c)))
+        Msg::Key(KeyEvent::from(KeyCode::Char(c)), Instant::now())
     }
 
     #[test]
@@ -805,7 +835,10 @@ pub(crate) mod tests {
     }
 
     fn ctrl(c: char) -> Msg {
-        Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+        Msg::Key(
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            Instant::now(),
+        )
     }
 
     fn typed(a: &mut App, s: &str) {

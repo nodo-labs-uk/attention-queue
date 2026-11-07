@@ -352,7 +352,11 @@ mod tests {
              The plan says limits must be visible to clients."
                 .into(),
         );
-        a.update(Msg::PreTool { req_id: 1, edit: e });
+        a.update(Msg::PreTool {
+            req_id: 1,
+            edit: e,
+            at: crate::step::tests::tick(),
+        });
         assert!(matches!(a.queue.current().unwrap().kind, CardKind::Step(_)));
         assert_eq!(a.queue.current().unwrap().checkout, Checkout("/a".into()));
         insta::assert_snapshot!(render(&a, 90, 24));

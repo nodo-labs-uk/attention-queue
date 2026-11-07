@@ -80,14 +80,7 @@ async fn event_loop(
         tokio::select! {
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
-                if let Msg::PreTool { req_id, .. } = &msg {
-                    loading.remove(req_id);
-                }
-                // Before and after: a decision sees which hooks still wait,
-                // and a card made for a hook that already left hears of it.
-                sweep(app, &jobs, &mut waiting, &loading);
-                apply(app, msg, &jobs, &mut waiting);
-                sweep(app, &jobs, &mut waiting, &loading);
+                on_msg(app, msg, &jobs, &mut waiting, &mut loading);
                 dirty = true;
             }
             Some(ev) = ipc_rx.recv() => {
@@ -135,6 +128,29 @@ async fn event_loop(
     drop(jobs);
     let _ = worker.join();
     Ok(())
+}
+
+/// Runs a message from the runtime's own channel through the app.
+fn on_msg(
+    app: &mut App,
+    msg: Msg,
+    jobs: &std::sync::mpsc::Sender<Job>,
+    waiting: &mut HashMap<u64, oneshot::Sender<HookReply>>,
+    loading: &mut HashSet<u64>,
+) {
+    let loaded = match &msg {
+        Msg::PreTool { req_id, .. } => Some(*req_id),
+        _ => None,
+    };
+    // Before: a decision sees which hooks still wait.
+    sweep(app, jobs, waiting, loading);
+    apply(app, msg, jobs, waiting);
+    // After: a hook that left while its file was read is reported now that
+    // its card exists, so the card keeps its decision for the retry.
+    if let Some(req_id) = loaded {
+        loading.remove(&req_id);
+    }
+    sweep(app, jobs, waiting, loading);
 }
 
 /// Tells the app about hooks that went away without an answer.
@@ -257,6 +273,7 @@ fn spawn_effect_worker(
                 } => Some(Msg::PreTool {
                     req_id,
                     edit: load_edit(req, &config),
+                    at: std::time::Instant::now(),
                 }),
                 Job::Grep { checkout, ident } => Some(Msg::GrepDone {
                     result: git::grep_word(&checkout, &ident)
@@ -301,17 +318,17 @@ fn compute_review(req: ReviewRequest) -> Msg {
     }
 }
 
-/// Finds the request's checkout and reads the file it edits and, in step
-/// mode, Claude's description of the edit.
+/// Finds the checkouts of the request's cwd and of the file it edits, and
+/// reads the file and, in step mode, Claude's description of the edit.
 fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
     let cwd = Path::new(&req.cwd);
     let checkout = agents::checkout_of(cwd);
     let field = |k| req.tool_input.get(k).and_then(serde_json::Value::as_str);
     let path = cwd.join(field("file_path").or(field("notebook_path")).unwrap_or(""));
+    let file_checkout = file_dir(&path).and_then(|d| agents::checkout_of(&d));
     let current = std::fs::read_to_string(&path).ok();
-    let step = checkout
-        .as_ref()
-        .is_some_and(|c| config.mode_for(c) == Mode::Step);
+    let step = |c: &Option<Checkout>| c.as_ref().is_some_and(|c| config.mode_for(c) == Mode::Step);
+    let step = step(&checkout) || step(&file_checkout);
     let description = step
         .then(|| description_before(Path::new(&req.transcript_path), &req.tool_use_id))
         .flatten();
@@ -319,12 +336,28 @@ fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
         preview: apply_edit(&req.tool_name, &req.tool_input, current.as_deref()),
         session_id: req.session_id,
         checkout,
+        file_checkout,
         tool_name: req.tool_name,
         tool_input: req.tool_input,
         path,
         description,
         at: std::time::SystemTime::now(),
     }
+}
+
+/// The real directory holding `path`: links resolved, and for a file not
+/// there yet, its nearest existing ancestor.
+fn file_dir(path: &Path) -> Option<PathBuf> {
+    if let Ok(real) = path.canonicalize() {
+        return if real.is_dir() {
+            Some(real)
+        } else {
+            real.parent().map(Path::to_path_buf)
+        };
+    }
+    path.ancestors()
+        .skip(1)
+        .find_map(|a| a.canonicalize().ok().filter(|r| r.is_dir()))
 }
 
 fn rounds_file(paths: &Paths) -> PathBuf {
@@ -373,7 +406,7 @@ fn spawn_key_reader(tx: UnboundedSender<Msg>) {
     std::thread::spawn(move || {
         while let Ok(ev) = event::read() {
             let msg = match ev {
-                Event::Key(key) => Msg::Key(key),
+                Event::Key(key) => Msg::Key(key, std::time::Instant::now()),
                 // A tick redraws, which picks up the new size.
                 Event::Resize(..) => Msg::Tick(std::time::Instant::now()),
                 _ => continue,
@@ -425,6 +458,65 @@ mod tests {
         );
         save_rounds(&file, &rounds).unwrap();
         assert_eq!(load_rounds(&file).unwrap(), rounds);
+    }
+
+    #[test]
+    fn hook_gone_while_loading_keeps_the_decision_for_the_retry() {
+        use crate::step::tests::{input, pending};
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&Checkout("/a".into()), Mode::Step);
+        let (jobs, _job_rx) = std::sync::mpsc::channel();
+        let mut waiting = HashMap::new();
+        let mut loading = HashSet::from([1]);
+        let (reply, hook) = oneshot::channel();
+        waiting.insert(1, reply);
+        // The hook leaves while the worker reads its file.
+        drop(hook);
+        let t = std::time::Instant::now();
+        on_msg(&mut app, Msg::Tick(t), &jobs, &mut waiting, &mut loading);
+        assert!(
+            waiting.contains_key(&1),
+            "not reported before its card exists"
+        );
+        let edit = pending("s1", "/a", input());
+        let msg = Msg::PreTool {
+            req_id: 1,
+            edit: edit.clone(),
+            at: t,
+        };
+        on_msg(&mut app, msg, &jobs, &mut waiting, &mut loading);
+        assert!(waiting.is_empty() && loading.is_empty());
+        let y = KeyEvent::from(KeyCode::Char('y'));
+        let later = t + Duration::from_secs(1);
+        assert!(
+            app.update(Msg::Key(y, later)).is_empty(),
+            "nobody to answer"
+        );
+        assert_eq!(
+            app.update(Msg::PreTool {
+                req_id: 2,
+                edit,
+                at: later
+            }),
+            [Effect::Reply {
+                req_id: 2,
+                decision: HookReply::Allow
+            }]
+        );
+    }
+
+    #[test]
+    fn file_dir_resolves_new_files_to_an_existing_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        std::fs::write(real.join("a.rs"), "").unwrap();
+        assert_eq!(file_dir(&real.join("a.rs")), Some(real.clone()));
+        assert_eq!(file_dir(&real.join("new/deeper/b.rs")), Some(real.clone()));
+        let other = tempfile::tempdir().unwrap();
+        let link = other.path().join("l.rs");
+        std::os::unix::fs::symlink(real.join("a.rs"), &link).unwrap();
+        assert_eq!(file_dir(&link), Some(real));
     }
 
     #[test]

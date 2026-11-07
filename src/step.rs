@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
@@ -22,6 +22,11 @@ use crate::ui::input::{InputEvent, TextInput};
 pub const REJECT_PREFIX: &str = "Rejected by reviewer: ";
 /// `e`: the change Claude is asked for starts with this.
 pub const CHANGE_PREFIX: &str = "Please change this edit instead: ";
+/// How long a decision made after its hook went away waits for the retry.
+pub const RETRY_FOR: Duration = Duration::from_secs(10 * 60);
+/// How long a step card must be on screen before `y`, `n` or `e` count, so
+/// a key typed ahead does not decide a card nobody saw.
+pub const LOOK_FOR: Duration = Duration::from_millis(300);
 /// Lines in the changed middle of a file above which no line diff is tried.
 const DIFF_MAX: usize = 4000;
 
@@ -62,8 +67,10 @@ fn canonical(v: &Value) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingEdit {
     pub session_id: String,
-    /// `None` when the request's cwd is not in a git checkout.
+    /// The checkout of the request's cwd; `None` outside git.
     pub checkout: Option<Checkout>,
+    /// The checkout holding the edited file; `None` outside git.
+    pub file_checkout: Option<Checkout>,
     pub tool_name: String,
     pub tool_input: Value,
     pub path: PathBuf,
@@ -437,9 +444,9 @@ pub struct Steps {
     /// Steps seen so far, per session.
     counts: BTreeMap<String, u32>,
     pub history: Vec<Done>,
-    /// Cards decided after all their hooks went away. Claude's retry of the
-    /// same edit gets the decision.
-    retry: Vec<StepCard>,
+    /// Cards decided after all their hooks went away, with when. Claude's
+    /// retry of the same edit on the same file gets the decision.
+    retry: Vec<(StepCard, Option<Instant>)>,
 }
 
 /// `n` or `e` on a step card: typing what Claude reads.
@@ -462,42 +469,61 @@ pub struct SearchList {
 }
 
 impl App {
-    /// A hook asks about an edit. Outside step mode the answer is "no
-    /// decision" at once. A retry of an edit already decided gets that
-    /// decision; a retry of one still open joins its card.
+    /// A hook asks about an edit. It is held when the checkout of its cwd
+    /// or of its file is in step mode; otherwise the answer is "no decision"
+    /// at once. A retry of an edit already decided gets that decision, and a
+    /// retry of one still open joins its card, but only while the file is
+    /// as the card shows it.
     pub(crate) fn on_pre_tool(&mut self, req_id: u64, e: PendingEdit) -> Vec<Effect> {
-        let checkout = e
-            .checkout
-            .clone()
-            .filter(|c| self.config.mode_for(c) == Mode::Step);
-        let Some(checkout) = checkout else {
+        let step = |c: &Option<Checkout>| {
+            c.as_ref()
+                .is_some_and(|c| self.config.mode_for(c) == Mode::Step)
+        };
+        let held = step(&e.checkout) || step(&e.file_checkout);
+        let checkout = e.file_checkout.clone().or_else(|| e.checkout.clone());
+        let Some(checkout) = checkout.filter(|_| held) else {
             return vec![Effect::Reply {
                 req_id,
                 decision: HookReply::NoDecision,
             }];
         };
         let key = EditKey::new(&e.session_id, &e.tool_name, &e.tool_input);
-        if let Some(i) = self.steps.retry.iter().position(|c| c.key == key) {
-            let card = self.steps.retry.remove(i);
-            return vec![Effect::Reply {
-                req_id,
-                decision: card.decided.unwrap_or(HookReply::NoDecision),
-            }];
+        if let Some(i) = self.steps.retry.iter().position(|(c, _)| c.key == key) {
+            // A decision about another version of the file is dropped.
+            let (card, _) = self.steps.retry.remove(i);
+            if card.preview == e.preview {
+                return vec![Effect::Reply {
+                    req_id,
+                    decision: card.decided.unwrap_or(HookReply::NoDecision),
+                }];
+            }
         }
         let open = self
             .queue
             .find_mut(|c| matches!(&c.kind, CardKind::Step(s) if s.key == key));
+        let mut req_ids = vec![req_id];
+        let mut step_no = None;
         if let Some(Card {
+            id,
             kind: CardKind::Step(sc),
             ..
         }) = open
         {
-            sc.req_ids.push(req_id);
-            return Vec::new();
+            if sc.preview == e.preview {
+                sc.req_ids.push(req_id);
+                return Vec::new();
+            }
+            // The file changed under the open card: a fresh card replaces it.
+            let id = *id;
+            req_ids.splice(0..0, sc.req_ids.iter().copied());
+            step_no = Some(sc.step_no);
+            self.queue.remove(id);
         }
-        let count = self.steps.counts.entry(e.session_id.clone()).or_insert(0);
-        *count += 1;
-        let step_no = *count;
+        let step_no = step_no.unwrap_or_else(|| {
+            let count = self.steps.counts.entry(e.session_id.clone()).or_insert(0);
+            *count += 1;
+            *count
+        });
         let agent = self
             .agents
             .iter()
@@ -511,14 +537,34 @@ impl App {
             );
         self.next_card_id += 1;
         let created = e.at;
+        let mut card = StepCard::new(req_id, key, step_no, e);
+        card.req_ids = req_ids;
         self.queue.push(Card {
             id: self.next_card_id,
             checkout,
             agent,
             created,
-            kind: CardKind::Step(Box::new(StepCard::new(req_id, key, step_no, e))),
+            kind: CardKind::Step(Box::new(card)),
         });
         Vec::new()
+    }
+
+    /// Drops stored decisions older than `RETRY_FOR`.
+    pub(crate) fn expire_step_decisions(&mut self, now: Instant) {
+        self.steps.retry.retain_mut(|(_, at)| {
+            let at = *at.get_or_insert(now);
+            now.saturating_duration_since(at) < RETRY_FOR
+        });
+    }
+
+    /// Whether card `id` has been on screen long enough to be decided.
+    fn looked_at(&self, id: u64) -> bool {
+        match (self.shown, self.now) {
+            (Some((shown, Some(at))), Some(now)) if shown == id => {
+                now.saturating_duration_since(at) >= LOOK_FOR
+            }
+            _ => false,
+        }
     }
 
     /// A hook gave up waiting. Its card stays for Claude's retry.
@@ -540,7 +586,12 @@ impl App {
             return Vec::new();
         };
         let (id, checkout) = (card.id, card.checkout.clone());
-        let CardKind::Step(sc) = &mut card.kind else {
+        let looked = self.looked_at(id);
+        let Some(Card {
+            kind: CardKind::Step(sc),
+            ..
+        }) = self.queue.current_mut()
+        else {
             return Vec::new();
         };
         let reason = |change| {
@@ -550,7 +601,12 @@ impl App {
                 input: TextInput::single_line(),
             }))
         };
-        match on_key(sc, key) {
+        let action = on_key(sc, key);
+        if matches!(action, Action::Allow | Action::Reject | Action::Change) && !looked {
+            self.set_status("Too quick: look at this step first");
+            return Vec::new();
+        }
+        match action {
             Action::None => {}
             Action::Status(s) => self.set_status(s),
             Action::Allow => return self.decide(id, HookReply::Allow),
@@ -677,7 +733,7 @@ impl App {
         if effects.is_empty() {
             status.push_str("; Claude gets it when it tries again");
             sc.decided = Some(reply);
-            self.steps.retry.push(*sc);
+            self.steps.retry.push((*sc, self.now));
         }
         self.set_status(status);
         effects
@@ -704,6 +760,7 @@ pub(crate) mod tests {
         PendingEdit {
             session_id: session.into(),
             checkout: Some(Checkout(mode_checkout.into())),
+            file_checkout: Some(Checkout(mode_checkout.into())),
             tool_name: "Edit".into(),
             preview: apply_edit("Edit", &input, Some(FILE)),
             tool_input: input,
@@ -719,12 +776,34 @@ pub(crate) mod tests {
         a
     }
 
+    thread_local! {
+        static CLOCK: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+    }
+
+    /// Test time: a second later each time it is read.
+    pub(crate) fn tick() -> Instant {
+        static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        let base = *BASE.get_or_init(Instant::now);
+        CLOCK.with(|c| {
+            c.set(c.get() + Duration::from_secs(1));
+            base + c.get()
+        })
+    }
+
     fn pre_tool(a: &mut App, req_id: u64, edit: PendingEdit) -> Vec<Effect> {
-        a.update(Msg::PreTool { req_id, edit })
+        pre_tool_at(a, req_id, edit, tick())
+    }
+
+    fn pre_tool_at(a: &mut App, req_id: u64, edit: PendingEdit, at: Instant) -> Vec<Effect> {
+        a.update(Msg::PreTool { req_id, edit, at })
     }
 
     fn key(c: char) -> Msg {
-        Msg::Key(KeyEvent::from(KeyCode::Char(c)))
+        press(KeyCode::Char(c))
+    }
+
+    fn press(code: KeyCode) -> Msg {
+        Msg::Key(KeyEvent::from(code), tick())
     }
 
     fn step(a: &App) -> &StepCard {
@@ -746,6 +825,7 @@ pub(crate) mod tests {
         assert_eq!(pre_tool(&mut a, 1, pending("s1", "/b", input())), reply(1));
         let mut outside = pending("s1", "/a", input());
         outside.checkout = None;
+        outside.file_checkout = None;
         assert_eq!(pre_tool(&mut a, 2, outside), reply(2));
         assert!(a.queue.is_empty());
     }
@@ -792,6 +872,103 @@ pub(crate) mod tests {
         assert_eq!(step(&a).step_no, 2);
     }
 
+    /// `pending` with the file one line longer than `FILE`, so the same
+    /// edit lands on a different file.
+    fn pending_on_changed_file(session: &str) -> PendingEdit {
+        let mut e = pending(session, "/a", input());
+        e.preview = apply_edit("Edit", &input(), Some(&format!("// new\n{FILE}")));
+        e
+    }
+
+    #[test]
+    fn changed_file_makes_a_new_card() {
+        let mut a = step_app();
+        pre_tool(&mut a, 1, pending("s1", "/a", input()));
+        a.update(Msg::HookGone { req_id: 1 });
+        a.update(key('y'));
+        // The stored Allow was for another file; it is not reused.
+        assert!(pre_tool(&mut a, 2, pending_on_changed_file("s1")).is_empty());
+        assert_eq!(step(&a).req_ids, [2]);
+        assert_eq!(step(&a).step_no, 2);
+
+        // An open card whose file changed is replaced, keeping its hooks.
+        assert!(pre_tool(&mut a, 3, pending("s1", "/a", input())).is_empty());
+        assert_eq!(a.queue.len(), 1);
+        assert_eq!(step(&a).req_ids, [2, 3]);
+        assert_eq!(step(&a).step_no, 2);
+        assert_eq!(step(&a).preview, pending("s1", "/a", input()).preview);
+    }
+
+    #[test]
+    fn stored_decision_expires_after_ten_minutes() {
+        let mut a = step_app();
+        pre_tool(&mut a, 1, pending("s1", "/a", input()));
+        a.update(Msg::HookGone { req_id: 1 });
+        let decided = tick();
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Char('y')), decided));
+        a.update(Msg::Tick(decided + Duration::from_secs(9 * 60)));
+        assert_eq!(a.steps.retry.len(), 1, "still kept at 9 minutes");
+        a.update(Msg::Tick(decided + RETRY_FOR));
+        assert!(a.steps.retry.is_empty());
+        let late = decided + RETRY_FOR + Duration::from_secs(1);
+        assert!(pre_tool_at(&mut a, 2, pending("s1", "/a", input()), late).is_empty());
+        assert_eq!(step(&a).req_ids, [2], "a new card, no stale answer");
+    }
+
+    #[test]
+    fn decision_keys_wait_until_the_card_was_seen() {
+        let mut a = step_app();
+        let t = tick();
+        pre_tool_at(&mut a, 1, pending("s1", "/a", input()), t);
+        let mut other = input();
+        other["new_string"] = json!("z");
+        pre_tool_at(&mut a, 2, pending("s1", "/a", other), t);
+        let at = |ms| {
+            Msg::Key(
+                KeyEvent::from(KeyCode::Char('y')),
+                t + Duration::from_millis(ms),
+            )
+        };
+        assert!(a.update(at(100)).is_empty(), "too soon after it appeared");
+        assert_eq!(a.status_text(), Some("Too quick: look at this step first"));
+        assert_eq!(a.update(at(400)).len(), 1);
+        // A second `y` typed straight after lands on the next card: ignored.
+        assert!(a.update(at(450)).is_empty());
+        assert_eq!(step(&a).req_ids, [2]);
+        assert_eq!(
+            a.update(at(700)),
+            [Effect::Reply {
+                req_id: 2,
+                decision: HookReply::Allow,
+            }]
+        );
+    }
+
+    #[test]
+    fn edit_into_a_step_checkout_from_elsewhere_is_held() {
+        let mut a = step_app();
+        // The agent runs in /b (review mode) and edits a file in /a (step).
+        let mut e = pending("s1", "/b", input());
+        e.file_checkout = Some(Checkout("/a".into()));
+        assert!(pre_tool(&mut a, 1, e).is_empty());
+        assert_eq!(a.queue.current().unwrap().checkout, Checkout("/a".into()));
+        // In /a, editing a file outside any checkout: still held.
+        let mut e = pending("s2", "/a", input());
+        e.file_checkout = None;
+        assert!(pre_tool(&mut a, 2, e).is_empty());
+        assert_eq!(a.queue.len(), 2);
+        // Neither in step mode: no decision.
+        let mut e = pending("s3", "/b", input());
+        e.file_checkout = Some(Checkout("/c".into()));
+        assert_eq!(
+            pre_tool(&mut a, 3, e),
+            [Effect::Reply {
+                req_id: 3,
+                decision: HookReply::NoDecision,
+            }]
+        );
+    }
+
     #[test]
     fn retry_of_open_edit_joins_its_card() {
         let mut a = step_app();
@@ -815,7 +992,7 @@ pub(crate) mod tests {
             a.update(key(c));
         }
         assert_eq!(
-            a.update(Msg::Key(KeyEvent::from(KeyCode::Enter))),
+            a.update(press(KeyCode::Enter)),
             [Effect::Reply {
                 req_id: 1,
                 decision: HookReply::Deny {
@@ -833,7 +1010,7 @@ pub(crate) mod tests {
             a.update(key(c));
         }
         assert_eq!(
-            a.update(Msg::Key(KeyEvent::from(KeyCode::Enter))),
+            a.update(press(KeyCode::Enter)),
             [Effect::Reply {
                 req_id: 2,
                 decision: HookReply::Deny {
@@ -918,11 +1095,11 @@ pub(crate) mod tests {
                 text: "}".into(),
             }]),
         });
-        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
+        a.update(press(KeyCode::Enter));
         assert_eq!(a.overlay, None);
         assert_eq!(a.status_text(), Some("src/http.rs:14"));
         assert_eq!(step(&a).rows[step(&a).view.cursor].no, 14);
-        a.update(Msg::Key(KeyEvent::from(KeyCode::Tab)));
+        a.update(press(KeyCode::Tab));
         assert_eq!(
             step(&a).rows[step(&a).view.cursor].text,
             "        3 => 429,"
