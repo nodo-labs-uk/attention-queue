@@ -40,24 +40,43 @@ fn base_cmd(dir: &Path) -> Command {
 /// setting planted since the last call is still blanked.
 fn program_keys(dir: &Path) -> Vec<String> {
     let mut cmd = base_cmd(dir);
-    cmd.args(["config", "--get-regexp", PROGRAM_KEYS]);
+    cmd.args(["config", "-z", "--get-regexp", PROGRAM_KEYS]);
     let Ok(out) = cmd.output() else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_string)
+    // Records are `key NL value NUL`; a key may hold spaces or `=`.
+    out.stdout
+        .split(|&b| b == 0)
+        .filter_map(|rec| rec.split(|&b| b == b'\n').next())
+        .filter(|k| !k.is_empty())
+        .map(|k| String::from_utf8_lossy(k).into_owned())
         .collect()
 }
 
 /// A git command in `dir` that runs no repository-configured programs (no
 /// fsmonitor, hooks, filters or textconv) and is not redirected by the
-/// parent environment.
+/// parent environment. The blanking goes through the environment, which
+/// does not split keys at `=` the way `-c` does.
 pub fn git_in(dir: &Path) -> Command {
     let mut cmd = base_cmd(dir);
+    let mut settings: Vec<(String, &str)> = Vec::new();
     for key in program_keys(dir) {
-        cmd.arg("-c").arg(format!("{key}="));
+        if let Some(name) = key
+            .strip_prefix("filter.")
+            .and_then(|k| k.rsplit_once('.'))
+            .map(|(name, _)| name)
+        {
+            let required = format!("filter.{name}.required");
+            if !settings.iter().any(|(k, _)| *k == required) {
+                settings.push((required, "false"));
+            }
+        }
+        settings.push((key, ""));
+    }
+    cmd.env("GIT_CONFIG_COUNT", settings.len().to_string());
+    for (i, (key, value)) in settings.iter().enumerate() {
+        cmd.env(format!("GIT_CONFIG_KEY_{i}"), key);
+        cmd.env(format!("GIT_CONFIG_VALUE_{i}"), value);
     }
     cmd
 }
@@ -411,6 +430,43 @@ mod tests {
         assert_eq!(text.as_deref(), Some("hello\n"));
         diff_trees(&c, EMPTY_TREE, &tree).unwrap();
         assert!(!marker.exists(), "textconv ran");
+    }
+
+    /// A filter whose name holds `=` or a space still must not run.
+    #[test]
+    fn filters_with_odd_names_are_not_run() {
+        for name in ["a=b", "a b"] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("ran");
+            init(dir.path());
+            let clean = dir.path().join("clean.sh");
+            std::fs::write(
+                &clean,
+                format!("#!/bin/sh\ntouch {}\ncat\n", marker.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&clean, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            let mut cfg = std::fs::read_to_string(dir.path().join(".git/config")).unwrap();
+            cfg.push_str(&format!(
+                "[filter \"{name}\"]\n\tclean = {}\n\trequired = true\n",
+                clean.display()
+            ));
+            std::fs::write(dir.path().join(".git/config"), cfg).unwrap();
+            // Attribute values cannot hold spaces; the name is what git looks up.
+            let attr = name.replace(' ', "");
+            std::fs::write(
+                dir.path().join(".gitattributes"),
+                format!("* filter={attr}\n"),
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+            let c = Checkout::new(dir.path());
+            let tree = snapshot_tree(&c).unwrap();
+            assert!(!marker.exists(), "filter {name:?} ran");
+            let text = file_at(&c, &tree, Path::new("a.txt")).unwrap();
+            assert_eq!(text.as_deref(), Some("hello\n"));
+        }
     }
 
     #[test]
