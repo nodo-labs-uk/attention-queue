@@ -196,14 +196,30 @@ fn wrap(line: &str, width: usize, push: &mut impl FnMut(String)) {
 /// zero-width, BOM, tags), line and paragraph separators, and every space but
 /// U+0020, by Unicode general category; plus the default-ignorable ones the
 /// categories miss (variation selectors, combining grapheme joiner, Hangul
-/// fillers) and the blank braille pattern.
+/// fillers), the blank braille pattern, and unassigned or private-use code
+/// points, which can be default-ignorable in a later Unicode version.
 fn is_format(c: char) -> bool {
     use unicode_properties::{GeneralCategory as G, UnicodeGeneralCategory};
     match c.general_category() {
-        G::Format | G::LineSeparator | G::ParagraphSeparator => true,
+        G::Format | G::LineSeparator | G::ParagraphSeparator | G::Unassigned | G::PrivateUse => {
+            true
+        }
         G::SpaceSeparator => c != ' ',
         _ => matches!(c as u32,
-            0xFE00..=0xFE0F | 0xE0100..=0xE01EF | 0x34F | 0x115F | 0x1160 | 0x3164 | 0xFFA0 | 0x2800),
+            0xFE00..=0xFE0F
+                | 0xE0100..=0xE01EF
+                | 0x34F
+                | 0x115F
+                | 0x1160
+                | 0x3164
+                | 0xFFA0
+                | 0x2800
+                | 0x2060..=0x206F
+                | 0xFFF0..=0xFFFB
+                | 0xE0000..=0xE0FFF
+                | 0x180B..=0x180F
+                | 0x17B4
+                | 0x17B5),
     }
 }
 
@@ -932,6 +948,21 @@ mod tests {
         }
         let pc = card_of("Bash", json!({"command": "a b"}));
         assert_eq!(text(&pc), ["a b"]);
+    }
+
+    #[test]
+    fn unassigned_and_private_use_characters_are_escaped() {
+        for c in [
+            '\u{e0080}',
+            '\u{2065}',
+            '\u{fff0}',
+            '\u{180b}',
+            '\u{17b4}',
+            '\u{e000}',
+        ] {
+            let pc = card_of("Bash", json!({"command": format!("a{c}b")}));
+            assert_eq!(text(&pc), [format!("a\\u{{{:x}}}b", c as u32)]);
+        }
     }
 
     #[test]
