@@ -11,6 +11,7 @@ use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
 use crate::permission::{DenyDraft, PermissionRequest};
+use crate::persist::CardKey;
 use crate::queue::Queue;
 use crate::quiz::{AnswerDraft, CodeRequest, Snippet};
 use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
@@ -28,7 +29,7 @@ pub enum Msg {
     Agents(Vec<Agent>),
     /// Listing agents failed; the last known list stays.
     AgentsFailed(String),
-    /// A `Send` or `SaveState` effect failed in the runtime.
+    /// A `Send` or `SaveConfig` effect failed in the runtime.
     EffectFailed(String),
     /// A hook is waiting for `Effect::Reply` with this `req_id`.
     Ipc {
@@ -137,8 +138,9 @@ pub enum Effect {
         decision: HookReply,
     },
     Llm(LlmJob),
-    /// Write the config (and, later, drafts and quiz progress) to disk.
-    SaveState,
+    /// Write the config to disk. (Saved state is written by the runtime
+    /// whenever `App::state_to_save` has something.)
+    SaveConfig,
     ComputeReview(ReviewRequest),
     /// Diff a quiz-mode checkout from `from_tree` (the branch base when
     /// `None`) to a fresh snapshot, for a quiz card.
@@ -149,8 +151,6 @@ pub enum Effect {
     },
     /// Read the code around a quiz question's `code_ref`.
     ReadCode(CodeRequest),
-    /// Write `App::rounds` to the state dir.
-    SaveRounds,
     /// Snapshot a step-mode checkout's working tree, and diff it from the
     /// request's tree.
     Snapshot(SnapshotRequest),
@@ -213,6 +213,10 @@ pub struct App {
     /// a message with a time arrives after the card changed.
     pub(crate) shown: Option<(u64, Option<Instant>)>,
     pub(crate) next_card_id: u64,
+    /// Saved drafts and quizzes waiting for their card to come back.
+    pub(crate) unclaimed: crate::persist::Unclaimed,
+    /// The state as last handed out to be written.
+    pub(crate) saved: crate::persist::SavedState,
 }
 
 /// How long a status message stays on screen.
@@ -250,6 +254,8 @@ impl App {
             now: None,
             shown: None,
             next_card_id: 0,
+            unclaimed: Default::default(),
+            saved: Default::default(),
         }
     }
 
@@ -476,7 +482,7 @@ impl App {
         self.theme_idx = (self.theme_idx + 1) % self.themes.len();
         self.config.theme = self.theme().name.clone();
         self.set_status(format!("Theme: {}", self.config.theme));
-        vec![Effect::SaveState]
+        vec![Effect::SaveConfig]
     }
 
     fn cycle_mode(&mut self) -> Vec<Effect> {
@@ -491,7 +497,7 @@ impl App {
         };
         self.config.set_mode(&checkout, mode);
         self.set_status(format!("{}: {}", project_name(&checkout), mode_label(mode)));
-        let mut effects = vec![Effect::SaveState];
+        let mut effects = vec![Effect::SaveConfig];
         match mode {
             // A fresh baseline: what changed before step mode is not a command's doing.
             Mode::Step => {
@@ -504,10 +510,19 @@ impl App {
     }
 
     fn on_agents(&mut self, agents: Vec<Agent>) -> Vec<Effect> {
-        let started: Vec<Agent> = became_waiting(&self.agents, &agents)
+        let mut started: Vec<Agent> = became_waiting(&self.agents, &agents)
             .into_iter()
             .cloned()
             .collect();
+        // After a restart an agent already waiting gets its card again when
+        // a saved draft or quiz may belong to it.
+        started.extend(
+            agents
+                .iter()
+                .filter(|a| a.waiting && !self.agents.iter().any(|p| p.id == a.id))
+                .filter(|a| a.checkout.as_ref().is_some_and(|c| self.unclaimed.has(c)))
+                .cloned(),
+        );
         self.agents = agents;
         let mut effects: Vec<Effect> = started
             .iter()
@@ -576,7 +591,14 @@ impl App {
         }
         let last = self.rounds.get(&req.checkout.0);
         let round = last.map_or(1, |l| l.round + 1);
-        let comments = last.map(|l| l.comments.clone()).unwrap_or_default();
+        let mut comments = last.map(|l| l.comments.clone()).unwrap_or_default();
+        let key = CardKey {
+            checkout: req.checkout.0.clone(),
+            from_tree: from_tree.clone(),
+            to_tree: to_tree.clone(),
+        };
+        let draft = self.unclaimed.take_draft(&key).unwrap_or_default();
+        comments.extend(draft.into_iter().map(|c| Comment { round, ..c }));
         self.next_card_id += 1;
         self.queue.push(Card {
             id: self.next_card_id,
@@ -746,7 +768,7 @@ impl App {
             },
         );
         self.set_status(status);
-        vec![Effect::SaveRounds]
+        Vec::new()
     }
 
     fn toggle_full_branch(&mut self) -> Vec<Effect> {
@@ -857,11 +879,11 @@ pub(crate) mod tests {
         }
     }
 
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         App::new(Config::default(), builtin_themes())
     }
 
-    fn key(c: char) -> Msg {
+    pub(crate) fn key(c: char) -> Msg {
         Msg::Key(KeyEvent::from(KeyCode::Char(c)), Instant::now())
     }
 
@@ -959,7 +981,7 @@ pub(crate) mod tests {
     #[test]
     fn theme_key_cycles_and_saves() {
         let mut a = app();
-        assert_eq!(a.update(key('T')), [Effect::SaveState]);
+        assert_eq!(a.update(key('T')), [Effect::SaveConfig]);
         assert_eq!(a.theme().name, "catppuccin-mocha");
         assert_eq!(a.config.theme, "catppuccin-mocha");
     }
@@ -984,7 +1006,7 @@ pub(crate) mod tests {
         assert_eq!(
             a.update(key('M')),
             [
-                Effect::SaveState,
+                Effect::SaveConfig,
                 Effect::Snapshot(SnapshotRequest {
                     checkout: ck.clone(),
                     from: None,
@@ -1028,21 +1050,21 @@ pub(crate) mod tests {
         assert_eq!(a.queue.current().unwrap().id, 2);
     }
 
-    fn ctrl(c: char) -> Msg {
+    pub(crate) fn ctrl(c: char) -> Msg {
         Msg::Key(
             KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
             Instant::now(),
         )
     }
 
-    fn typed(a: &mut App, s: &str) {
+    pub(crate) fn typed(a: &mut App, s: &str) {
         for c in s.chars() {
             a.update(key(c));
         }
     }
 
     /// The effect the agent finishing in `/a` asks for.
-    fn finish_round(a: &mut App) -> ReviewRequest {
+    pub(crate) fn finish_round(a: &mut App) -> ReviewRequest {
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
         let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
         let [Effect::ComputeReview(req)] = effects.as_slice() else {
@@ -1051,7 +1073,7 @@ pub(crate) mod tests {
         req.clone()
     }
 
-    fn computed(req: ReviewRequest, from: &str, to: &str, files: Vec<FileDiff>) -> Msg {
+    pub(crate) fn computed(req: ReviewRequest, from: &str, to: &str, files: Vec<FileDiff>) -> Msg {
         Msg::ReviewComputed {
             req,
             from_tree: from.into(),
@@ -1061,11 +1083,11 @@ pub(crate) mod tests {
         }
     }
 
-    fn fixture_files() -> Vec<FileDiff> {
+    pub(crate) fn fixture_files() -> Vec<FileDiff> {
         crate::git::parse_unified(crate::review::tests::FIXTURE.as_bytes())
     }
 
-    fn review(a: &App) -> &ReviewCard {
+    pub(crate) fn review(a: &App) -> &ReviewCard {
         match &a.queue.current().expect("a card").kind {
             CardKind::Review(rc) => rc,
             k => panic!("not a review card: {k:?}"),
@@ -1149,7 +1171,7 @@ pub(crate) mod tests {
             a.update(key('S')).is_empty(),
             "no second send while sending"
         );
-        assert_eq!(a.update(Msg::SendDone { card: id }), [Effect::SaveRounds]);
+        assert!(a.update(Msg::SendDone { card: id }).is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
         assert_eq!(a.status_text(), Some("Sent 1 comment to api"));
@@ -1189,7 +1211,7 @@ pub(crate) mod tests {
         let req = finish_round(&mut a);
         a.update(computed(req, "base", "t1", fixture_files()));
         a.update(Msg::Agents(Vec::new()));
-        assert_eq!(a.update(key('A')), [Effect::SaveRounds]);
+        assert!(a.update(key('A')).is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
     }
@@ -1229,7 +1251,7 @@ pub(crate) mod tests {
         let id = a.queue.current().unwrap().id;
         a.update(key('A'));
         assert_eq!(a.queue.len(), 1);
-        assert_eq!(a.update(Msg::SendDone { card: id }), [Effect::SaveRounds]);
+        assert!(a.update(Msg::SendDone { card: id }).is_empty());
         assert!(a.queue.is_empty());
         let last = &a.rounds[&PathBuf::from("/a")];
         assert_eq!((last.tree.as_str(), last.round), ("t1", 1));
@@ -1255,7 +1277,7 @@ pub(crate) mod tests {
         // The agent is working again by the time the user approves the next round.
         a.update(computed(req, "t1", "t2", fixture_files()));
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        assert_eq!(a.update(key('A')), [Effect::SaveRounds]);
+        assert!(a.update(key('A')).is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].round, 2);
     }

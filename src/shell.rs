@@ -632,7 +632,7 @@ mod tests {
             0,
         ));
         let effects = a.update(Msg::Key(KeyEvent::from(KeyCode::Char('M')), Instant::now()));
-        assert!(effects.contains(&Effect::SaveState));
+        assert!(effects.contains(&Effect::SaveConfig));
         let req = effects
             .into_iter()
             .find_map(|e| match e {

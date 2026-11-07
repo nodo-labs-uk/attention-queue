@@ -35,6 +35,16 @@ fn base_cmd(dir: &Path) -> Command {
     cmd.env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
+    // Nor plant config: `GIT_CONFIG_PARAMETERS` (from `git -c`) is read after
+    // `GIT_CONFIG_COUNT`, so it would override the blanking `git_in` sets.
+    cmd.env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT");
+    for (key, _) in std::env::vars_os() {
+        let k = key.as_encoded_bytes();
+        if k.starts_with(b"GIT_CONFIG_KEY_") || k.starts_with(b"GIT_CONFIG_VALUE_") {
+            cmd.env_remove(&key);
+        }
+    }
     // Attributes come from no tree and no system file, which switches off
     // filters set by a committed .gitattributes. (.git/info/attributes is
     // still read, so the blanking below stays.)
@@ -496,6 +506,70 @@ mod tests {
             let text = file_at(&c, &tree, Path::new("a.txt")).unwrap();
             assert_eq!(text.as_deref(), Some("hello\n"));
         }
+    }
+
+    /// A filter planted through the parent's `GIT_CONFIG_PARAMETERS` (what
+    /// `git -c` passes down) or `GIT_CONFIG_COUNT` must not run either. The
+    /// variables have to be in this process's own environment, so the check
+    /// runs in a copy of this test binary started with them set.
+    #[test]
+    fn filter_from_the_parent_environment_is_not_run() {
+        const CHILD: &str = "AQ_TEST_PARENT_GIT_ENV";
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let c = Checkout::new(PathBuf::from(dir));
+            let tree = snapshot_tree(&c).unwrap();
+            let text = file_at(&c, &tree, Path::new("a.txt")).unwrap();
+            assert_eq!(text.as_deref(), Some("hello\n"));
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        init(dir.path());
+        let clean = dir.path().join("clean.sh");
+        std::fs::write(
+            &clean,
+            format!("#!/bin/sh\ntouch {}\ntr a-z A-Z\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&clean, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        // aq reads attributes from no tree, but still from .git/info.
+        std::fs::create_dir_all(dir.path().join(".git/info")).unwrap();
+        std::fs::write(dir.path().join(".git/info/attributes"), "* filter=x\n").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let planted = [
+            (
+                "GIT_CONFIG_PARAMETERS",
+                format!("'filter.x.clean'='{}'", clean.display()),
+            ),
+            ("GIT_CONFIG_COUNT", "1".to_string()),
+            ("GIT_CONFIG_KEY_0", "filter.x.required".to_string()),
+            ("GIT_CONFIG_VALUE_0", "true".to_string()),
+        ];
+        // Plain git does run it, so the check below means something.
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["hash-object", "a.txt"])
+            .envs(planted.iter().map(|(k, v)| (k, v)))
+            .output()
+            .unwrap();
+        assert!(out.status.success() && marker.exists(), "{out:?}");
+        std::fs::remove_file(&marker).unwrap();
+
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git::repo::tests::filter_from_the_parent_environment_is_not_run",
+            ])
+            .env(CHILD, dir.path())
+            .envs(planted.iter().map(|(k, v)| (k, v)))
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "{log}");
+        assert!(!marker.exists(), "filter ran");
     }
 
     #[test]

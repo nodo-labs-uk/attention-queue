@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod llm;
 pub mod model;
 pub mod permission;
+pub mod persist;
 pub mod queue;
 pub mod quiz;
 pub mod review;

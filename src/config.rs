@@ -35,11 +35,8 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        }
         let text = toml::to_string_pretty(self).context("serialising config")?;
-        std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+        write_atomic(path, text.as_bytes())
     }
 
     pub fn mode_for(&self, checkout: &Checkout) -> Mode {
@@ -49,6 +46,25 @@ impl Config {
     pub fn set_mode(&mut self, checkout: &Checkout, mode: Mode) {
         self.modes.insert(checkout.0.clone(), mode);
     }
+}
+
+/// Writes `bytes` to `path` through a temp file in the same directory and a
+/// rename, so a crash never leaves a half-written file. Makes the directory.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("creating a temp file in {}", dir.display()))?;
+    tmp.write_all(bytes)
+        .and_then(|()| tmp.as_file().sync_all())
+        .with_context(|| format!("writing {}", tmp.path().display()))?;
+    tmp.persist(path)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +147,20 @@ mod tests {
         let loaded = Config::load(&file).unwrap();
         assert_eq!(loaded.mode_for(&x), Mode::Step);
         assert_eq!(loaded, cfg);
+    }
+
+    #[test]
+    fn save_replaces_the_file_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "theme = \"old\"\n").unwrap();
+        Config::default().save(&file).unwrap();
+        assert_eq!(Config::load(&file).unwrap(), Config::default());
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["config.toml"]);
     }
 
     #[test]

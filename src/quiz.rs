@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Effect, Overlay};
 use crate::git::{DiffLine, FileDiff, FileStatus, Hunk};
 use crate::llm::{JUDGE_PROMPT, JobKind, LlmEvent, LlmJob, QUIZ_PROMPT};
 use crate::model::{AgentId, Card, CardKind, Checkout};
+use crate::persist::CardKey;
 use crate::review::{APPROVE_MESSAGE, LastRound, file_path};
 use crate::ui::input::{InputEvent, TextInput};
 
@@ -26,20 +27,20 @@ pub const GAP_MAX: usize = 500;
 /// Explanations are cut to this many characters.
 pub const EXPLANATION_MAX: usize = 2000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QuestionKind {
     Choice,
     Free,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeRef {
     pub path: PathBuf,
     pub line: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     pub kind: QuestionKind,
     pub question: String,
@@ -53,7 +54,7 @@ pub struct Question {
     pub code_ref: CodeRef,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JudgeVerdict {
     Right,
@@ -62,7 +63,7 @@ pub enum JudgeVerdict {
 }
 
 /// Where a judged answer's gap lies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GapIn {
     Code,
@@ -71,7 +72,7 @@ pub enum GapIn {
     Nothing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Judgement {
     pub verdict: JudgeVerdict,
     pub gap: String,
@@ -79,14 +80,14 @@ pub struct Judgement {
     pub explanation: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Given {
     /// Index into the question's choices.
     Choice(usize),
     Free(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Verdict {
     Right,
     Wrong,
@@ -95,7 +96,7 @@ pub enum Verdict {
     Judged(Judgement),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Answer {
     pub given: Given,
     pub verdict: Verdict,
@@ -449,15 +450,30 @@ impl App {
         let diff = diff_text(&files, DIFF_CAP);
         self.next_card_id += 1;
         let id = self.next_card_id;
-        let job = quiz_job(id, &checkout, &diff);
+        let key = CardKey {
+            checkout: checkout.0.clone(),
+            from_tree: from_tree.clone(),
+            to_tree: to_tree.clone(),
+        };
+        // A quiz saved before a restart carries on with its questions.
+        let (qc, effects) = match self.unclaimed.take_quiz(&key) {
+            Some(saved) => (saved.into_card(diff), Vec::new()),
+            None => {
+                let job = quiz_job(id, &checkout, &diff);
+                (
+                    QuizCard::new(from_tree, to_tree, diff),
+                    vec![Effect::Llm(job)],
+                )
+            }
+        };
         self.queue.push(Card {
             id,
             checkout,
             agent,
             created: at,
-            kind: CardKind::Quiz(QuizCard::new(from_tree, to_tree, diff)),
+            kind: CardKind::Quiz(qc),
         });
-        vec![Effect::Llm(job)]
+        effects
     }
 
     pub(crate) fn on_llm(&mut self, ev: LlmEvent) -> Vec<Effect> {
@@ -764,7 +780,7 @@ impl App {
                 comments: Vec::new(),
             });
         self.set_status(status);
-        vec![Effect::SaveRounds]
+        Vec::new()
     }
 
     fn quiz_mut(&mut self, id: u64) -> Option<(Checkout, &mut QuizCard)> {
@@ -852,14 +868,14 @@ pub(crate) mod tests {
         Msg::Key(KeyEvent::from(c), Instant::now())
     }
 
-    fn quiz(a: &App) -> &QuizCard {
+    pub(crate) fn quiz(a: &App) -> &QuizCard {
         match &a.queue.current().expect("a card").kind {
             CardKind::Quiz(qc) => qc,
             k => panic!("not a quiz card: {k:?}"),
         }
     }
 
-    fn file() -> FileDiff {
+    pub(crate) fn file() -> FileDiff {
         crate::git::parse_unified(crate::review::tests::FIXTURE.as_bytes()).remove(0)
     }
 
@@ -1072,7 +1088,7 @@ pub(crate) mod tests {
         );
         assert_eq!(quiz(&a).state, QuizState::Done);
         assert_eq!(a.queue.len(), 1, "the card waits for the send");
-        assert_eq!(a.update(Msg::SendDone { card: id }), [Effect::SaveRounds]);
+        assert!(a.update(Msg::SendDone { card: id }).is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
         assert_eq!(a.status_text(), Some("Sent 1 fix to api"));

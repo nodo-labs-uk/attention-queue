@@ -1,9 +1,10 @@
 //! The impure shell around `App::update`: terminal, agent polling, key input,
 //! rendering and effects.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -24,8 +25,8 @@ use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
 use crate::llm::{Children, ClaudeCli, Llm, LlmJob, run_job};
 use crate::model::{AgentId, Checkout, Mode};
+use crate::persist::{self, SavedState};
 use crate::quiz::{CodeRequest, snippet};
-use crate::review::LastRound;
 use crate::shell::{SnapshotRequest, Taken};
 use crate::step::PendingEdit;
 use crate::theme::load_themes;
@@ -35,6 +36,8 @@ const AGENT_POLL: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_secs(1);
 /// At most 30 frames a second.
 const FRAME: Duration = Duration::from_millis(33);
+/// Saved state is written at most this often.
+const SAVE_EVERY: Duration = Duration::from_secs(1);
 
 pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     // Loaded before raw mode: bad theme files warn on stderr.
@@ -43,9 +46,9 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     let mut app = App::new(config, themes);
     // Before raw mode, so "aq is already running" shows on the terminal.
     let listener = ipc::listen(&paths.socket)?;
-    match load_rounds(&rounds_file(&paths)) {
-        Ok(rounds) => app.rounds = rounds,
-        Err(e) => app.set_status(format!("Could not read saved review rounds: {e:#}")),
+    match persist::load(&persist::state_file(&paths)) {
+        Ok(state) => app.restore(state),
+        Err(e) => app.set_status(format!("Could not read saved state: {e:#}")),
     }
 
     // Installs a panic hook that leaves raw mode and the alternate screen.
@@ -237,9 +240,8 @@ fn apply(
     for effect in app.update(msg) {
         let job = match effect {
             Effect::Send { agent, text, card } => Job::Send { agent, text, card },
-            Effect::SaveState => Job::Save(app.config.clone()),
+            Effect::SaveConfig => Job::SaveConfig(app.config.clone()),
             Effect::ComputeReview(req) => Job::Review(req),
-            Effect::SaveRounds => Job::SaveRounds(app.rounds.clone()),
             Effect::Grep { checkout, ident } => Job::Grep { checkout, ident },
             Effect::Snapshot(req) => Job::Snapshot(req),
             Effect::GoToWindow { pane } => Job::GoTo(pane),
@@ -265,6 +267,9 @@ fn apply(
         // The worker outlives the loop, so this cannot fail while we run.
         let _ = jobs.send(job);
     }
+    if let Some(state) = app.state_to_save() {
+        let _ = jobs.send(Job::SaveState(state));
+    }
 }
 
 /// Blocking effect work, done in order on the effect worker.
@@ -274,9 +279,10 @@ enum Job {
         text: String,
         card: Option<u64>,
     },
-    Save(Config),
+    SaveConfig(Config),
+    /// Written at most once a second; the latest state wins.
+    SaveState(SavedState),
     Review(ReviewRequest),
-    SaveRounds(BTreeMap<PathBuf, LastRound>),
     /// Read what a step card needs. `config` is a snapshot, used only to
     /// skip reading the transcript outside step mode.
     LoadEdit {
@@ -322,7 +328,8 @@ struct PreToolReq {
 
 /// Runs effects off the event loop, one at a time so they land in order,
 /// except LLM calls, which each get a thread so nothing waits behind them.
-/// Failures come back as `Msg::EffectFailed`.
+/// Saved state is written at most once every `SAVE_EVERY`, and once more on
+/// the way out if a write is due. Failures come back as `Msg::EffectFailed`.
 fn spawn_effect_worker(
     tx: UnboundedSender<Msg>,
     conn: Arc<dyn AgentConn>,
@@ -331,8 +338,40 @@ fn spawn_effect_worker(
 ) -> (std::sync::mpsc::Sender<Job>, JoinHandle<()>) {
     let (jobs, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        for job in rx {
+        let state_file = persist::state_file(&paths);
+        let save = |state: &SavedState| {
+            persist::save(&state_file, state)
+                .err()
+                .map(|e| Msg::EffectFailed(format!("Could not save state: {e:#}")))
+        };
+        // The latest state not written yet, and when it is due.
+        let mut due: Option<(SavedState, std::time::Instant)> = None;
+        loop {
+            let next = match &due {
+                Some((_, at)) => {
+                    rx.recv_timeout(at.saturating_duration_since(std::time::Instant::now()))
+                }
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            let job = match next {
+                Ok(job) => job,
+                Err(e) => {
+                    let failed = due.take().and_then(|(state, _)| save(&state));
+                    if let Some(msg) = failed {
+                        let _ = tx.send(msg);
+                    }
+                    match e {
+                        RecvTimeoutError::Timeout => continue,
+                        RecvTimeoutError::Disconnected => return,
+                    }
+                }
+            };
             let msg = match job {
+                Job::SaveState(state) => {
+                    let at = due.map_or_else(|| std::time::Instant::now() + SAVE_EVERY, |d| d.1);
+                    due = Some((state, at));
+                    None
+                }
                 Job::Send { agent, text, card } => {
                     let sent = if conn.is_alive(&agent) {
                         conn.send_text(&agent, &text)
@@ -347,7 +386,7 @@ fn spawn_effect_worker(
                         (None, Err(e)) => Some(Msg::EffectFailed(e)),
                     }
                 }
-                Job::Save(config) => config
+                Job::SaveConfig(config) => config
                     .save(&paths.config_file)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not save settings: {e:#}"))),
@@ -365,9 +404,6 @@ fn spawn_effect_worker(
                     });
                     None
                 }
-                Job::SaveRounds(rounds) => save_rounds(&rounds_file(&paths), &rounds)
-                    .err()
-                    .map(|e| Msg::EffectFailed(format!("Could not save review rounds: {e:#}"))),
                 Job::LoadEdit {
                     req_id,
                     req,
@@ -574,29 +610,6 @@ fn file_dir(path: &Path) -> Option<PathBuf> {
         .find_map(|a| a.canonicalize().ok().filter(|r| r.is_dir()))
 }
 
-fn rounds_file(paths: &Paths) -> PathBuf {
-    paths.state_dir.join("snapshots.json")
-}
-
-/// A missing file means no rounds yet.
-fn load_rounds(path: &Path) -> Result<BTreeMap<PathBuf, LastRound>> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
-}
-
-fn save_rounds(path: &Path, rounds: &BTreeMap<PathBuf, LastRound>) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    let text = serde_json::to_string_pretty(rounds).context("serialising review rounds")?;
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
-}
-
 fn spawn_agent_poll(tx: UnboundedSender<Msg>, conn: Arc<dyn AgentConn>) {
     tokio::spawn(async move {
         loop {
@@ -647,32 +660,6 @@ fn spawn_ticker(tx: UnboundedSender<Msg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::{Comment, Side};
-
-    #[test]
-    fn rounds_round_trip_and_missing_file_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("state/snapshots.json");
-        assert!(load_rounds(&file).unwrap().is_empty());
-        let mut rounds = BTreeMap::new();
-        rounds.insert(
-            PathBuf::from("/w/api"),
-            LastRound {
-                tree: "abc".into(),
-                round: 2,
-                comments: vec![Comment {
-                    path: "src/a.rs".into(),
-                    line: 3,
-                    end_line: 4,
-                    side: Side::Old,
-                    body: "why?".into(),
-                    round: 2,
-                }],
-            },
-        );
-        save_rounds(&file, &rounds).unwrap();
-        assert_eq!(load_rounds(&file).unwrap(), rounds);
-    }
 
     #[test]
     fn hook_gone_while_loading_keeps_the_decision_for_the_retry() {
