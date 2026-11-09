@@ -126,6 +126,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 ..
             }),
         ) => quiz_keys(qc),
+        (None, None) if app.picked_agent().is_some() => vec![
+            ("j/k", "pick".into()),
+            ("Enter", "go to window".into()),
+            ("P", "open PR".into()),
+            ("T", "theme".into()),
+            ("Q", "quit".into()),
+        ],
         (None, None) => vec![("T", "theme".into()), ("Q", "quit".into())],
     };
     let mut spans = vec![Span::raw(" ")];

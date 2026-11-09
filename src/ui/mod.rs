@@ -215,6 +215,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn empty_state_shows_the_picked_agents_screen() {
+        let mut a = app();
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", false),
+        ];
+        let screen: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        a.preview = Some(crate::app::Preview {
+            pane: "%1".into(),
+            text: Ok(screen.join("\n") + "\n> \n\n"),
+        });
+        insta::assert_snapshot!(render(&a, 60, 16));
+    }
+
+    #[test]
     fn empty_state_without_agents() {
         insta::assert_snapshot!(render(&app(), 50, 7));
     }

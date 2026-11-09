@@ -55,6 +55,7 @@ A card that takes the screen by itself (a permission request jumping ahead, or t
 | Shell change | `y` keep, `u` ask Claude to undo it | `j`/`k`, `]c`/`[c`, `tab` file, `v` view |
 | Permission | `y` allow (after scrolling to the end), `n` deny with a reason | `j`/`k`, `PgUp`/`PgDn`, `g` go to the window |
 | Quiz | `1`-`4` pick, `i` type an answer, `y` fine as is, `c` ask for a fix, `Enter` send | `m` show the code, `r` judge or generate again, `x` dismiss a failed quiz |
+| No card | `P` send `/create-pr` to the picked idle agent and go to its window | `j`/`k` pick an idle agent, `Enter` go to its window |
 
 ## Files
 

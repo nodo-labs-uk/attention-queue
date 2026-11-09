@@ -414,6 +414,7 @@ fn apply(
             Effect::Grep { checkout, ident } => Job::Grep { checkout, ident },
             Effect::Snapshot(req) => Job::Snapshot(req),
             Effect::GoToWindow { pane } => Job::GoTo(pane),
+            Effect::CapturePane { pane } => Job::Capture(pane),
             Effect::ComputeQuiz {
                 checkout,
                 agent,
@@ -543,6 +544,7 @@ enum Job {
     },
     Snapshot(SnapshotRequest),
     GoTo(String),
+    Capture(String),
     Quiz {
         checkout: Checkout,
         agent: AgentId,
@@ -657,6 +659,11 @@ fn spawn_effect_worker(
                 Job::GoTo(pane) => crate::permission::go_to_window(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not go to {pane}: {e:#}"))),
+                Job::Capture(pane) => Some(Msg::PaneCaptured {
+                    text: crate::agents::tmux::capture_pane(&pane, &[])
+                        .map_err(|e| format!("Could not read {pane}: {e:#}")),
+                    pane,
+                }),
                 Job::Grep { checkout, ident } => Some(Msg::GrepDone {
                     result: git::grep_word(&checkout, &ident)
                         .map_err(|e| format!("Could not search for {ident}: {e:#}")),

@@ -1,0 +1,20 @@
+---
+source: src/ui/mod.rs
+expression: "render(&a, 60, 16)"
+---
+" aq  nothing waiting                                        "
+"                                                            "
+"                 Nothing needs you.                         "
+"                                                            "
+"                 › main:1 api  api  waiting                 "
+"                   main:2 web  web  working                 "
+"                                                            "
+"┌ main:1 api ──────────────────────────────────────────────┐"
+"│line 16                                                   │"
+"│line 17                                                   │"
+"│line 18                                                   │"
+"│line 19                                                   │"
+"│line 20                                                   │"
+"│>                                                         │"
+"└──────────────────────────────────────────────────────────┘"
+" j/k pick   Enter go to window   P open PR   T theme   Q qui"

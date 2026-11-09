@@ -202,6 +202,17 @@ impl AgentConn for TmuxConn {
     }
 }
 
+/// The text on `pane`'s screen, one line per screen row. `server` are the
+/// tmux arguments that pick the server; empty means the default one.
+pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(server).args(["capture-pane", "-p", "-t", pane]);
+    let (status, out, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux capture-pane")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};

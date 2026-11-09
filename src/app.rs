@@ -85,6 +85,11 @@ pub enum Msg {
     SendDone {
         card: u64,
     },
+    /// What a `CapturePane` effect read from the pane's screen.
+    PaneCaptured {
+        pane: String,
+        text: Result<String, String>,
+    },
     /// A `Send` for a review card failed; the card stays.
     SendFailed {
         card: u64,
@@ -163,8 +168,13 @@ pub enum Effect {
         checkout: Checkout,
         ident: String,
     },
-    /// `g` on a permission card: switch tmux to the pane's window.
+    /// `g` on a permission card, or Enter on an idle agent: switch tmux to
+    /// the pane's window.
     GoToWindow {
+        pane: String,
+    },
+    /// Read the text on a pane's screen, for the empty screen's live view.
+    CapturePane {
         pane: String,
     },
 }
@@ -224,6 +234,19 @@ pub struct App {
     /// The state as last handed out to be written; `None` after a failed
     /// write, so the next look writes it again.
     pub(crate) saved: Option<crate::persist::SavedState>,
+    /// The idle agent picked on the empty screen, to go to with Enter.
+    pub(crate) picked: Option<AgentId>,
+    /// The last screen read from a pane, for the empty screen's live view.
+    pub preview: Option<Preview>,
+    /// A `CapturePane` is on its way, so another is not asked for.
+    pub(crate) capturing: bool,
+}
+
+/// A pane's screen as last read, or why it could not be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    pub pane: String,
+    pub text: Result<String, String>,
 }
 
 /// The card on screen.
@@ -239,6 +262,9 @@ pub(crate) struct Shown {
 
 /// Shown while a message waits for its agent to be at its prompt.
 pub const QUEUED_STATUS: &str = "Queued: will send when the agent is idle";
+
+/// What P on the empty screen sends: the skill that drafts, checks and opens a PR.
+pub const PR_COMMAND: &str = "/create-pr";
 
 /// How long a status message stays on screen.
 pub const STATUS_FOR: Duration = Duration::from_secs(5);
@@ -278,6 +304,9 @@ impl App {
             next_card_id: 0,
             unclaimed: Default::default(),
             saved: Some(Default::default()),
+            picked: None,
+            preview: None,
+            capturing: false,
         }
     }
 
@@ -308,6 +337,105 @@ impl App {
 
     pub fn agent(&self, id: &AgentId) -> Option<&Agent> {
         self.agents.iter().find(|a| &a.id == id)
+    }
+
+    /// The agents in window order, as the empty screen lists them.
+    pub fn agents_in_order(&self) -> Vec<&Agent> {
+        let mut agents: Vec<&Agent> = self.agents.iter().collect();
+        agents.sort_by(|a, b| (&a.session, a.window_index).cmp(&(&b.session, b.window_index)));
+        agents
+    }
+
+    /// Agents waiting at their prompt, in window order: the ones the empty
+    /// screen lets you pick.
+    fn idle_agents(&self) -> Vec<&Agent> {
+        self.agents_in_order()
+            .into_iter()
+            .filter(|a| a.waiting)
+            .collect()
+    }
+
+    /// The idle agent picked on the empty screen, or the first one when the
+    /// pick is no longer idle.
+    pub fn picked_agent(&self) -> Option<&Agent> {
+        let idle = self.idle_agents();
+        idle.iter()
+            .find(|a| Some(&a.id) == self.picked.as_ref())
+            .or(idle.first())
+            .copied()
+    }
+
+    /// j/k pick an idle agent on the empty screen; Enter or g go to its
+    /// window; P asks it to open a pull request.
+    fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let ids: Vec<AgentId> = self.idle_agents().iter().map(|a| a.id.clone()).collect();
+        let Some(current) = self.picked_agent().map(|a| a.id.clone()) else {
+            return Vec::new();
+        };
+        let i = ids.iter().position(|id| *id == current).unwrap_or(0);
+        let n = ids.len();
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.picked = Some(ids[(i + 1) % n].clone());
+                return self.capture_picked();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.picked = Some(ids[(i + n - 1) % n].clone());
+                return self.capture_picked();
+            }
+            KeyCode::Enter | KeyCode::Char('g') => {
+                return vec![Effect::GoToWindow { pane: current.pane }];
+            }
+            KeyCode::Char('P') => return self.ask_for_pr(current),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Asks for the picked agent's screen while the empty screen shows, one
+    /// capture at a time.
+    fn capture_picked(&mut self) -> Vec<Effect> {
+        if self.capturing || self.queue.current().is_some() {
+            return Vec::new();
+        }
+        let Some(pane) = self.picked_agent().map(|a| a.id.pane.clone()) else {
+            return Vec::new();
+        };
+        self.capturing = true;
+        vec![Effect::CapturePane { pane }]
+    }
+
+    /// The picked agent's screen, once read: `None` until then.
+    pub fn picked_preview(&self) -> Option<&Result<String, String>> {
+        let pane = &self.picked_agent()?.id.pane;
+        self.preview
+            .as_ref()
+            .filter(|p| &p.pane == pane)
+            .map(|p| &p.text)
+    }
+
+    /// Sends `/create-pr` to an agent at its prompt and goes to its window,
+    /// where the skill shows the draft before pushing. With no card to hold
+    /// it, a busy agent gets nothing.
+    fn ask_for_pr(&mut self, agent: AgentId) -> Vec<Effect> {
+        let name = self
+            .agent(&agent)
+            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        if !self.at_prompt(&agent) {
+            self.set_status(format!(
+                "{name} is busy; try P again when it is at its prompt"
+            ));
+            return Vec::new();
+        }
+        self.set_status(format!("Asked {name} to open a PR"));
+        vec![
+            Effect::Send {
+                agent: agent.clone(),
+                text: PR_COMMAND.into(),
+                card: None,
+            },
+            Effect::GoToWindow { pane: agent.pane },
+        ]
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
@@ -355,9 +483,14 @@ impl App {
             Msg::Key(key, _) => self.on_key(key),
             Msg::Tick(now) => {
                 self.expire_status(now);
-                Vec::new()
+                self.capture_picked()
             }
             Msg::Agents(agents) => self.on_agents(agents),
+            Msg::PaneCaptured { pane, text } => {
+                self.capturing = false;
+                self.preview = Some(Preview { pane, text });
+                Vec::new()
+            }
             Msg::AgentsFailed(e) => {
                 self.set_status(format!("Could not list agents: {e}"));
                 Vec::new()
@@ -522,7 +655,8 @@ impl App {
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
                 Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
-                _ => self.on_review_key(key),
+                Some(CardKind::Review(_)) => self.on_review_key(key),
+                None => self.on_empty_key(key),
             },
             _ => Vec::new(),
         }
@@ -1562,6 +1696,79 @@ pub(crate) mod tests {
         typed(a, "why?");
         a.update(ctrl('s'));
         a.queue.current().unwrap().id
+    }
+
+    #[test]
+    fn empty_screen_picks_an_idle_agent_and_goes_to_it() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![
+            agent("%3", 3, "web", "/w/web", true),
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "docs", "/w/docs", false),
+        ];
+        let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        let picked = |a: &App| a.picked_agent().unwrap().id.pane.clone();
+        // Window order, skipping the working agent, and wrapping both ways.
+        assert_eq!(picked(&a), "%1");
+        a.update(key('j'));
+        assert_eq!(picked(&a), "%3");
+        a.update(key('j'));
+        assert_eq!(picked(&a), "%1");
+        a.update(key('k'));
+        assert_eq!(picked(&a), "%3");
+        assert_eq!(
+            a.update(enter()),
+            vec![Effect::GoToWindow { pane: "%3".into() }]
+        );
+        assert_eq!(
+            a.update(key('P')),
+            vec![
+                Effect::Send {
+                    agent: a.agents[0].id.clone(),
+                    text: PR_COMMAND.into(),
+                    card: None,
+                },
+                Effect::GoToWindow { pane: "%3".into() },
+            ]
+        );
+        // Waiting but not idle (the turn has not quite ended): nothing is sent.
+        a.agents[0].status = AgentStatus::Busy;
+        assert!(a.update(key('P')).is_empty());
+        assert!(a.status_text().unwrap().contains("busy"));
+        // A pick that starts working falls back to the first idle agent.
+        a.agents[0].waiting = false;
+        assert_eq!(picked(&a), "%1");
+        // With nobody idle there is nothing to pick or go to.
+        a.agents[1].waiting = false;
+        assert!(a.picked_agent().is_none());
+        assert!(a.update(enter()).is_empty());
+    }
+
+    #[test]
+    fn empty_screen_reads_the_picked_agents_screen() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.update(Msg::Agents(vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", true),
+        ]));
+        let tick = || Msg::Tick(Instant::now());
+        let capture = |pane: &str| vec![Effect::CapturePane { pane: pane.into() }];
+        assert_eq!(a.update(tick()), capture("%1"));
+        // One capture at a time: the next tick and a new pick ask for none.
+        assert!(a.update(tick()).is_empty());
+        assert!(a.update(key('j')).is_empty());
+        // A screen for the old pick is kept but not shown for the new one.
+        a.update(Msg::PaneCaptured {
+            pane: "%1".into(),
+            text: Ok("> ".into()),
+        });
+        assert_eq!(a.picked_preview(), None);
+        assert_eq!(a.update(tick()), capture("%2"));
+        a.update(Msg::PaneCaptured {
+            pane: "%2".into(),
+            text: Ok("done\n> ".into()),
+        });
+        assert_eq!(a.picked_preview(), Some(&Ok("done\n> ".to_string())));
     }
 
     #[test]
