@@ -638,6 +638,12 @@ impl App {
                 .find_mut(|c| c.checkout == req.checkout && matches!(c.kind, CardKind::Review(_))),
         };
         if let Some(card) = existing {
+            // A card whose message is going out keeps the diff it shows:
+            // the round it closes must be the tree the user reviewed.
+            // Anything newer shows in the next round.
+            if self.sending.contains_key(&card.id) {
+                return;
+            }
             if let CardKind::Review(rc) = &mut card.kind {
                 rc.replace_diff(from_tree, to_tree, files, req.full_branch);
             }
@@ -1586,6 +1592,36 @@ pub(crate) mod tests {
         a.update(Msg::SendDone { card: id });
         assert!(a.queue.is_empty());
         assert_eq!(a.status_text(), Some("Sent 1 comment to api"));
+    }
+
+    #[test]
+    fn changes_made_while_a_send_is_held_stay_unreviewed() {
+        let mut a = app();
+        let id = commented(&mut a);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(a.update(key('S')).is_empty(), "held, not sent");
+        // The agent finishes again: the held message goes, and a fresh
+        // diff of the newer tree is asked for.
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let req = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::ComputeReview(r) => Some(r.clone()),
+                _ => None,
+            })
+            .expect("a recompute");
+        a.update(computed(req, "base", "t2", fixture_files()));
+        assert_eq!(
+            review(&a).to_tree,
+            "t1",
+            "the card being sent keeps its diff"
+        );
+        a.update(Msg::SendDone { card: id });
+        assert_eq!(
+            a.rounds[std::path::Path::new("/a")].tree,
+            "t1",
+            "t2 was never shown"
+        );
     }
 
     #[test]
