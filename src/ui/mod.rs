@@ -143,6 +143,10 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             let title = format!("Message to {name}");
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
+        Some(Overlay::NewSession(d)) => {
+            let title = format!("New Claude session in {} (empty starts it bare)", d.name);
+            input::render_sized(frame, body, &d.input, &title, "start", t, (100, 12));
+        }
         None => {}
     }
     if let Some(s) = app.selection {

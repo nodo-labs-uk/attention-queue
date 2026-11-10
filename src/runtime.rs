@@ -437,6 +437,7 @@ fn apply(
             Effect::ReadConversation { session_id } => Job::Conversation(session_id),
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
+            Effect::NewSession { dir, prompt } => Job::NewSession(dir, prompt),
             Effect::Copy { from, to } => {
                 let text = workers
                     .screen
@@ -587,6 +588,7 @@ enum Job {
     Interrupt(String),
     Shell(PathBuf, String, Option<String>),
     Copy(String),
+    NewSession(PathBuf, Option<String>),
     Quiz {
         checkout: Checkout,
         agent: AgentId,
@@ -690,6 +692,11 @@ fn spawn_effect_worker(
                     from_tree,
                 } => Some(compute_quiz(checkout, agent, from_tree)),
                 Job::ReadCode(req) => Some(read_code(req)),
+                Job::NewSession(dir, prompt) => {
+                    crate::agents::tmux::new_claude(&dir, prompt.as_deref())
+                        .err()
+                        .map(|e| Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
+                }
                 Job::Copy(text) => crate::agents::tmux::copy(&text)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not copy: {e:#}"))),

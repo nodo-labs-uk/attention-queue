@@ -107,6 +107,7 @@ pub const PAGES: &[Page] = &[
         title: "Anywhere",
         lines: &[
             "key:?\task the session a side question; a copy answers",
+            "key:N\tstart a new Claude session in this project",
             "key:!\ta shell in a popup, with Claude's last ! command typed in",
             "key:drag\tselect text; letting go copies it",
             "key:T\tnext theme",

@@ -340,6 +340,25 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// `claude` in a new tmux window in `dir`, left in the background, with
+/// `prompt` as its first message. The command goes through the shell, so
+/// `claude` is found as in your own windows; the prompt is quoted for it.
+pub fn new_claude(dir: &Path, prompt: Option<&str>) -> Result<()> {
+    let command = match prompt {
+        Some(p) => format!("claude {}", shell_quote(p)),
+        None => "claude".to_string(),
+    };
+    let mut cmd = Command::new("tmux");
+    cmd.args(["new-window", "-d", "-c"])
+        // The start directory is expanded as a format; the command is not.
+        .arg(format_literal(&dir.to_string_lossy()))
+        .arg(command);
+    let (status, _, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux new-window")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
 /// Puts `text` in the tmux buffer and, through `-w`, the clipboard.
 pub fn copy(text: &str) -> Result<()> {
     let mut cmd = Command::new("tmux");

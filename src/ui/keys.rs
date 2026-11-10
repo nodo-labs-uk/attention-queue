@@ -28,6 +28,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "new line".into()),
             ("Esc", "cancel".into()),
         ],
+        (Some(Overlay::NewSession(_)), _) => {
+            vec![("Enter", "start".into()), ("Esc", "cancel".into())]
+        }
         (Some(Overlay::StepReason(_) | Overlay::Deny(_) | Overlay::Prompt(_)), _) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }

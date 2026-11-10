@@ -32,7 +32,7 @@ Each project has a mode, and `M` switches it.
 
 ## Sessions
 
-When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `P` asks it to open a PR, and `Esc Esc` stops it.
+When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `P` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt.
 
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
 
@@ -54,6 +54,7 @@ The ones worth knowing from day one:
 | `?` | anywhere | ask the session a side question; a fork answers, so the session never sees it |
 | `!` | anywhere | shell in a popup, with Claude's last `! command` typed in |
 | `W` | anywhere | ask the session where it's up to |
+| `N` | anywhere | start a new Claude session in this project |
 | drag | anywhere | select text; letting go copies it |
 | `s` | card | skip it for now |
 | `c` `S` `A` | review | comment, send the comments, approve the lot |
@@ -76,9 +77,10 @@ Moving around works as in vim: `j` `k`, `Ctrl-d` `Ctrl-u`, `gg` `G`, `]c` `[c` f
 | Approve each edit before it lands | ✓ | – | – | – | – |
 | Quiz on the change | ✓ | – | – | – | – |
 | Permission prompts in the same place | ✓ | – | – | – | – |
-| Starts agents in their own worktrees | – | ✓ | ✓ | ✓ | – |
+| Starts new sessions | ✓ in a tmux window | ✓ | ✓ | ✓ | – |
+| Sets up a worktree per session | – | ✓ | ✓ | ✓ | – |
 
-aq doesn't start sessions or set up worktrees: you start Claude however you like and it picks them up. If you'd rather have one app that does all of that, one of the others is a better fit.
+aq can start a session (`N`), but it doesn't set up worktrees or manage branches: start Claude however you like and aq picks it up. If you'd rather have one app that isolates every session for you, one of the others is a better fit.
 
 ## Install
 

@@ -221,6 +221,12 @@ pub enum Effect {
     Interrupt {
         pane: String,
     },
+    /// Start `claude` in a new tmux window in `dir`, with `prompt` as its
+    /// first message if there is one.
+    NewSession {
+        dir: PathBuf,
+        prompt: Option<String>,
+    },
     /// Copy the screen's text between two cells (row by row, as a terminal
     /// selects) to the tmux buffer, and so the clipboard.
     Copy {
@@ -260,11 +266,21 @@ pub enum Overlay {
     Prompt(PromptDraft),
     /// `x` on the empty screen: asking before closing an agent's pane.
     CloseAgent(AgentId),
+    /// `N`: the first prompt for a new session.
+    NewSession(NewSessionDraft),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptDraft {
     pub agent: AgentId,
+    pub input: TextInput,
+}
+
+/// `N`: what a new Claude session should start on, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSessionDraft {
+    pub dir: PathBuf,
+    pub name: String,
     pub input: TextInput,
 }
 
@@ -1015,6 +1031,7 @@ impl App {
                 return Vec::new();
             }
             Some(Overlay::Prompt(_)) => return self.on_prompt_key(key),
+            Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
             Some(Overlay::Comment(_)) => {
@@ -1055,6 +1072,16 @@ impl App {
             }
             KeyCode::Char('W') => self.ask_where_are_we(),
             KeyCode::Char('!') => self.open_shell(),
+            KeyCode::Char('N') => {
+                if let Some((dir, name, _)) = self.here() {
+                    self.overlay = Some(Overlay::NewSession(NewSessionDraft {
+                        dir,
+                        name,
+                        input: TextInput::single_line(),
+                    }));
+                }
+                Vec::new()
+            }
             KeyCode::Char('T') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             KeyCode::Char('s') => {
@@ -1073,24 +1100,54 @@ impl App {
         }
     }
 
+    /// The project in front of you: the current card's checkout, or with
+    /// no card the picked session's; its name, and the session if known.
+    fn here(&self) -> Option<(PathBuf, String, Option<&Agent>)> {
+        match self.queue.current() {
+            Some(card) => Some((
+                card.checkout.0.clone(),
+                project_name(&card.checkout),
+                self.agent(&card.agent),
+            )),
+            None => self.picked_agent().map(|a| {
+                let dir = a.checkout.as_ref().map_or(&a.cwd, |c| &c.0).clone();
+                (dir, a.window_name.clone(), Some(a))
+            }),
+        }
+    }
+
+    /// Enter starts the session, with the text as its first prompt if any;
+    /// Esc keeps things as they were.
+    fn on_new_session_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(Overlay::NewSession(draft)) = &mut self.overlay else {
+            return Vec::new();
+        };
+        let text = match draft.input.handle_key(key) {
+            InputEvent::Editing => return Vec::new(),
+            InputEvent::Cancel => None,
+            InputEvent::Submit(text) => Some(text),
+        };
+        let Some(Overlay::NewSession(draft)) = self.overlay.take() else {
+            return Vec::new();
+        };
+        let Some(text) = text else {
+            return Vec::new();
+        };
+        self.set_status(format!("Started a Claude session in {}", draft.name));
+        let prompt = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+        vec![Effect::NewSession {
+            dir: draft.dir,
+            prompt,
+        }]
+    }
+
     /// `!`: a shell in a popup, in the current card's checkout or the picked
     /// session's, for what the agent may not run itself (sudo, a login, a
     /// command its permissions block). The session's last suggested
     /// `! command` comes typed in.
     fn open_shell(&mut self) -> Vec<Effect> {
-        let (dir, name, agent) = match self.queue.current() {
-            Some(card) => (
-                card.checkout.0.clone(),
-                project_name(&card.checkout),
-                self.agent(&card.agent),
-            ),
-            None => match self.picked_agent() {
-                Some(a) => {
-                    let dir = a.checkout.as_ref().map_or(&a.cwd, |c| &c.0).clone();
-                    (dir, a.window_name.clone(), Some(a))
-                }
-                None => return Vec::new(),
-            },
+        let Some((dir, name, agent)) = self.here() else {
+            return Vec::new();
         };
         let session_id = agent
             .map(|a| a.session_id.clone())
@@ -2527,6 +2584,39 @@ pub(crate) mod tests {
         a.update(mouse(MouseKind::Down, 5, 5));
         assert!(a.update(mouse(MouseKind::Up, 5, 5)).is_empty());
         assert_eq!(a.selection, None);
+    }
+
+    #[test]
+    fn n_starts_a_session_where_you_are_with_or_without_a_prompt() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        a.update(key('N'));
+        assert!(matches!(&a.overlay, Some(Overlay::NewSession(d)) if d.name == "api"));
+        for c in "fix the flaky test".chars() {
+            a.update(key(c));
+        }
+        let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        assert_eq!(
+            a.update(enter()),
+            [Effect::NewSession {
+                dir: "/w/api".into(),
+                prompt: Some("fix the flaky test".into())
+            }]
+        );
+        assert_eq!(a.overlay, None);
+        // Empty: claude with no prompt. Esc: nothing.
+        a.update(key('N'));
+        assert_eq!(
+            a.update(enter()),
+            [Effect::NewSession {
+                dir: "/w/api".into(),
+                prompt: None
+            }]
+        );
+        a.update(key('N'));
+        let esc = Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now());
+        assert!(a.update(esc).is_empty());
+        assert_eq!(a.overlay, None);
     }
 
     #[test]
