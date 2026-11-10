@@ -96,6 +96,8 @@ session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
   Enter  message it: sent now, or once it is idle (Esc cancels)
   p      ask an idle session to open a PR (/create-pr) and go there
+  m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
+         (/model, which also makes it the default for new sessions)
   ?  W  ask it a side question, or where it is up to; a copy of the
          session answers, so the session itself never sees it
   x      close the session's pane, after a yes (claude --resume reopens it)

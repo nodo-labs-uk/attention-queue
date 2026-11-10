@@ -67,6 +67,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
+        (Some(Overlay::Model(_)), _) => vec![("Esc", "cancel".into())],
         (Some(Overlay::Tour { page }), _) => vec![
             (
                 "→",

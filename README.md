@@ -55,7 +55,7 @@ Each project has a mode, and `M` switches it.
 
 ## Sessions
 
-When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt. `Tab` in that box gives the session a git worktree of its own (Claude's `--worktree`), so two sessions don't edit the same files. `Ctrl-O` picks another folder: type a path with the matching folders listed underneath (`Tab` completes, the arrows choose), and a folder that isn't there yet is made when the session starts.
+When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, `m` switches its model, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt. `Tab` in that box gives the session a git worktree of its own (Claude's `--worktree`), so two sessions don't edit the same files. `Ctrl-O` picks another folder: type a path with the matching folders listed underneath (`Tab` completes, the arrows choose), and a folder that isn't there yet is made when the session starts.
 
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
 
@@ -89,6 +89,7 @@ The ones worth knowing from day one:
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
 | `h` `l` | sessions | pick a session |
 | `Enter` | sessions | message it |
+| `m` | sessions | switch its model: fable, opus, sonnet or haiku |
 | `Esc Esc` | sessions | stop it |
 
 Moving around works as in vim: `j` `k`, `Ctrl-d` `Ctrl-u`, `gg` `G`, `]c` `[c` for changes and `H` `L` for files.

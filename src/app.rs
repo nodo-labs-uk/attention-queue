@@ -296,6 +296,8 @@ pub enum Overlay {
     CloseAgent(AgentId),
     /// `N`: the first prompt for a new session.
     NewSession(NewSessionDraft),
+    /// `m` on the empty screen: choosing a model for an agent.
+    Model(AgentId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,8 +396,17 @@ pub(crate) struct Shown {
 /// Shown while a message waits for its agent to be at its prompt.
 pub const QUEUED_STATUS: &str = "Queued: will send when the agent is idle";
 
-/// What P on the empty screen sends: the skill that drafts, checks and opens a PR.
+/// What p on the empty screen sends: the skill that drafts, checks and opens a PR.
 pub const PR_COMMAND: &str = "/create-pr";
+
+/// The models `m` on the empty screen offers: the key that picks each, and
+/// the alias `/model` takes.
+pub const MODELS: [(char, &str); 4] = [
+    ('f', "fable"),
+    ('o', "opus"),
+    ('s', "sonnet"),
+    ('h', "haiku"),
+];
 
 /// How long a status message stays on screen.
 pub const STATUS_FOR: Duration = Duration::from_secs(5);
@@ -507,7 +518,7 @@ impl App {
     }
 
     /// h/l or j/k pick an agent on the empty screen; Enter or i write it a message;
-    /// g goes to its window; P asks it to open a pull request.
+    /// g goes to its window; p asks it to open a pull request; m picks its model.
     fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ids: Vec<AgentId> = self
             .agents_in_order()
@@ -538,6 +549,7 @@ impl App {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
             KeyCode::Char('p') => return self.ask_for_pr(current),
+            KeyCode::Char('m') => self.open_model(current),
             KeyCode::Esc => return self.on_empty_esc(current),
             KeyCode::Char('x') => self.overlay = Some(Overlay::CloseAgent(current)),
             KeyCode::Enter | KeyCode::Char('i') => {
@@ -831,7 +843,7 @@ impl App {
             .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
         if !self.at_prompt(&agent) {
             self.set_status(format!(
-                "{name} is busy; try P again when it is at its prompt"
+                "{name} is busy; try p again when it is at its prompt"
             ));
             return Vec::new();
         }
@@ -844,6 +856,50 @@ impl App {
             },
             Effect::GoToWindow { pane: agent.pane },
         ]
+    }
+
+    /// Opens the model choice for an agent at its prompt. `/model` is a
+    /// command typed at the prompt, so a busy agent cannot take it.
+    fn open_model(&mut self, agent: AgentId) {
+        if self.at_prompt(&agent) {
+            self.overlay = Some(Overlay::Model(agent));
+            return;
+        }
+        let name = self
+            .agent(&agent)
+            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        self.set_status(format!(
+            "{name} is busy; try m again when it is at its prompt"
+        ));
+    }
+
+    /// A model's key sends `/model` with its alias; q or Esc changes nothing.
+    fn on_model_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(Overlay::Model(agent)) = &self.overlay else {
+            return Vec::new();
+        };
+        let agent = agent.clone();
+        let picked = match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => None,
+            KeyCode::Char(c) => match MODELS.iter().find(|(k, _)| *k == c) {
+                Some((_, model)) => Some(*model),
+                None => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        self.overlay = None;
+        let Some(model) = picked else {
+            return Vec::new();
+        };
+        let name = self
+            .agent(&agent)
+            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        self.set_status(format!("Switched {name} to {model}"));
+        vec![Effect::Send {
+            agent,
+            text: format!("/model {model}"),
+            card: None,
+        }]
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
@@ -1123,6 +1179,7 @@ impl App {
             Some(Overlay::Prompt(_)) => return self.on_prompt_key(key),
             Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
+            Some(Overlay::Model(_)) => return self.on_model_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
             Some(Overlay::Comment(_)) => {
                 self.on_comment_key(key);
@@ -2772,6 +2829,41 @@ pub(crate) mod tests {
         let esc = Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now());
         assert!(a.update(esc).is_empty());
         assert_eq!(a.overlay, None);
+    }
+
+    #[test]
+    fn m_switches_the_picked_agents_model() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", false),
+        ];
+        let esc = || Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now());
+        a.update(key('m'));
+        assert_eq!(a.overlay, Some(Overlay::Model(a.agents[0].id.clone())));
+        let screen = crate::ui::tests::render(&a, 90, 12);
+        assert!(screen.contains("Model for api"), "{screen}");
+        assert!(screen.contains("o opus"), "{screen}");
+        assert!(a.update(key('j')).is_empty(), "other keys do nothing");
+        assert!(a.overlay.is_some());
+        assert!(a.update(esc()).is_empty());
+        assert_eq!(a.overlay, None);
+        a.update(key('m'));
+        assert_eq!(
+            a.update(key('o')),
+            [Effect::Send {
+                agent: a.agents[0].id.clone(),
+                text: "/model opus".into(),
+                card: None,
+            }]
+        );
+        assert_eq!(a.overlay, None);
+        assert_eq!(a.status_text(), Some("Switched api to opus"));
+        // Not at its prompt: there is nowhere to type the command.
+        a.update(key('j'));
+        a.update(key('m'));
+        assert_eq!(a.overlay, None);
+        assert!(a.status_text().unwrap().contains("busy"));
     }
 
     #[test]
