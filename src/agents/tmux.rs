@@ -196,8 +196,13 @@ impl AgentConn for TmuxConn {
         let panes = self.list_panes()?;
         let procs = self.procs(&panes)?;
         let mut agents = join(&panes, &procs, is_ancestor);
-        // Only a waiting agent can take a message, so only its screen is read.
-        for a in agents.iter_mut().filter(|a| a.waiting) {
+        // Only an agent at its prompt can take a message, so only its screen
+        // is read: one whose turn ended, or an idle one, which is how a
+        // session that has not had a turn yet shows.
+        for a in agents
+            .iter_mut()
+            .filter(|a| a.waiting || a.status == super::AgentStatus::Idle)
+        {
             if let Ok(screen) = self.capture_styled(&a.id.pane) {
                 a.input = super::read_input_box(&screen);
             }
