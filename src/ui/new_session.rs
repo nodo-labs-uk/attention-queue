@@ -25,11 +25,18 @@ pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
             "New Claude session in {place}{} (empty starts it bare)",
             d.name
         );
-        input::render_sized(frame, area, &d.input, &title, "start", t, SIZE);
+        let tab = if d.worktree {
+            "same folder"
+        } else {
+            "own worktree"
+        };
+        let more = [("Ctrl-O", "other folder"), ("Tab", tab)];
+        input::render_with_keys(frame, area, &d.input, &title, "start", &more, t, SIZE);
         return;
     };
     let title = "Folder for the new session";
-    input::render_sized(frame, area, &pick.input, title, "use it", t, SIZE);
+    let more = [("Tab", "complete"), ("↑/↓", "choose")];
+    input::render_with_keys(frame, area, &pick.input, title, "use it", &more, t, SIZE);
     let rows = input::below_first_row(area, SIZE);
     if rows.height == 0 {
         return;

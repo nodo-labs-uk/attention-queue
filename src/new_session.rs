@@ -330,6 +330,22 @@ mod tests {
     }
 
     #[test]
+    fn each_box_names_its_keys_along_its_bottom() {
+        let mut a = app();
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(
+            screen.contains("Enter start  Ctrl-O other folder  Tab own worktree  Esc cancel"),
+            "{screen}"
+        );
+        a.update(ctrl('o'));
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(
+            screen.contains("Enter use it  Tab complete  ↑/↓ choose  Esc cancel"),
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn esc_in_the_folder_box_keeps_the_folder_and_the_prompt() {
         let mut a = app();
         a.update(key('x'));
