@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Stands in for a Claude Code session in the demo recordings: shows a
+# conversation and an input box like Claude Code's, and answers each line
+# pasted into it with the next line of $2.
+# usage: fake-agent <conversation file> [replies file]
+log=$(mktemp)
+cat "$1" >"$log"
+replies=${2:-/dev/null}
+n=0
+stty -echo 2>/dev/null
+draw() {
+    printf '\033[H\033[2J'
+    cat "$log"
+    rule=$(printf '─%.0s' $(seq 1 "$(tput cols)"))
+    printf '\n\033[2m%s\033[0m\n❯ \n\033[2m%s\033[0m\n' "$rule" "$rule"
+    printf '  \033[2m⏵⏵ accept edits on\033[0m\n'
+}
+draw
+while IFS= read -r line; do
+    # A pasted message arrives as several lines in quick succession.
+    msg="❯ $line"
+    while IFS= read -r -t 0.3 more; do
+        msg+=$'\n'"  $more"
+    done
+    n=$((n + 1))
+    reply=$(sed -n "${n}p" "$replies")
+    printf '\n\033[1m%s\033[0m\n\n● %s\n' "$msg" "${reply:-On it.}" >>"$log"
+    draw
+done

@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Stands in for `claude -p` in the demo recordings, so they need no login
+and cost nothing: canned quiz questions, a verdict, or a side answer, picked
+by the JSON schema aq passes."""
+import json
+import sys
+import time
+
+QUIZ = {"questions": [
+    {
+        "scope": "code",
+        "question": "Explain what this code does for a key that has been quiet for an hour.",
+        "explanation": "It refills the key's tokens for the time since its last call, at `rate` "
+        "per second, capped at `burst` (limiter.py:20), so the key starts with a full bucket. "
+        "A key never seen starts full too (limiter.py:19).",
+        "must_cover": ["refill by elapsed time times rate", "capped at burst"],
+        "code_ref": {"path": "limiter.py", "line": 17, "end_line": 25},
+    },
+    {
+        "scope": "code",
+        "question": "Why time.monotonic() and a lock here, rather than time.time() and no lock?",
+        "explanation": "monotonic() never jumps when the clock is changed, so a clock change "
+        "cannot hand out or swallow tokens (limiter.py:17). The lock makes read-refill-write one "
+        "step when two threads serve the same key (limiter.py:18).",
+        "must_cover": ["clock changes", "two threads racing on one bucket"],
+        "code_ref": {"path": "limiter.py", "line": 14, "end_line": 18},
+    },
+    {
+        "scope": "change",
+        "question": "What does this change do to the API's behaviour as a whole?",
+        "explanation": "Each key now has its own bucket instead of one shared window, and "
+        "short bursts of up to 10 calls are allowed (limiter.py:10).",
+        "must_cover": ["per key", "bursts"],
+        "code_ref": {"path": "limiter.py", "line": 10, "end_line": 13},
+    },
+]}
+
+VERDICT = {
+    "verdict": "right",
+    "gap": "",
+    "gap_in": "none",
+    "explanation": "Yes: the bucket refills for the time that passed and stops at burst, "
+    "so an hour's quiet gives the key a full bucket of 10.",
+}
+
+ANSWER = """The limiter is now a token bucket per key, and its tests pass.
+Left: the README still describes the old 60-calls-a-minute window.
+Needs you: is a burst of 10 right for the public API?"""
+
+args = sys.argv[1:]
+if args[:1] == ["agents"]:
+    sys.exit("fake-claude: aq reads the agent list from AQ_AGENTS_JSON in the demo")
+schema = args[args.index("--json-schema") + 1] if "--json-schema" in args else ""
+sys.stdin.read()
+time.sleep(2)
+if '"questions"' in schema:
+    out = {"is_error": False, "structured_output": QUIZ}
+elif '"verdict"' in schema:
+    out = {"is_error": False, "structured_output": VERDICT}
+else:
+    out = {"is_error": False, "result": ANSWER}
+print(json.dumps(out))
