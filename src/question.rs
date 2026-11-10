@@ -235,7 +235,17 @@ fn spoken(text: &str) -> Vec<String> {
 
 fn is_asking(line: &str) -> bool {
     let line = line.to_lowercase();
-    line.contains('?') || ASKING.iter().any(|w| line.contains(w))
+    line.contains('?') || ASKING.iter().any(|w| has_words(&line, w))
+}
+
+/// Whether `words` is in `line` as whole words: "confirm" asks, but
+/// "I confirmed the fix" reports.
+fn has_words(line: &str, words: &str) -> bool {
+    line.match_indices(words).any(|(i, _)| {
+        let before = line[..i].chars().next_back();
+        let after = line[i + words.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
 }
 
 impl App {
@@ -391,6 +401,12 @@ mod tests {
         assert!(asks("Two ways to do it.\n\nWhich do you prefer?"));
         assert!(asks("Done.\n\nSay the word and I'll commit."));
         assert!(!asks("Done: both tests pass."));
+        // Asking words inside longer words report, they do not ask.
+        assert!(!asks(
+            "I confirmed the problem was real before fixing it. If it had been a false alarm, I would have said so."
+        ));
+        assert!(!asks("Approved changes are merged."));
+        assert!(asks("Please confirm and I'll push."));
         // An early question that the message itself went on to settle.
         assert!(!asks(
             "Is it cached? Yes.\n\nSo:\n- a\n- b\n- c\n- d\n\nAll fixed."
