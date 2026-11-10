@@ -266,6 +266,11 @@ fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
                 ("Enter", "skip question".into()),
             ],
             Some(_) => vec![("m", "whole file".into())],
+            None if !qc.tries(*i).is_empty() => vec![
+                ("Enter", "try again".into()),
+                ("e", "show the answer".into()),
+                ("m", "whole file".into()),
+            ],
             None => vec![("Enter", "answer".into()), ("m", "whole file".into())],
         },
     };

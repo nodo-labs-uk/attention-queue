@@ -43,19 +43,23 @@ Each project has a mode, and `M` switches it.
 
 ![An edit waiting on a step card, allowed with y, then another rejected with a reason](docs/media/step.svg)
 
-**Quiz**: when a session finishes, aq picks the parts of the diff that matter and asks you to explain what they do, or why they were done that way, in your own words. A judge marks the answer, and any gap it finds can be sent back as a fix.
+**Quiz**: when a session finishes, aq picks the parts of the diff that matter and asks you to explain what they do, or why they were done that way, in your own words. A judge marks the answer. If it isn't right, or you say you don't know, you get a question that leads towards what you missed and another try, twice at most, before the answer is shown (`e` shows it sooner). A gap the judge finds in the code itself can be sent back as a fix.
 
-![A quiz question on part of the diff, answered and marked right](docs/media/quiz.svg)
+![A quiz question on part of the diff: a first try gets a leading question, the second is marked right](docs/media/quiz.svg)
 
 **Vibe**: nothing is checked; the agent just codes.
 
 **Questions**, in every mode: when a session ends its turn by asking you something (to approve a draft, to choose between two ways), its message becomes a card. `a` approves, `Enter` replies in your own words, and `x` puts the card away. When Claude asks with its own menu of options, the card lists them and a number key picks one; the answer goes back through the hook, so nothing is typed into the session. A turn that has both a diff and a question shows the question on the review card, and sending from there answers it.
+
+![A session asks to approve a PR draft and a approves it; then Claude's option menu is answered from a card](docs/media/questions.svg)
 
 ## Sessions
 
 When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt. `Tab` in that box gives the session a git worktree of its own (Claude's `--worktree`), so two sessions don't edit the same files. `Ctrl-O` picks another folder: type a path with the matching folders listed underneath (`Tab` completes, the arrows choose), and a folder that isn't there yet is made when the session starts.
 
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
+
+![N starts a session in a worktree of its own, then Ctrl-O starts one in a folder that is made for it](docs/media/new.svg)
 
 `!` opens a shell in a tmux popup, in the project's folder, for things Claude can't run itself: sudo, logins, or commands its permissions block. The last `! command` Claude suggested is copied and, in zsh, already typed in, so Enter runs it. The popup closes when the shell exits.
 

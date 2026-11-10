@@ -243,6 +243,22 @@ pub fn render_sized(
     t: &Theme,
     size: (u16, u16),
 ) {
+    render_with_keys(frame, area, input, title, submit, &[], t, size);
+}
+
+/// As `render_sized`, with `more` keys (key, what it does) named along the
+/// bottom of the box between the submit key and Esc.
+#[allow(clippy::too_many_arguments)]
+pub fn render_with_keys(
+    frame: &mut Frame,
+    area: Rect,
+    input: &TextInput,
+    title: &str,
+    submit: &str,
+    more: &[(&str, &str)],
+    t: &Theme,
+    size: (u16, u16),
+) {
     let panel = panel(area, size);
     frame.render_widget(Clear, panel);
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
@@ -260,6 +276,10 @@ pub fn render_sized(
             Span::styled(format!(" {submit}  "), dim),
         ]
     };
+    for (k, what) in more {
+        hints.push(Span::styled(k.to_string(), key));
+        hints.push(Span::styled(format!(" {what}  "), dim));
+    }
     hints.extend([Span::styled("Esc", key), Span::styled(" cancel ", dim)]);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)

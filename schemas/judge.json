@@ -4,8 +4,9 @@
     "verdict": { "type": "string", "enum": ["right", "partial", "wrong"] },
     "gap": { "type": "string" },
     "gap_in": { "type": "string", "enum": ["code", "understanding", "none"] },
-    "explanation": { "type": "string" }
+    "explanation": { "type": "string" },
+    "hint": { "type": "string" }
   },
-  "required": ["verdict", "gap", "gap_in", "explanation"],
+  "required": ["verdict", "gap", "gap_in", "explanation", "hint"],
   "additionalProperties": false
 }

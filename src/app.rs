@@ -1584,12 +1584,14 @@ impl App {
             .any(|c| matches!(c.kind, CardKind::Permission(_)) && &c.agent == id);
         !menu_open
             && self.agent(id).is_some_and(|a| {
-                a.waiting
-                    && match a.input {
-                        InputBox::Empty => true,
-                        InputBox::Holding(_) => false,
-                        InputBox::Unseen => a.status == AgentStatus::Idle,
-                    }
+                let idle = a.status == AgentStatus::Idle;
+                match a.input {
+                    // A session that has not had a turn yet is not
+                    // "waiting", but idle with an empty box it is there.
+                    InputBox::Empty => a.waiting || idle,
+                    InputBox::Holding(_) => false,
+                    InputBox::Unseen => a.waiting && idle,
+                }
             })
     }
 
@@ -2600,6 +2602,35 @@ pub(crate) mod tests {
                 card: None,
             }]
         );
+    }
+
+    #[test]
+    fn a_session_that_has_not_had_a_turn_yet_takes_a_message() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        // Just started: no turn has ended, so nothing marked it waiting.
+        let mut fresh = agent("%1", 1, "new", "/w/new", false);
+        fresh.status = AgentStatus::Idle;
+        fresh.input = InputBox::Empty;
+        a.agents = vec![fresh.clone()];
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
+        typed(&mut a, "hello");
+        let enter = Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        assert_eq!(
+            a.update(enter),
+            [Effect::Send {
+                agent: fresh.id.clone(),
+                text: "hello".into(),
+                card: None,
+            }]
+        );
+        // Working, or with its screen unread: the message waits.
+        fresh.status = AgentStatus::Busy;
+        a.agents = vec![fresh.clone()];
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
+        typed(&mut a, "more");
+        let enter = Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        assert!(a.update(enter).is_empty());
+        assert!(a.prompt_waiting(&fresh.id));
     }
 
     #[test]

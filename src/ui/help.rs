@@ -85,6 +85,8 @@ Each question opens with its piece of the diff and a box for your answer.
   Ctrl-S or Enter on an empty line  submit    Esc  put the box away
   Enter  answer again after Esc      m  show the whole file
   y  fine as is   c  ask for a fix
+An answer that is not right gets a leading question and another try,
+twice at most, before the answer is shown.   e  show the answer now
   r  judge or generate again   x  dismiss a failed quiz
 
 # Nothing waiting

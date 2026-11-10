@@ -41,6 +41,16 @@ VERDICT = {
     "gap_in": "none",
     "explanation": "Yes: the bucket refills for the time that passed and stops at burst, "
     "so an hour's quiet gives the key a full bucket of 10.",
+    "hint": "",
+}
+
+NOT_YET = {
+    "verdict": "wrong",
+    "gap": "It does not reset to zero: it refills.",
+    "gap_in": "understanding",
+    "explanation": VERDICT["explanation"],
+    "hint": "Look at what is added to tokens, and what min() does to the sum. "
+    "How much does an hour add?",
 }
 
 ANSWER = """The limiter is now a token bucket per key, and its tests pass.
@@ -51,12 +61,14 @@ args = sys.argv[1:]
 if args[:1] == ["agents"]:
     sys.exit("fake-claude: aq reads the agent list from AQ_AGENTS_JSON in the demo")
 schema = args[args.index("--json-schema") + 1] if "--json-schema" in args else ""
-sys.stdin.read()
+prompt = sys.stdin.read()
 time.sleep(2)
 if '"questions"' in schema:
     out = {"is_error": False, "structured_output": QUIZ}
 elif '"verdict"' in schema:
-    out = {"is_error": False, "structured_output": VERDICT}
+    # The first try gets a leading question; the next is right.
+    first = "Earlier tries" not in prompt
+    out = {"is_error": False, "structured_output": NOT_YET if first else VERDICT}
 else:
     out = {"is_error": False, "result": ANSWER}
 print(json.dumps(out))
