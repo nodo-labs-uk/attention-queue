@@ -7,10 +7,16 @@ use crate::model::{Card, CardKind};
 /// checkout holding a step or shell-change card, one checkout at a time, the
 /// one with the oldest such card first, with all its cards. Then everything
 /// else, oldest first. A skipped card goes behind every card of its group.
+///
+/// That order applies only behind the pinned card: once a card is on screen
+/// (`pin`), it stays first until it is removed or skipped, so a new card
+/// never takes the screen from it.
 #[derive(Debug, Default)]
 pub struct Queue {
     entries: Vec<Entry>,
     skips: u64,
+    /// Id of the card on screen.
+    pinned: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -51,11 +57,27 @@ impl Queue {
         Some(self.entries.remove(i).card)
     }
 
+    /// Puts `card` in place of card `old`, keeping its place on screen.
+    pub fn replace(&mut self, old: u64, card: Card) {
+        self.remove(old);
+        if self.pinned == Some(old) {
+            self.pinned = Some(card.id);
+        }
+        self.push(card);
+    }
+
+    /// Keeps the current card first until it is removed or skipped. Called
+    /// once the card is on screen.
+    pub fn pin(&mut self) {
+        self.pinned = self.current().map(|c| c.id);
+    }
+
     /// Moves the current card to the back of its group.
     pub fn skip(&mut self) {
         if let Some(&i) = self.order().first() {
             self.skips += 1;
             self.entries[i].skipped = self.skips;
+            self.pinned = None;
         }
     }
 
@@ -98,6 +120,13 @@ impl Queue {
             rest = others;
         }
         out.extend(rest);
+        if let Some(at) = self
+            .pinned
+            .and_then(|id| out.iter().position(|&i| card(i).id == id))
+        {
+            let i = out.remove(at);
+            out.insert(0, i);
+        }
         out
     }
 }
@@ -141,6 +170,45 @@ pub(crate) mod tests {
         q.push(card(3, "/c", review(), 20));
         assert_eq!(ids(&q), [2, 3, 1]);
         assert_eq!(q.current().unwrap().id, 2);
+    }
+
+    #[test]
+    fn pinned_card_stays_first() {
+        let mut q = Queue::new();
+        q.push(card(1, "/a", review(), 10));
+        q.pin();
+        q.push(card(2, "/b", review(), 30));
+        q.push(card(
+            3,
+            "/c",
+            CardKind::Permission(PermissionCard::default()),
+            0,
+        ));
+        q.push(card(4, "/d", step(), 0));
+        // The new cards keep their order behind the one on screen.
+        assert_eq!(ids(&q), [1, 3, 4, 2]);
+        q.pin();
+        assert_eq!(q.current().unwrap().id, 1);
+        // Once it goes, the next in order comes up and is pinned in turn.
+        q.remove(1);
+        q.pin();
+        q.push(card(
+            5,
+            "/e",
+            CardKind::Permission(PermissionCard::default()),
+            60,
+        ));
+        assert_eq!(ids(&q), [3, 5, 4, 2]);
+    }
+
+    #[test]
+    fn skip_unpins() {
+        let mut q = Queue::new();
+        q.push(card(1, "/a", review(), 10));
+        q.pin();
+        q.push(card(2, "/b", review(), 30));
+        q.skip();
+        assert_eq!(ids(&q), [2, 1]);
     }
 
     #[test]

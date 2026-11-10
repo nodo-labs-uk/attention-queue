@@ -343,6 +343,9 @@ pub struct App {
     pub(crate) now: Option<Instant>,
     /// The card on screen, and when and how it got there.
     pub(crate) shown: Option<Shown>,
+    /// The card on screen, if its hook went away (answered in the window or
+    /// timed out): it stays until a key moves on, and sends nothing.
+    pub(crate) stale: Option<u64>,
     pub(crate) next_card_id: u64,
     /// When Esc was last pressed on the empty screen; a second one soon
     /// after stops the picked agent.
@@ -449,6 +452,7 @@ impl App {
             shell: Shell::default(),
             now: None,
             shown: None,
+            stale: None,
             next_card_id: 0,
             esc_at: None,
             unclaimed: Default::default(),
@@ -655,7 +659,7 @@ impl App {
     /// one waiting, so both arrive as one.
     pub(crate) fn send_prompt(&mut self, agent: AgentId, text: String) -> Vec<Effect> {
         // Any message to the session answers what it asked.
-        self.drop_questions(|a| *a == agent);
+        self.drop_questions(false, |a| *a == agent);
         let name = self
             .agent(&agent)
             .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
@@ -942,6 +946,7 @@ impl App {
                 self.unclaimed.forget(&c);
             }
         }
+        self.queue.pin();
         let current = self.queue.current().map(|c| c.id);
         if self.shown.map(|s| s.id) != current {
             let preempted = !by_user && self.shown.is_some();
@@ -1236,6 +1241,7 @@ impl App {
             }
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
+            _ if self.overlay.is_none() && self.on_stale() => self.on_stale_key(key),
             // Space, since s sends on the review board. Where several
             // options can be ticked, Space ticks one.
             KeyCode::Char(' ')
@@ -1258,6 +1264,51 @@ impl App {
                 None => self.on_empty_key(key),
             },
             _ => Vec::new(),
+        }
+    }
+
+    /// Card `id` was answered outside aq, or its hook timed out. On screen,
+    /// the card stays, marked, until a key moves on; waiting, it goes
+    /// without a word.
+    pub(crate) fn answered_elsewhere(&mut self, id: u64) {
+        if self.stale == Some(id) {
+            return;
+        }
+        if self.queue.current().map(|c| c.id) == Some(id) {
+            self.stale = Some(id);
+            self.set_status("Answered in its window or timed out: press a key to move on");
+        } else {
+            self.queue.remove(id);
+        }
+    }
+
+    /// Whether the card on screen was answered elsewhere.
+    pub fn on_stale(&self) -> bool {
+        self.stale.is_some() && self.stale == self.queue.current().map(|c| c.id)
+    }
+
+    /// A key on a card answered elsewhere: moving keys still move, and any
+    /// other dismisses the card without sending anything.
+    fn on_stale_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Char('j' | 'k' | 'G')
+            | KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::PageDown
+            | KeyCode::PageUp
+            | KeyCode::Home
+            | KeyCode::End => match self.queue.current().map(|c| &c.kind) {
+                Some(CardKind::Permission(_)) => self.on_permission_key(key),
+                Some(CardKind::Choice(_)) => self.on_choice_key(key),
+                Some(CardKind::Question(_)) => self.on_question_key(key),
+                _ => Vec::new(),
+            },
+            _ => {
+                if let Some(id) = self.stale.take() {
+                    self.queue.remove(id);
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -1365,7 +1416,7 @@ impl App {
             .filter(|a| a.waiting)
             .map(|a| a.id.clone())
             .collect();
-        self.drop_questions(|a| !waiting.contains(a));
+        self.drop_questions(true, |a| !waiting.contains(a));
         let mut effects: Vec<Effect> = started
             .iter()
             .flat_map(|a| self.on_agent_waiting(a))
@@ -1733,7 +1784,7 @@ impl App {
             .find(|c| c.id == card)
             .map(|c| c.agent.clone());
         if let (Some(agent), None) = (agent, &error) {
-            self.drop_questions(|a| *a == agent);
+            self.drop_questions(false, |a| *a == agent);
         }
         let kind = self.queue.iter().find(|c| c.id == card).map(|c| &c.kind);
         let (shell, quiz) = (
@@ -2389,10 +2440,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn review_card_back_on_screen_by_itself_waits_before_approve() {
+    fn a_key_on_a_card_answered_elsewhere_only_closes_it() {
         let mut a = app();
-        let req = finish_round(&mut a);
-        a.update(computed(req, "base", "t1", fixture_files()));
         let t = Instant::now();
         let ask = HookRequest::Permission {
             session_id: "s1".into(),
@@ -2408,20 +2457,18 @@ pub(crate) mod tests {
             at: SystemTime::UNIX_EPOCH,
             now: t,
         });
-        // Answered in the window: the review card comes back by itself.
-        a.update(Msg::HookGone { req_id: 9 });
-        // The runtime's next tick stamps when it came back.
-        a.update(Msg::Tick(t + Duration::from_millis(100)));
+        // The review card queues behind the permission on screen.
+        let req = finish_round(&mut a);
+        a.update(computed(req, "base", "t1", fixture_files()));
         assert!(matches!(
             a.queue.current().unwrap().kind,
-            CardKind::Review(_)
+            CardKind::Permission(_)
         ));
-        assert!(a.preempted());
-        let screen = crate::ui::tests::render(&a, 90, 10);
-        assert!(
-            screen.lines().next().unwrap().contains("new card"),
-            "{screen}"
-        );
+        // Answered in the window: the permission stays, marked, and the
+        // `a` meant for it neither approves the review nor sends anything.
+        a.update(Msg::HookGone { req_id: 9 });
+        a.update(Msg::Tick(t + Duration::from_millis(100)));
+        assert!(a.on_stale());
         let at = |ms| {
             Msg::Key(
                 KeyEvent::from(KeyCode::Char('a')),
@@ -2430,12 +2477,15 @@ pub(crate) mod tests {
         };
         assert!(a.update(at(500)).is_empty());
         assert_eq!(a.queue.len(), 1);
-        assert_eq!(
-            a.status_text(),
-            Some("New card: look at it before deciding")
-        );
+        // The review card came up by the user's key: no "new card" wait.
         assert!(matches!(
-            a.update(at(1600)).as_slice(),
+            a.queue.current().unwrap().kind,
+            CardKind::Review(_)
+        ));
+        assert!(!a.preempted());
+        a.update(Msg::Tick(t + Duration::from_millis(600)));
+        assert!(matches!(
+            a.update(at(1000)).as_slice(),
             [Effect::Send { .. }]
         ));
     }

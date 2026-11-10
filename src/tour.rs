@@ -71,13 +71,15 @@ pub const PAGES: &[Page] = &[
         title: "The queue",
         lines: &[
             "The top bar counts what is waiting behind the card on screen.",
-            "Decide on a card and the next one comes up.",
+            "Decide on a card and the next one comes up. A new card waits",
+            "its turn: it never takes the screen from the one you are on.",
             "",
             "key:Space\tskip a card for now",
             "key:j k\tmove, as in vim (also Ctrl-d, Ctrl-u, gg, G)",
             "",
-            "A card that jumps in ignores deciding keys for 1.5 s, so a",
-            "key meant for the last card never lands on the new one.",
+            "A card answered in its own window stays, marked \"answered",
+            "elsewhere\", and the next key only closes it. A card whose edit",
+            "changes under you ignores deciding keys for 1.5 s.",
         ],
         practice: None,
     },
@@ -624,7 +626,7 @@ impl App {
 
     /// The practice step to show: only while its practice card is the one
     /// on screen (or, for the sessions, no card is), so a real card that
-    /// jumps ahead is handled as usual.
+    /// comes up between practice cards is handled as usual.
     pub fn practice_step(&self) -> Option<usize> {
         let step = self.practice?;
         let on_screen = match STEPS.get(step)?.act {
