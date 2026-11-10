@@ -45,11 +45,11 @@ pub fn render(
                 Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
             ),
             Line::from(vec![
-                Span::styled("A", key),
+                Span::styled("a", key),
                 Span::styled(" approves, ", dim),
-                Span::styled("S", key),
+                Span::styled("s", key),
                 Span::styled(" sends the comments, ", dim),
-                Span::styled("D", key),
+                Span::styled("u", key),
                 Span::styled(" shows the files again.", dim),
             ]),
         ];

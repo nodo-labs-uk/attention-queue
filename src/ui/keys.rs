@@ -128,7 +128,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("V", "range".into()),
             ("x", "delete".into()),
             (
-                "R",
+                "r",
                 if rc.show_full_branch {
                     "this round"
                 } else {

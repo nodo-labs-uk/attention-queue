@@ -291,7 +291,7 @@ fn e2e_review_comment_reaches_agent() {
     w.tmux.type_text(AQ_WINDOW, "why two?");
     w.tmux.keys(AQ_WINDOW, &["C-s"]);
     w.tmux.wait_screen(AQ_WINDOW, "why two?");
-    w.tmux.keys(AQ_WINDOW, &["S"]);
+    w.tmux.keys(AQ_WINDOW, &["s"]);
     let sent = wait_for("the comments at the agent", || {
         let s = w.sent_to_agent();
         if s.contains("why two?") {

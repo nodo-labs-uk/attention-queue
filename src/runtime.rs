@@ -1366,8 +1366,8 @@ mod tests {
         on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
         let (ev, mut edit) = ipc_event(2, pre_tool_req("/w/step", "/w/step/a.rs"));
         on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
-        // `T` saves the config, which needs the worker.
-        let t = KeyEvent::from(KeyCode::Char('T'));
+        // `t` saves the config, which needs the worker.
+        let t = KeyEvent::from(KeyCode::Char('t'));
         let msg = Msg::Key(t, std::time::Instant::now());
         assert_eq!(
             on_msg(&mut app, msg, &workers, &mut waiting, &mut loading),

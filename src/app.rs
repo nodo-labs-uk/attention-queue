@@ -170,7 +170,7 @@ pub struct ReviewRequest {
     pub agent: AgentId,
     pub from_tree: Option<String>,
     pub full_branch: bool,
-    /// The card to refresh (`R`). `None` means the agent finished a round:
+    /// The card to refresh (`r`). `None` means the agent finished a round:
     /// refresh the checkout's review card, or make one if the diff is not empty.
     pub card: Option<u64>,
 }
@@ -537,7 +537,7 @@ impl App {
             KeyCode::Char('g') => {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
-            KeyCode::Char('p' | 'P') => return self.ask_for_pr(current),
+            KeyCode::Char('p') => return self.ask_for_pr(current),
             KeyCode::Esc => return self.on_empty_esc(current),
             KeyCode::Char('x') => self.overlay = Some(Overlay::CloseAgent(current)),
             KeyCode::Enter | KeyCode::Char('i') => {
@@ -1169,7 +1169,7 @@ impl App {
                 }
                 Vec::new()
             }
-            KeyCode::Char('t' | 'T') => self.next_theme(),
+            KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             // Space, since s sends on the review board.
             KeyCode::Char(' ') => {
@@ -1434,7 +1434,7 @@ impl App {
             return Vec::new();
         };
         let id = card.id;
-        if matches!(key.code, KeyCode::Char('s' | 'S' | 'a' | 'A')) && !self.settled(id) {
+        if matches!(key.code, KeyCode::Char('s' | 'a')) && !self.settled(id) {
             self.too_quick("review");
             return Vec::new();
         }
@@ -1513,7 +1513,7 @@ impl App {
         }
     }
 
-    /// `S` (send this round's comments) or `A` (approve). The card closes,
+    /// `s` (send this round's comments) or `a` (approve). The card closes,
     /// and its snapshot becomes the start of the next round, only once the
     /// message has reached the agent (`Msg::SendDone`), or at once when
     /// nothing is sent: approving an agent that is working or gone.
@@ -1892,14 +1892,14 @@ pub(crate) mod tests {
     fn status_expires_five_seconds_after_first_tick() {
         let mut a = app();
         let t0 = Instant::now();
-        a.update(key('T'));
+        a.update(key('t'));
         a.update(Msg::Tick(t0));
         a.update(Msg::Tick(t0 + Duration::from_millis(4900)));
         assert!(a.status_text().is_some());
         a.update(Msg::Tick(t0 + Duration::from_secs(5)));
         assert_eq!(a.status_text(), None);
         // A new message starts its own five seconds.
-        a.update(key('T'));
+        a.update(key('t'));
         a.update(Msg::Tick(t0 + Duration::from_secs(9)));
         assert!(a.status_text().is_some());
         a.update(Msg::Tick(t0 + Duration::from_secs(14)));
@@ -1933,7 +1933,7 @@ pub(crate) mod tests {
     #[test]
     fn theme_key_cycles_and_saves() {
         let mut a = app();
-        assert_eq!(a.update(key('T')), [Effect::SaveConfig]);
+        assert_eq!(a.update(key('t')), [Effect::SaveConfig]);
         assert_eq!(a.theme().name, "catppuccin-mocha");
         assert_eq!(a.config.theme, "catppuccin-mocha");
     }
@@ -2110,19 +2110,19 @@ pub(crate) mod tests {
         a.update(key('c'));
         assert!(matches!(a.overlay, Some(Overlay::Comment(_))));
         typed(&mut a, "store down?");
-        // Keys go to the comment box, so this `S` is typed, not a send.
-        typed(&mut a, "S");
+        // Keys go to the comment box, so this `s` is typed, not a send.
+        typed(&mut a, "s");
         a.update(ctrl('s'));
         assert_eq!(a.overlay, None);
-        assert_eq!(review(&a).comments[0].body, "store down?S");
+        assert_eq!(review(&a).comments[0].body, "store down?s");
         let id = a.queue.current().unwrap().id;
-        let effects = a.update(key('S'));
+        let effects = a.update(key('s'));
         assert_eq!(
             effects,
             [Effect::Send {
                 agent: a.agents[0].id.clone(),
                 text: "Review comments (round 1):\n\nsrc/limit.rs:40\n\
-                       > let b = store.get(key).unwrap_or_default();\nstore down?S"
+                       > let b = store.get(key).unwrap_or_default();\nstore down?s"
                     .into(),
                 card: Some(id),
             }]
@@ -2130,7 +2130,7 @@ pub(crate) mod tests {
         assert_eq!(a.queue.len(), 1, "the card waits for the send");
         assert!(a.rounds.is_empty());
         assert!(
-            a.update(key('S')).is_empty(),
+            a.update(key('s')).is_empty(),
             "no second send while sending"
         );
         assert!(a.update(Msg::SendDone { card: id }).is_empty());
@@ -2144,7 +2144,7 @@ pub(crate) mod tests {
         let mut a = app();
         let req = finish_round(&mut a);
         a.update(computed(req, "base", "t1", fixture_files()));
-        assert!(a.update(key('S')).is_empty());
+        assert!(a.update(key('s')).is_empty());
         assert_eq!(a.queue.len(), 1);
     }
 
@@ -2158,7 +2158,7 @@ pub(crate) mod tests {
         a.update(ctrl('s'));
         // The agent's window closed.
         a.update(Msg::Agents(Vec::new()));
-        let effects = a.update(key('S'));
+        let effects = a.update(key('s'));
         assert!(
             !effects.iter().any(|e| matches!(e, Effect::Send { .. })),
             "{effects:?}"
@@ -2173,7 +2173,7 @@ pub(crate) mod tests {
         let req = finish_round(&mut a);
         a.update(computed(req, "base", "t1", fixture_files()));
         a.update(Msg::Agents(Vec::new()));
-        assert!(a.update(key('A')).is_empty());
+        assert!(a.update(key('a')).is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].tree, "t1");
     }
@@ -2187,7 +2187,7 @@ pub(crate) mod tests {
         typed(&mut a, "keep me");
         a.update(ctrl('s'));
         let id = a.queue.current().unwrap().id;
-        a.update(key('S'));
+        a.update(key('s'));
         let effects = a.update(Msg::SendFailed {
             card: id,
             error: "agent gone".into(),
@@ -2200,7 +2200,7 @@ pub(crate) mod tests {
         assert!(a.rounds.is_empty());
         // The user can try again.
         assert!(matches!(
-            a.update(key('S')).as_slice(),
+            a.update(key('s')).as_slice(),
             [Effect::Send { .. }]
         ));
     }
@@ -2211,7 +2211,7 @@ pub(crate) mod tests {
         let req = finish_round(&mut a);
         a.update(computed(req, "base", "t1", fixture_files()));
         let id = a.queue.current().unwrap().id;
-        a.update(key('A'));
+        a.update(key('a'));
         assert_eq!(a.queue.len(), 1);
         assert!(a.update(Msg::SendDone { card: id }).is_empty());
         assert!(a.queue.is_empty());
@@ -2227,7 +2227,7 @@ pub(crate) mod tests {
         a.update(computed(req.clone(), "base", "t1", fixture_files()));
         let id = a.queue.current().unwrap().id;
         assert_eq!(
-            a.update(key('A')),
+            a.update(key('a')),
             [Effect::Send {
                 agent: a.agents[0].id.clone(),
                 text: "Approved, carry on.".into(),
@@ -2244,7 +2244,7 @@ pub(crate) mod tests {
         // The agent is working again by the time the user approves the next round.
         a.update(computed(req, "t1", "t2", fixture_files()));
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        assert!(a.update(key('A')).is_empty());
+        assert!(a.update(key('a')).is_empty());
         assert!(a.queue.is_empty());
         assert_eq!(a.rounds[&PathBuf::from("/a")].round, 2);
     }
@@ -2258,7 +2258,7 @@ pub(crate) mod tests {
         typed(&mut a, "first");
         a.update(ctrl('s'));
         let id = a.queue.current().unwrap().id;
-        a.update(key('S'));
+        a.update(key('s'));
         a.update(Msg::SendDone { card: id });
 
         let req = finish_round(&mut a);
@@ -2272,16 +2272,16 @@ pub(crate) mod tests {
         assert_eq!(rc.current_comments().count(), 0, "and not resent");
     }
 
-    /// `A`, and the send (if any) succeeds.
+    /// `a`, and the send (if any) succeeds.
     fn approve(a: &mut App) {
         let id = a.queue.current().unwrap().id;
-        if !a.update(key('A')).is_empty() {
+        if !a.update(key('a')).is_empty() {
             a.update(Msg::SendDone { card: id });
         }
     }
 
     fn toggle(a: &mut App) -> ReviewRequest {
-        match a.update(key('R')).as_slice() {
+        match a.update(key('r')).as_slice() {
             [Effect::ComputeReview(r)] => r.clone(),
             e => panic!("expected one ComputeReview, got {e:?}"),
         }
@@ -2293,7 +2293,7 @@ pub(crate) mod tests {
         let req = finish_round(&mut a);
         a.update(computed(req, "base", "t1", fixture_files()));
         assert!(
-            a.update(key('R')).is_empty(),
+            a.update(key('r')).is_empty(),
             "round 1 is already the whole branch"
         );
         approve(&mut a);
@@ -2353,7 +2353,7 @@ pub(crate) mod tests {
         );
         let at = |ms| {
             Msg::Key(
-                KeyEvent::from(KeyCode::Char('A')),
+                KeyEvent::from(KeyCode::Char('a')),
                 t + Duration::from_millis(ms),
             )
         };
@@ -2455,7 +2455,7 @@ pub(crate) mod tests {
             vec![Effect::GoToWindow { pane: "%3".into() }]
         );
         assert_eq!(
-            a.update(key('P')),
+            a.update(key('p')),
             vec![
                 Effect::Send {
                     agent: a.agents[0].id.clone(),
@@ -2468,7 +2468,7 @@ pub(crate) mod tests {
         // Not at its prompt: P sends nothing.
         a.update(key('k'));
         assert_eq!(picked(&a), "%2");
-        assert!(a.update(key('P')).is_empty());
+        assert!(a.update(key('p')).is_empty());
         assert!(a.status_text().unwrap().contains("busy"));
         // A pick that has gone falls back to the first waiting agent.
         a.agents.remove(2);
@@ -2831,7 +2831,7 @@ pub(crate) mod tests {
         let id = commented(&mut a);
         // The user typed into the window: working again.
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        assert!(a.update(key('S')).is_empty(), "held, not sent");
+        assert!(a.update(key('s')).is_empty(), "held, not sent");
         assert_eq!(a.status_text(), Some(QUEUED_STATUS));
         assert_eq!(a.queue.len(), 1);
         let screen = crate::ui::tests::render(&a, 100, 20);
@@ -2860,7 +2860,7 @@ pub(crate) mod tests {
         let mut a = app();
         let id = commented(&mut a);
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        assert!(a.update(key('S')).is_empty(), "held, not sent");
+        assert!(a.update(key('s')).is_empty(), "held, not sent");
         // The agent finishes again: the held message goes, and a fresh
         // diff of the newer tree is asked for.
         let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
@@ -2890,7 +2890,7 @@ pub(crate) mod tests {
         let mut a = app();
         let id = commented(&mut a);
         assert!(matches!(
-            a.update(key('S')).as_slice(),
+            a.update(key('s')).as_slice(),
             [Effect::Send { .. }]
         ));
         for k in ['c', 'x', 'R'] {
@@ -2904,7 +2904,7 @@ pub(crate) mod tests {
         let mut b = app();
         commented(&mut b);
         b.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        b.update(key('S'));
+        b.update(key('s'));
         b.update(key('c'));
         assert_eq!(b.overlay, None);
         assert_eq!(b.status_text(), Some(QUEUED_STATUS));
@@ -2917,7 +2917,7 @@ pub(crate) mod tests {
         let mut a = app();
         let id = commented(&mut a);
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        assert!(a.update(key('S')).is_empty());
+        assert!(a.update(key('s')).is_empty());
         let ask = HookRequest::Permission {
             session_id: "s1".into(),
             cwd: "/a".into(),
