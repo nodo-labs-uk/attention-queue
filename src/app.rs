@@ -634,6 +634,12 @@ impl App {
         };
         match text.filter(|t| !t.trim().is_empty()) {
             Some(text) => self.send_prompt(draft.agent, text.trim().to_string()),
+            // On the sessions view the Esc that closes the box is also the
+            // first of the two that stop the session, as in Claude Code.
+            None if key.code == KeyCode::Esc && self.queue.current().is_none() => {
+                self.esc_at = None;
+                self.on_empty_esc(draft.agent)
+            }
             None => Vec::new(),
         }
     }
@@ -2732,6 +2738,18 @@ pub(crate) mod tests {
         a.update(esc(t2));
         assert!(a.update(esc(t2)).is_empty());
         assert_eq!(a.status_text(), Some("api is not working on anything"));
+        // The Esc that closes the message box is the first of the two.
+        a.agents[0].waiting = false;
+        let t3 = t2 + Duration::from_secs(5);
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), t3));
+        assert!(matches!(a.overlay, Some(Overlay::Prompt(_))));
+        assert!(a.update(esc(t3)).is_empty());
+        assert!(a.overlay.is_none());
+        assert_eq!(a.status_text(), Some("Esc again to stop api"));
+        assert_eq!(
+            a.update(esc(t3 + Duration::from_millis(300))),
+            [Effect::Interrupt { pane: "%1".into() }]
+        );
     }
 
     #[test]
