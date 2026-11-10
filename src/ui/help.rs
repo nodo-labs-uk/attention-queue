@@ -68,6 +68,12 @@ finished turn; the card on screen stays as it is.
   y  allow (once you have scrolled to the end)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
 
+# Question card
+When a session ends its turn by asking you something (to approve a
+draft, to choose between two ways), its message becomes a card.
+  a  approve (sends: Approved, carry on.)   Enter  reply in your own words
+  x  put the card away   g  go to the session's window   j/k scroll
+
 # Quiz card
 Each question opens with its piece of the diff and a box for your answer.
   Ctrl-S or Enter on an empty line  submit    Esc  put the box away

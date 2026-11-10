@@ -436,6 +436,11 @@ fn apply(
             Effect::GoToWindow { pane } => Job::GoTo(pane),
             Effect::CapturePane { pane } => Job::Capture(pane),
             Effect::ReadConversation { session_id } => Job::Conversation(session_id),
+            Effect::ReadLastMessage {
+                agent,
+                session_id,
+                checkout,
+            } => Job::LastMessage(agent, session_id, checkout),
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
             Effect::NewSession {
@@ -596,6 +601,7 @@ enum Job {
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
     ListDirs(String, PathBuf),
+    LastMessage(AgentId, String, Checkout),
     Quiz {
         checkout: Checkout,
         agent: AgentId,
@@ -710,6 +716,22 @@ fn spawn_effect_worker(
                         .map(|e| Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
                 }
                 Job::ListDirs(typed, base) => Some(Msg::Dirs(list_dirs(typed, &base))),
+                // Only when the transcript ends on words of Claude's: after a
+                // tool call or a message of yours, the turn is not over.
+                Job::LastMessage(agent, session_id, checkout) => {
+                    crate::transcript::find(&session_id)
+                        .and_then(|p| crate::transcript::conversation(&p).ok())
+                        .and_then(|said| match said.into_iter().next_back() {
+                            Some(crate::transcript::Said::Claude(text)) => Some(text),
+                            _ => None,
+                        })
+                        .map(|text| Msg::LastMessage {
+                            agent,
+                            checkout,
+                            text,
+                            at: std::time::SystemTime::now(),
+                        })
+                }
                 Job::Copy(text) => crate::agents::tmux::copy(&text)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not copy: {e:#}"))),

@@ -264,6 +264,10 @@ pub fn context_for(card: &Card) -> String {
             }
             s
         }
+        CardKind::Question(qc) => format!(
+            "The agent ended its turn by asking the developer this:\n\n{}",
+            cap_text(&qc.text, CONTEXT_CAP)
+        ),
         CardKind::Permission(pc) => format!(
             "The agent asks permission to use the {} tool with this input:\n\n{}",
             pc.tool_name,

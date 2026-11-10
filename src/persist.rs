@@ -252,7 +252,7 @@ mod tests {
         let mut b = app();
         b.config.set_mode(&Checkout("/a".into()), mode);
         b.restore(load(&file).unwrap());
-        let effects = b.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = crate::app::tests::turn_end(&mut b, vec![agent("%1", 1, "api", "/a", true)]);
         (b, effects)
     }
 

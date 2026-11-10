@@ -983,7 +983,7 @@ pub(crate) mod tests {
         let mut a = App::new(Config::default(), builtin_themes());
         a.config.set_mode(&Checkout("/a".into()), Mode::Quiz);
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = crate::app::tests::turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         let [
             Effect::ComputeQuiz {
                 checkout,
@@ -1277,7 +1277,7 @@ pub(crate) mod tests {
         assert_eq!((last.tree.as_str(), last.round), ("t1", 0));
         // The next round diffs from here.
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = crate::app::tests::turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert!(matches!(
             effects.as_slice(),
             [Effect::ComputeQuiz { from_tree: Some(t), .. }] if t == "t1"

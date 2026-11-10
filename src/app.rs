@@ -60,6 +60,13 @@ pub enum Msg {
     },
     /// The folders an `Effect::ListDirs` asked for.
     Dirs(DirListing),
+    /// The message a session ended its turn with, from its transcript.
+    LastMessage {
+        agent: AgentId,
+        checkout: Checkout,
+        text: String,
+        at: SystemTime,
+    },
     Agents(Vec<Agent>),
     /// Listing agents failed; the last known list stays.
     AgentsFailed(String),
@@ -216,6 +223,13 @@ pub enum Effect {
     /// back in the live view.
     ReadConversation {
         session_id: String,
+    },
+    /// Read the message a session ended its turn with, in case it asks
+    /// for an answer.
+    ReadLastMessage {
+        agent: AgentId,
+        session_id: String,
+        checkout: Checkout,
     },
     /// Close a pane, ending the agent in it.
     ClosePane {
@@ -613,7 +627,9 @@ impl App {
     /// Sends a message typed on the empty screen now if the agent is at its
     /// prompt, or once it is. A second message for the same agent joins the
     /// one waiting, so both arrive as one.
-    fn send_prompt(&mut self, agent: AgentId, text: String) -> Vec<Effect> {
+    pub(crate) fn send_prompt(&mut self, agent: AgentId, text: String) -> Vec<Effect> {
+        // Any message to the session answers what it asked.
+        self.drop_questions(|a| *a == agent);
         let name = self
             .agent(&agent)
             .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
@@ -878,6 +894,15 @@ impl App {
                 self.on_dirs(listing);
                 Vec::new()
             }
+            Msg::LastMessage {
+                agent,
+                checkout,
+                text,
+                at,
+            } => {
+                self.on_last_message(agent, checkout, text, at);
+                Vec::new()
+            }
             Msg::Conversation { session_id, said } => {
                 self.reading_conversation = false;
                 self.conversation = Some((session_id, said));
@@ -1130,6 +1155,7 @@ impl App {
                 Some(CardKind::Step(_)) => self.on_step_key(key),
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
+                Some(CardKind::Question(_)) => self.on_question_key(key),
                 Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
                 Some(CardKind::Review(_)) => self.on_review_key(key),
                 None => self.on_empty_key(key),
@@ -1228,6 +1254,13 @@ impl App {
                 .cloned(),
         );
         self.agents = agents;
+        let waiting: BTreeSet<AgentId> = self
+            .agents
+            .iter()
+            .filter(|a| a.waiting)
+            .map(|a| a.id.clone())
+            .collect();
+        self.drop_questions(|a| !waiting.contains(a));
         let mut effects: Vec<Effect> = started
             .iter()
             .flat_map(|a| self.on_agent_waiting(a))
@@ -1255,10 +1288,22 @@ impl App {
                 .into_iter()
                 .filter(|c| Some(c) != agent.checkout.as_ref()),
         );
-        checkouts
+        let mut effects: Vec<Effect> = checkouts
             .iter()
             .flat_map(|c| self.on_turn_end_in(c, agent))
-            .collect()
+            .collect();
+        // Whatever the mode: a question needs its answer.
+        if crate::llm::valid_session_id(&agent.session_id) {
+            effects.push(Effect::ReadLastMessage {
+                agent: agent.id.clone(),
+                session_id: agent.session_id.clone(),
+                checkout: agent
+                    .checkout
+                    .clone()
+                    .unwrap_or_else(|| Checkout(agent.cwd.clone())),
+            });
+        }
+        effects
     }
 
     /// What `agent`'s finished turn asks for in `checkout`, by its mode.
@@ -1922,10 +1967,18 @@ pub(crate) mod tests {
         }
     }
 
+    /// A finished turn's effects without the read of its last message,
+    /// which every turn asks for.
+    pub(crate) fn turn_end(a: &mut App, agents: Vec<Agent>) -> Vec<Effect> {
+        let mut effects = a.update(Msg::Agents(agents));
+        effects.retain(|e| !matches!(e, Effect::ReadLastMessage { .. }));
+        effects
+    }
+
     /// The effect the agent finishing in `/a` asks for.
     pub(crate) fn finish_round(a: &mut App) -> ReviewRequest {
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = turn_end(a, vec![agent("%1", 1, "api", "/a", true)]);
         let [Effect::ComputeReview(req)] = effects.as_slice() else {
             panic!("expected one ComputeReview, got {effects:?}");
         };
@@ -2305,7 +2358,7 @@ pub(crate) mod tests {
         );
         // The next turn starts with nothing touched.
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert_eq!(effects.len(), 1, "{effects:?}");
     }
 
@@ -2315,7 +2368,7 @@ pub(crate) mod tests {
         let ck = Checkout("/a".into());
         a.config.set_mode(&ck, Mode::Vibe);
         a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
-        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert!(effects.is_empty(), "nothing checked: {effects:?}");
         assert!(a.queue.is_empty());
         // No card to press M on: it goes to the picked session's project.
@@ -2323,7 +2376,7 @@ pub(crate) mod tests {
         assert_eq!(a.config.mode_for(&ck), Mode::Review);
         let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
         assert!(effects.is_empty());
-        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let effects = turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert!(matches!(effects.as_slice(), [Effect::ComputeReview(_)]));
     }
 
