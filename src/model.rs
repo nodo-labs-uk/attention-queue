@@ -4,6 +4,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 pub use crate::permission::PermissionCard;
+pub use crate::question::QuestionCard;
 pub use crate::quiz::QuizCard;
 pub use crate::review::ReviewCard;
 pub use crate::shell::ShellCard;
@@ -46,6 +47,8 @@ pub enum CardKind {
     ShellChange(ShellCard),
     Quiz(QuizCard),
     Permission(PermissionCard),
+    /// The session's last message asks for an answer.
+    Question(QuestionCard),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

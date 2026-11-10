@@ -9,6 +9,7 @@ pub mod input;
 mod keys;
 mod new_session;
 mod permission;
+mod question;
 mod quiz;
 mod review;
 mod shell;
@@ -158,6 +159,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
 pub fn kind_label(kind: &CardKind) -> &'static str {
     match kind {
         CardKind::Permission(_) => "permission",
+        CardKind::Question(_) => "question",
         CardKind::Step(_) => "step",
         CardKind::ShellChange(_) => "shell change",
         CardKind::Review(_) => "review",
@@ -209,6 +211,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::Step(sc) => step::render(frame, area, app, card, sc, hl),
         CardKind::ShellChange(sc) => shell::render(frame, area, app, card, sc, hl),
         CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
+        CardKind::Question(qc) => question::render(frame, area, app, card, qc),
         CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }
 }

@@ -455,7 +455,8 @@ mod tests {
         })
     }
 
-    fn only_request(effects: Vec<Effect>) -> SnapshotRequest {
+    fn only_request(mut effects: Vec<Effect>) -> SnapshotRequest {
+        effects.retain(|e| !matches!(e, Effect::ReadLastMessage { .. }));
         match <[Effect; 1]>::try_from(effects).expect("one effect") {
             [Effect::Snapshot(req)] => req,
             [e] => panic!("not a snapshot: {e:?}"),

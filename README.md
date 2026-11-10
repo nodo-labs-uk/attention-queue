@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/media/banner.svg" width="640" alt="aq: an attention queue for Claude Code"></h1>
 
-I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt) in one queue, shown one card at a time.
+I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt, a question) in one queue, shown one card at a time.
 
 ![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
 
@@ -49,6 +49,8 @@ Each project has a mode, and `M` switches it.
 
 **Vibe**: nothing is checked; the agent just codes.
 
+**Questions**, in every mode: when a session ends its turn by asking you something (to approve a draft, to choose between two ways), its message becomes a card. `a` approves, `Enter` replies in your own words, and `x` puts the card away.
+
 ## Sessions
 
 When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt. `Tab` in that box gives the session a git worktree of its own (Claude's `--worktree`), so two sessions don't edit the same files. `Ctrl-O` picks another folder: type a path with the matching folders listed underneath (`Tab` completes, the arrows choose), and a folder that isn't there yet is made when the session starts.
@@ -79,6 +81,7 @@ The ones worth knowing from day one:
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
 | `y` `n` | step, permission | allow, or refuse with a reason |
+| `a` `Enter` | question | approve, or reply in your own words |
 | `h` `l` | sessions | pick a session |
 | `Enter` | sessions | message it |
 | `Esc Esc` | sessions | stop it |
