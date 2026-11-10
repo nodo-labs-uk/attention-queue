@@ -285,7 +285,9 @@ pub fn popup_shell(dir: &Path, title: &str, typed: Option<&str>, zsh_dir: &Path)
         &title,
         "-d",
     ])
-    .arg(dir);
+    // tmux expands formats in the start directory too, and a folder name
+    // is not ours to trust.
+    .arg(format_literal(&dir.to_string_lossy()));
     if let Ok(pane) = std::env::var("TMUX_PANE") {
         cmd.args(["-t", &pane]);
     }
@@ -348,8 +350,9 @@ pub fn copy(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// `text` for a tmux format, shown as written: a window name can be set by
-/// the program in it, and `#(...)` in a format runs a command.
+/// `text` for a tmux format, taken as written: a window name can be set by
+/// the program in it, a folder can be named anything, and `#(...)` in a
+/// format runs a command.
 fn format_literal(text: &str) -> String {
     text.replace('#', "##")
 }
