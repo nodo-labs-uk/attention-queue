@@ -63,6 +63,10 @@ pub fn run_hook_with(
         Connect::TimedOut => None,
         Connect::Connected(stream) => exchange(stream, &req, end),
     };
+    // An option menu with no answer shows in the window as usual.
+    if reply.is_none() && input["tool_name"] == crate::choice::TOOL {
+        return Ok(None);
+    }
     Ok(output(event, reply))
 }
 
@@ -166,6 +170,13 @@ fn output(event: HookEvent, reply: Option<HookReply>) -> Option<String> {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
         }),
+        (HookEvent::PreTool, Some(HookReply::Answer { input })) => json!({
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": input,
+        }),
+        // Only a PreToolUse hook is ever given an answer.
+        (HookEvent::Permission, Some(HookReply::Answer { .. })) => return None,
         (HookEvent::PreTool, Some(HookReply::Deny { reason })) => pre_tool_deny(&reason),
         (HookEvent::PreTool, Some(HookReply::NoDecision)) => return None,
         // Step-mode edits with no answer are refused, never let through.

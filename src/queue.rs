@@ -2,7 +2,8 @@ use crate::model::{Card, CardKind};
 
 /// Cards waiting for the user, in the order they will be shown.
 ///
-/// Order (spec call 11): permission cards first, oldest first. Then each
+/// Order (spec call 11): permission cards and option menus first, since a
+/// session is stopped mid-turn on each, oldest first. Then each
 /// checkout holding a step or shell-change card, one checkout at a time, the
 /// one with the oldest such card first, with all its cards. Then everything
 /// else, oldest first. A skipped card goes behind every card of its group.
@@ -84,7 +85,7 @@ impl Queue {
         let card = |i: usize| &self.entries[i].card;
         let (mut out, mut rest): (Vec<usize>, Vec<usize>) = by_age
             .into_iter()
-            .partition(|&i| matches!(card(i).kind, CardKind::Permission(_)));
+            .partition(|&i| matches!(card(i).kind, CardKind::Permission(_) | CardKind::Choice(_)));
         while let Some(&first) = rest
             .iter()
             .find(|&&i| matches!(card(i).kind, CardKind::Step(_) | CardKind::ShellChange(_)))

@@ -278,6 +278,8 @@ pub enum Overlay {
     StepReason(ReasonDraft),
     /// `gd` on a step card: where the identifier appears.
     Search(SearchList),
+    /// `o` on a choice card: typing an answer that is none of the options.
+    OwnAnswer(crate::choice::OwnAnswerDraft),
     /// `n` on a permission card: typing the reason Claude reads.
     Deny(DenyDraft),
     /// `i` on a quiz card: typing a free-text answer.
@@ -954,6 +956,22 @@ impl App {
                     checkout,
                 },
             ),
+            Msg::Ipc {
+                req_id,
+                req:
+                    HookRequest::PreTool {
+                        session_id,
+                        cwd,
+                        tool_name,
+                        tool_input,
+                        ..
+                    },
+                checkout,
+                at,
+                ..
+            } if tool_name == crate::choice::TOOL => {
+                self.on_choice(req_id, at, &session_id, &cwd, checkout, tool_input)
+            }
             // No card for the other kinds; nothing waits.
             Msg::Ipc { req_id, .. } => vec![Effect::Reply {
                 req_id,
@@ -1106,6 +1124,7 @@ impl App {
             }
             Some(Overlay::StepReason(_)) => return self.on_reason_key(key),
             Some(Overlay::Deny(_)) => return self.on_deny_key(key),
+            Some(Overlay::OwnAnswer(_)) => return self.on_own_answer_key(key),
             Some(Overlay::QuizAnswer(_)) => return self.on_quiz_answer_key(key),
             Some(Overlay::QuizCode { .. }) => {
                 self.on_quiz_code_key(key);
@@ -1156,6 +1175,7 @@ impl App {
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
                 Some(CardKind::Question(_)) => self.on_question_key(key),
+                Some(CardKind::Choice(_)) => self.on_choice_key(key),
                 Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
                 Some(CardKind::Review(_)) => self.on_review_key(key),
                 None => self.on_empty_key(key),
@@ -1253,6 +1273,14 @@ impl App {
                 .filter(|a| a.checkout.as_ref().is_some_and(|c| self.unclaimed.has(c)))
                 .cloned(),
         );
+        // A session found already waiting, as all are when aq starts, may
+        // be waiting on a question it asked before aq was looking.
+        let found_waiting: Vec<Effect> = agents
+            .iter()
+            .filter(|a| a.waiting && !self.agents.iter().any(|p| p.id == a.id))
+            .filter(|a| !started.iter().any(|s| s.id == a.id))
+            .filter_map(read_last_message)
+            .collect();
         self.agents = agents;
         let waiting: BTreeSet<AgentId> = self
             .agents
@@ -1265,6 +1293,7 @@ impl App {
             .iter()
             .flat_map(|a| self.on_agent_waiting(a))
             .collect();
+        effects.extend(found_waiting);
         // Checkouts already in step mode at startup need a baseline too.
         let checkouts: BTreeSet<Checkout> = self
             .agents
@@ -1293,16 +1322,7 @@ impl App {
             .flat_map(|c| self.on_turn_end_in(c, agent))
             .collect();
         // Whatever the mode: a question needs its answer.
-        if crate::llm::valid_session_id(&agent.session_id) {
-            effects.push(Effect::ReadLastMessage {
-                agent: agent.id.clone(),
-                session_id: agent.session_id.clone(),
-                checkout: agent
-                    .checkout
-                    .clone()
-                    .unwrap_or_else(|| Checkout(agent.cwd.clone())),
-            });
-        }
+        effects.extend(read_last_message(agent));
         effects
     }
 
@@ -1627,6 +1647,15 @@ impl App {
         let Some(done) = self.sending.remove(&card) else {
             return Vec::new();
         };
+        // What was sent answers the session, whatever it had asked.
+        let agent = self
+            .queue
+            .iter()
+            .find(|c| c.id == card)
+            .map(|c| c.agent.clone());
+        if let (Some(agent), None) = (agent, &error) {
+            self.drop_questions(|a| *a == agent);
+        }
         let kind = self.queue.iter().find(|c| c.id == card).map(|c| &c.kind);
         let (shell, quiz) = (
             matches!(kind, Some(CardKind::ShellChange(_))),
@@ -1723,6 +1752,19 @@ pub fn shared_checkout_warning(card: &Card, agents: &[Agent]) -> Option<String> 
         "shared checkout: diff may mix work from windows {} and {last}",
         rest.join(", ")
     ))
+}
+
+/// Asks for the message `agent` ended its turn with, when its session can
+/// be found.
+fn read_last_message(agent: &Agent) -> Option<Effect> {
+    crate::llm::valid_session_id(&agent.session_id).then(|| Effect::ReadLastMessage {
+        agent: agent.id.clone(),
+        session_id: agent.session_id.clone(),
+        checkout: agent
+            .checkout
+            .clone()
+            .unwrap_or_else(|| Checkout(agent.cwd.clone())),
+    })
 }
 
 pub fn project_name(checkout: &Checkout) -> String {

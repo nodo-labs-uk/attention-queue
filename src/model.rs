@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::choice::ChoiceCard;
 pub use crate::permission::PermissionCard;
 pub use crate::question::QuestionCard;
 pub use crate::quiz::QuizCard;
@@ -49,6 +50,8 @@ pub enum CardKind {
     Permission(PermissionCard),
     /// The session's last message asks for an answer.
     Question(QuestionCard),
+    /// Claude's option menu, waiting on its hook for an answer.
+    Choice(ChoiceCard),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

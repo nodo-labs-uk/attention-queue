@@ -9,8 +9,9 @@ use crate::app::{App, project_name};
 use crate::model::{Card, CardKind};
 
 /// Kinds in the order the queue serves them.
-const KIND_ORDER: [fn(&CardKind) -> bool; 6] = [
+const KIND_ORDER: [fn(&CardKind) -> bool; 7] = [
     |k| matches!(k, CardKind::Permission(_)),
+    |k| matches!(k, CardKind::Choice(_)),
     |k| matches!(k, CardKind::Step(_)),
     |k| matches!(k, CardKind::ShellChange(_)),
     |k| matches!(k, CardKind::Review(_)),

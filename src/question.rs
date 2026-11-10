@@ -2,7 +2,7 @@
 //! approve a draft, to pick between two ways), so its last message is put
 //! in front of you with keys to answer it. Pure: no I/O.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -21,6 +21,21 @@ pub struct QuestionCard {
 }
 
 impl QuestionCard {
+    /// The line that does the asking: the last one with a question mark
+    /// or asking words, else the last one.
+    pub fn ask_line(&self) -> String {
+        let said = spoken(&self.text);
+        let line = said
+            .iter()
+            .rev()
+            .take(TAIL)
+            .find(|l| is_asking(l))
+            .or(said.last())
+            .cloned()
+            .unwrap_or_default();
+        visible_lines(&line).join(" ")
+    }
+
     /// The message as rows of at most `width` characters.
     pub fn rows(&self, width: usize) -> Vec<String> {
         let mut rows = Vec::new();
@@ -34,6 +49,9 @@ impl QuestionCard {
         rows
     }
 }
+
+/// How much later than its turn's end a question card is dated.
+const AFTER_ITS_REVIEW: Duration = Duration::from_secs(30);
 
 /// Words that ask for a go-ahead without a question mark.
 const ASKING: [&str; 12] = [
@@ -55,20 +73,29 @@ const ASKING: [&str; 12] = [
 /// asking words in its last few lines. Code blocks are left out, since
 /// code is full of question marks.
 pub fn asks(text: &str) -> bool {
-    const TAIL: usize = 4;
+    spoken(text).iter().rev().take(TAIL).any(|l| is_asking(l))
+}
+
+/// How many of a message's last lines are looked at.
+const TAIL: usize = 4;
+
+/// The lines of a message that are not blank and not code.
+fn spoken(text: &str) -> Vec<String> {
     let mut in_code = false;
-    let mut said: Vec<String> = Vec::new();
+    let mut said = Vec::new();
     for line in text.lines() {
         if line.trim_start().starts_with("```") {
             in_code = !in_code;
         } else if !in_code && !line.trim().is_empty() {
-            said.push(line.to_lowercase());
+            said.push(line.trim().to_string());
         }
     }
-    said.iter()
-        .rev()
-        .take(TAIL)
-        .any(|l| l.contains('?') || ASKING.iter().any(|w| l.contains(w)))
+    said
+}
+
+fn is_asking(line: &str) -> bool {
+    let line = line.to_lowercase();
+    line.contains('?') || ASKING.iter().any(|w| line.contains(w))
 }
 
 impl App {
@@ -94,9 +121,20 @@ impl App {
             id: self.next_card_id,
             checkout,
             agent,
-            created: at,
+            // Behind the review or quiz of the same turn, which is made a
+            // moment later and says in its heading what was asked:
+            // answering there answers this too.
+            created: at + AFTER_ITS_REVIEW,
             kind: CardKind::Question(QuestionCard { text, scroll: 0 }),
         });
+    }
+
+    /// What `agent` asked at the end of its turn, while that is unanswered.
+    pub fn question_of(&self, agent: &AgentId) -> Option<&QuestionCard> {
+        self.queue.iter().find_map(|c| match &c.kind {
+            CardKind::Question(q) if &c.agent == agent => Some(q),
+            _ => None,
+        })
     }
 
     /// Takes away the question cards of the sessions `gone` picks: a

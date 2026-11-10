@@ -47,7 +47,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ),
             ("Esc", "cancel".into()),
         ],
-        (Some(Overlay::StepReason(_) | Overlay::Deny(_) | Overlay::Prompt(_)), _) => {
+        (
+            Some(
+                Overlay::StepReason(_)
+                | Overlay::Deny(_)
+                | Overlay::Prompt(_)
+                | Overlay::OwnAnswer(_),
+            ),
+            _,
+        ) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }
         (Some(Overlay::QuizAnswer(_)), _) => vec![
@@ -144,6 +152,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("g", "go to window".into()),
             ("Space", "skip".into()),
             ("?", "ask".into()),
+        ],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Choice(_),
+                ..
+            }),
+        ) => vec![
+            ("1-9", "pick".into()),
+            ("j/k", "move".into()),
+            ("Enter", "answer".into()),
+            ("o", "own words".into()),
+            ("u", "back".into()),
+            ("x", "answer in the window".into()),
+            ("g", "go to window".into()),
+            ("Space", "skip".into()),
         ],
         (
             None,
