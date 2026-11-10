@@ -396,11 +396,45 @@ fn format_literal(text: &str) -> String {
 
 /// Presses Escape in `pane`, which stops a Claude Code turn.
 pub fn press_escape(pane: &str, server: &[&str]) -> Result<()> {
+    press(pane, "Escape", server)
+}
+
+fn press(pane: &str, key: &str, server: &[&str]) -> Result<()> {
     let mut cmd = Command::new("tmux");
-    cmd.args(server).args(["send-keys", "-t", pane, "Escape"]);
+    cmd.args(server).args(["send-keys", "-t", pane, key]);
     let (status, _, err) =
         super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux send-keys")?;
     anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
+/// The heading of the menu Claude Code shows when `/model` is sent to a
+/// session with history: the new model has to re-read it.
+const SWITCH_MODEL_MENU: &str = "Switch model?";
+
+/// What Claude Code prints once the model is switched.
+const MODEL_IS_SET: &str = "Set model to";
+
+/// How long to watch for the menu after `/model` is sent.
+const SWITCH_MODEL_WAIT: Duration = Duration::from_secs(3);
+
+/// After `/model` was sent to `pane`: says yes to Claude Code's "Switch
+/// model?" menu if it comes up, since the model was already picked in aq.
+/// Its first option, yes, is the one Enter takes. `before` is the pane's
+/// screen from before the send: a new "Set model to" line means no menu.
+pub fn confirm_model_switch(pane: &str, before: &str, server: &[&str]) -> Result<()> {
+    let set = |screen: &str| screen.matches(MODEL_IS_SET).count();
+    let until = Instant::now() + SWITCH_MODEL_WAIT;
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(150));
+        let screen = capture_pane(pane, server)?;
+        if screen.contains(SWITCH_MODEL_MENU) {
+            return press(pane, "Enter", server);
+        }
+        if set(&screen) != set(before) {
+            break;
+        }
+    }
     Ok(())
 }
 
