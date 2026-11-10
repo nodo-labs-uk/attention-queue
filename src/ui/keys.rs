@@ -28,9 +28,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "new line".into()),
             ("Esc", "cancel".into()),
         ],
-        (Some(Overlay::NewSession(_)), _) => {
-            vec![("Enter", "start".into()), ("Esc", "cancel".into())]
-        }
+        (Some(Overlay::NewSession(d)), _) => vec![
+            ("Enter", "start".into()),
+            (
+                "Tab",
+                if d.worktree {
+                    "same folder".into()
+                } else {
+                    "own worktree".into()
+                },
+            ),
+            ("Esc", "cancel".into()),
+        ],
         (Some(Overlay::StepReason(_) | Overlay::Deny(_) | Overlay::Prompt(_)), _) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }
@@ -43,8 +52,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
-        (Some(Overlay::Tour { .. }), _) => vec![
-            ("→", "next".into()),
+        (Some(Overlay::Tour { page }), _) => vec![
+            (
+                "→",
+                match crate::tour::PAGES.get(*page).and_then(|p| p.practice) {
+                    Some(_) => "start".into(),
+                    None if page + 1 == crate::tour::PAGES.len() => "finish".into(),
+                    None => "next".into(),
+                },
+            ),
             ("←", "back".into()),
             ("Esc", "skip".into()),
         ],

@@ -28,7 +28,14 @@ pub fn render(frame: &mut Frame, area: Rect, page: usize, t: &Theme) {
     let last = page + 1 == PAGES.len();
     let hints = Line::from(vec![
         Span::styled(" →", key),
-        Span::styled(if last { " finish  " } else { " next  " }, dim),
+        Span::styled(
+            match p.practice {
+                Some(_) => " start  ",
+                None if last => " finish  ",
+                None => " next  ",
+            },
+            dim,
+        ),
         Span::styled("←", key),
         Span::styled(" back  ", dim),
         Span::styled("Esc", key),

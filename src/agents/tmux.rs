@@ -341,13 +341,12 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// `claude` in a new tmux window in `dir`, left in the background, with
-/// `prompt` as its first message. The command goes through the shell, so
-/// `claude` is found as in your own windows; the prompt is quoted for it.
-pub fn new_claude(dir: &Path, prompt: Option<&str>) -> Result<()> {
-    let command = match prompt {
-        Some(p) => format!("claude {}", shell_quote(p)),
-        None => "claude".to_string(),
-    };
+/// `prompt` as its first message. With `worktree`, Claude makes a git
+/// worktree of `dir`'s repository and works there. The command goes through
+/// the shell, so `claude` is found as in your own windows; the prompt is
+/// quoted for it.
+pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<()> {
+    let command = claude_command(prompt, worktree);
     let mut cmd = Command::new("tmux");
     cmd.args(["new-window", "-d", "-c"])
         // The start directory is expanded as a format; the command is not.
@@ -357,6 +356,20 @@ pub fn new_claude(dir: &Path, prompt: Option<&str>) -> Result<()> {
         super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux new-window")?;
     anyhow::ensure!(status.success(), "{}", err.trim());
     Ok(())
+}
+
+/// The flag comes last: it takes an optional name, and would take a prompt
+/// after it as one.
+fn claude_command(prompt: Option<&str>, worktree: bool) -> String {
+    let mut command = "claude".to_string();
+    if let Some(p) = prompt {
+        command.push(' ');
+        command.push_str(&shell_quote(p));
+    }
+    if worktree {
+        command.push_str(" --worktree");
+    }
+    command
 }
 
 /// Puts `text` in the tmux buffer and, through `-w`, the clipboard.
@@ -401,6 +414,21 @@ pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};
     use super::*;
+
+    #[test]
+    fn a_new_session_command_ends_with_the_worktree_flag() {
+        assert_eq!(claude_command(None, false), "claude");
+        assert_eq!(
+            claude_command(Some("it's on"), false),
+            r"claude 'it'\''s on'"
+        );
+        // After the prompt, or the prompt would be taken as the worktree's name.
+        assert_eq!(
+            claude_command(Some("fix it"), true),
+            "claude 'fix it' --worktree"
+        );
+        assert_eq!(claude_command(None, true), "claude --worktree");
+    }
 
     #[test]
     fn shell_quote_survives_quotes() {

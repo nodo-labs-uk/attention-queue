@@ -31,7 +31,8 @@ finished turn; the card on screen stays as it is.
   ?    ask the agent a side question      Space  skip this card
   W    where are we: a short summary of what is done and what is left
   N    a new Claude session in this project, in a tmux window of its own;
-       what you type is its first prompt
+       what you type is its first prompt, and Tab gives it a git worktree
+       of its own (claude --worktree)
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. It closes when the shell exits

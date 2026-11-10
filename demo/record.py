@@ -753,20 +753,42 @@ def scene_tour():
     w.see("Welcome to aq")
     with Recorder(w) as rec:
         time.sleep(2.5)
-        # The pages up to "Try it", then the practice card, key by key.
-        for _ in range(5):
-            w.keys("Right", gap=2.4)
+        # The pages up to "Try it", then each practice card, key by key.
+        for _ in range(4):
+            w.keys("Right", gap=2.2)
         w.see("try it")
-        for k in ("j", "L", "v", "c"):
-            w.keys(k, gap=1.8)
+        for k in ("j", "L", "v", "F1", "Escape", "c"):
+            w.keys(k, gap=1.6)
         w.type("Should this strip tabs too?")
         time.sleep(0.8)
         for k in ("C-s", "d", "s", "a"):
+            w.keys(k, gap=2)
+        w.see("Try it: step mode")
+        time.sleep(2.5)
+        for k in ("M", "y", "n"):
             w.keys(k, gap=2.2)
-        w.see("Step and quiz")
-        for _ in range(2):
-            w.keys("Right", gap=2.4)
-        time.sleep(1)
+        w.type("Return the greeting, as before")
+        w.keys("Enter", gap=1)
+        w.see("Try it: quiz mode")
+        time.sleep(2.5)
+        for k in ("M", "i"):
+            w.keys(k, gap=2.2)
+        w.type("'Hello, ' with no name: the check lets spaces through")
+        w.keys("C-s", gap=3.5)
+        w.keys("c", gap=1)
+        w.see("Modes, in short")
+        time.sleep(2.5)
+        w.keys("Right", gap=3)
+        w.keys("Right", "l", "Enter", gap=2)
+        w.type("Do the chart colours as well")
+        w.keys("Enter", gap=2)
+        w.keys("W", gap=3.5)
+        w.keys("Escape", "g", "N", "Tab", gap=1.8)
+        w.type("Fix the flaky login test")
+        w.keys("Enter", "M", gap=2.2)
+        w.keys("M", gap=1)
+        w.see("That's it")
+        time.sleep(3)
     return w, rec
 
 

@@ -226,6 +226,8 @@ pub enum Effect {
     NewSession {
         dir: PathBuf,
         prompt: Option<String>,
+        /// In a git worktree of its own, made by `claude --worktree`.
+        worktree: bool,
     },
     /// Copy the screen's text between two cells (row by row, as a terminal
     /// selects) to the tmux buffer, and so the clipboard.
@@ -281,6 +283,8 @@ pub struct PromptDraft {
 pub struct NewSessionDraft {
     pub dir: PathBuf,
     pub name: String,
+    /// Tab: start it in a git worktree of its own.
+    pub worktree: bool,
     pub input: TextInput,
 }
 
@@ -344,6 +348,9 @@ pub struct App {
     pub selection: Option<Selection>,
     /// The tour's practice: which step it is on.
     pub(crate) practice: Option<usize>,
+    /// The tour's made-up sessions, listed in place of the real ones while
+    /// its sessions practice lasts.
+    pub(crate) practice_agents: Vec<Agent>,
     /// The conversation last read, and whose.
     pub conversation: Option<(String, Result<Vec<Said>, String>)>,
     /// A `ReadConversation` is on its way.
@@ -421,6 +428,7 @@ impl App {
             live_scroll: 0,
             selection: None,
             practice: None,
+            practice_agents: Vec::new(),
             conversation: None,
             reading_conversation: false,
         }
@@ -452,12 +460,20 @@ impl App {
     }
 
     pub fn agent(&self, id: &AgentId) -> Option<&Agent> {
-        self.agents.iter().find(|a| &a.id == id)
+        self.agents
+            .iter()
+            .chain(&self.practice_agents)
+            .find(|a| &a.id == id)
     }
 
     /// The agents in window order, as the empty screen lists them.
     pub fn agents_in_order(&self) -> Vec<&Agent> {
-        let mut agents: Vec<&Agent> = self.agents.iter().collect();
+        let listed = if self.practice_agents.is_empty() {
+            &self.agents
+        } else {
+            &self.practice_agents
+        };
+        let mut agents: Vec<&Agent> = listed.iter().collect();
         agents.sort_by(|a, b| (&a.session, a.window_index).cmp(&(&b.session, b.window_index)));
         agents
     }
@@ -676,6 +692,10 @@ impl App {
     /// conversation, read from the transcript; down past its end goes back
     /// to the screen.
     fn scroll_live(&mut self, up: bool, n: usize) -> Vec<Effect> {
+        // The tour's sessions have a screen and no conversation behind it.
+        if !self.practice_agents.is_empty() {
+            return Vec::new();
+        }
         if !up {
             self.live_scroll = self.live_scroll.saturating_sub(n);
             return Vec::new();
@@ -751,13 +771,20 @@ impl App {
 
     /// Asks for the picked agent's screen while the empty screen shows, one
     /// capture at a time.
-    fn capture_picked(&mut self) -> Vec<Effect> {
+    pub(crate) fn capture_picked(&mut self) -> Vec<Effect> {
         if self.capturing || self.queue.current().is_some() {
             return Vec::new();
         }
         let Some(pane) = self.picked_agent().map(|a| a.id.pane.clone()) else {
             return Vec::new();
         };
+        if let Some(screen) = crate::tour::practice_screen(&pane) {
+            self.preview = Some(Preview {
+                pane,
+                text: Ok(screen.to_string()),
+            });
+            return Vec::new();
+        }
         self.capturing = true;
         vec![Effect::CapturePane { pane }]
     }
@@ -1087,6 +1114,7 @@ impl App {
                     self.overlay = Some(Overlay::NewSession(NewSessionDraft {
                         dir,
                         name,
+                        worktree: false,
                         input: TextInput::single_line(),
                     }));
                 }
@@ -1133,6 +1161,10 @@ impl App {
         let Some(Overlay::NewSession(draft)) = &mut self.overlay else {
             return Vec::new();
         };
+        if key.code == KeyCode::Tab {
+            draft.worktree = !draft.worktree;
+            return Vec::new();
+        }
         let text = match draft.input.handle_key(key) {
             InputEvent::Editing => return Vec::new(),
             InputEvent::Cancel => None,
@@ -1144,11 +1176,17 @@ impl App {
         let Some(text) = text else {
             return Vec::new();
         };
-        self.set_status(format!("Started a Claude session in {}", draft.name));
+        let place = if draft.worktree {
+            "a new worktree of "
+        } else {
+            ""
+        };
+        self.set_status(format!("Started a Claude session in {place}{}", draft.name));
         let prompt = Some(text.trim().to_string()).filter(|t| !t.is_empty());
         vec![Effect::NewSession {
             dir: draft.dir,
             prompt,
+            worktree: draft.worktree,
         }]
     }
 
@@ -2611,19 +2649,24 @@ pub(crate) mod tests {
             a.update(enter()),
             [Effect::NewSession {
                 dir: "/w/api".into(),
-                prompt: Some("fix the flaky test".into())
+                prompt: Some("fix the flaky test".into()),
+                worktree: false,
             }]
         );
         assert_eq!(a.overlay, None);
-        // Empty: claude with no prompt. Esc: nothing.
+        // Empty: claude with no prompt. Tab: in a worktree of its own.
         a.update(key('N'));
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Tab), Instant::now()));
         assert_eq!(
             a.update(enter()),
             [Effect::NewSession {
                 dir: "/w/api".into(),
-                prompt: None
+                prompt: None,
+                worktree: true,
             }]
         );
+        assert!(a.status_text().unwrap().contains("a new worktree of api"));
+        // Esc: nothing.
         a.update(key('N'));
         let esc = Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now());
         assert!(a.update(esc).is_empty());

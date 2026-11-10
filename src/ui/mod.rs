@@ -144,7 +144,11 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
         Some(Overlay::NewSession(d)) => {
-            let title = format!("New Claude session in {} (empty starts it bare)", d.name);
+            let place = if d.worktree { "a new worktree of " } else { "" };
+            let title = format!(
+                "New Claude session in {place}{} (empty starts it bare)",
+                d.name
+            );
             input::render_sized(frame, body, &d.input, &title, "start", t, (100, 12));
         }
         None => {}

@@ -51,7 +51,7 @@ Each project has a mode, and `M` switches it.
 
 ## Sessions
 
-When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt.
+When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt. `Tab` in that box gives the session a git worktree of its own (Claude's `--worktree`), so two sessions don't edit the same files.
 
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
 
@@ -61,9 +61,9 @@ When nothing is waiting, there is a tab per session with the selected one's scre
 
 ## Keys
 
-The first time aq starts, a tour walks through the workflow and then has you try it: it puts a made-up review card on screen and tells you which key to press, one at a time (move, comment, mark done, send, approve). Nothing on that card reaches a real session. `F2` runs the tour again, and `F1` lists every key.
+The first time aq starts, a tour has you try the workflow on made-up cards, telling you which key to press, one at a time. First a review (move, comment, mark done, send, approve), then `M` into step mode (allow one edit, refuse the next with a reason), then quiz mode (answer a question and send the gap the judge found back as a fix). Last come three made-up sessions: pick one, message it, ask where it's up to, start a new one and move its project through the modes. Nothing in the tour reaches a real session. `F2` runs the tour again, and `F1` lists every key.
 
-![The first-run tour: a few pages, then a practice card where it asks for each key](docs/media/tour.svg)
+![The first-run tour: practice cards for review, step and quiz, then made-up sessions, asking for each key](docs/media/tour.svg)
 
 The ones worth knowing from day one:
 
@@ -73,7 +73,7 @@ The ones worth knowing from day one:
 | `?` | anywhere | ask the session a side question; a fork answers, so the session never sees it |
 | `!` | anywhere | shell in a popup, with Claude's last `! command` typed in |
 | `W` | anywhere | ask the session where it's up to |
-| `N` | anywhere | start a new Claude session in this project |
+| `N` | anywhere | start a new Claude session in this project; `Tab` puts it in its own worktree |
 | drag | anywhere | select text; letting go copies it |
 | `Space` | card | skip it for now |
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
@@ -97,9 +97,9 @@ Moving around works as in vim: `j` `k`, `Ctrl-d` `Ctrl-u`, `gg` `G`, `]c` `[c` f
 | Quiz on the change | ✓ | – | – | – | – |
 | Permission prompts in the same place | ✓ | – | – | – | – |
 | Starts new sessions | ✓ in a tmux window | ✓ | ✓ | ✓ | – |
-| Sets up a worktree per session | – | ✓ | ✓ | ✓ | – |
+| Sets up a worktree per session | optional, `Tab` on `N` | ✓ | ✓ | ✓ | – |
 
-aq can start a session (`N`), but it doesn't set up worktrees or manage branches: start Claude however you like and aq picks it up. If you'd rather have one app that isolates every session for you, one of the others is a better fit.
+aq can start a session (`N`), and in a worktree of its own if you ask, but it leaves branches and merging to you and Claude: start Claude however you like and aq picks it up. If you'd rather have one app that manages every session's branch for you, one of the others is a better fit.
 
 ## Install
 
