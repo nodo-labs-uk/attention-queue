@@ -37,6 +37,16 @@ pub enum Kind {
 pub type Row = Vec<(Kind, String)>;
 
 impl QuestionCard {
+    /// Whether a yes answers the question: it asks for a go-ahead in its
+    /// last lines. "How long did it take?" does not, and has no approve.
+    pub fn approvable(&self) -> bool {
+        spoken(&self.text)
+            .iter()
+            .rev()
+            .take(TAIL)
+            .any(|l| wants_go_ahead(l))
+    }
+
     /// The line that does the asking: the last one with a question mark
     /// or asking words, else the last one. Without its Markdown marks.
     pub fn ask_line(&self) -> String {
@@ -193,11 +203,10 @@ fn pieces(chars: &[(Kind, char)]) -> Row {
 /// How much later than its turn's end a question card is dated.
 const AFTER_ITS_REVIEW: Duration = Duration::from_secs(30);
 
-/// Words that ask for a go-ahead without a question mark.
-const ASKING: [&str; 12] = [
+/// Words that ask for a go-ahead: a yes answers them in full.
+const GO_AHEAD: [&str; 9] = [
     "approve",
     "say the word",
-    "let me know",
     "shall i",
     "should i",
     "want me to",
@@ -205,9 +214,10 @@ const ASKING: [&str; 12] = [
     "do you want",
     "confirm",
     "go ahead",
-    "your call",
-    "which one",
 ];
+
+/// Words that ask for an answer in your own words.
+const OPEN: [&str; 3] = ["let me know", "your call", "which one"];
 
 /// Whether a message ends by asking for an answer: a question mark or
 /// asking words in its last few lines. Code blocks are left out, since
@@ -235,7 +245,13 @@ fn spoken(text: &str) -> Vec<String> {
 
 fn is_asking(line: &str) -> bool {
     let line = line.to_lowercase();
-    line.contains('?') || ASKING.iter().any(|w| has_words(&line, w))
+    line.contains('?') || GO_AHEAD.iter().chain(&OPEN).any(|w| has_words(&line, w))
+}
+
+/// Whether a yes answers `line`.
+fn wants_go_ahead(line: &str) -> bool {
+    let line = line.to_lowercase();
+    GO_AHEAD.iter().any(|w| has_words(&line, w))
 }
 
 /// Whether `words` is in `line` as whole words: "confirm" asks, but
@@ -301,7 +317,7 @@ impl App {
         }
     }
 
-    /// `a` or `y` approves, Enter or `i` writes a reply, `x` puts the card
+    /// `a` or `y` approves a question that asks for a go-ahead, Enter or `i` writes a reply, `x` puts the card
     /// away, `g` goes to the session's window; the rest scroll.
     pub(crate) fn on_question_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let Some(card) = self.queue.current() else {
@@ -312,6 +328,13 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('a' | 'y') if !ctrl => {
+                if !self
+                    .question_of(&agent)
+                    .is_some_and(QuestionCard::approvable)
+                {
+                    self.set_status("This question needs your own words: Enter to reply");
+                    return Vec::new();
+                }
                 if !self.settled(id) {
                     self.too_quick("question");
                     return Vec::new();
@@ -431,6 +454,17 @@ mod tests {
             }]
         );
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn an_open_question_cannot_be_approved() {
+        let mut a = app();
+        said(
+            &mut a,
+            "How long did the bid take?\n\nOnce you tell me, I'll update today's entries.",
+        );
+        assert!(a.update(key('a')).is_empty());
+        assert_eq!(a.queue.len(), 1, "the card stays");
     }
 
     #[test]
