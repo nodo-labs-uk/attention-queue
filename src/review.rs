@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{DiffLine, FileDiff};
 
-/// Sent by `A` when the agent is waiting.
+/// Sent by `a` when the agent is waiting.
 pub const APPROVE_MESSAGE: &str = "Approved, carry on.";
 const QUOTE_MAX: usize = 120;
 
@@ -126,7 +126,7 @@ impl ReviewCard {
         self.files.get(self.cursor.file)
     }
 
-    /// Replaces the diff (a new snapshot or the `R` toggle), keeping comments.
+    /// Replaces the diff (a new snapshot or the `r` toggle), keeping comments.
     pub fn replace_diff(
         &mut self,
         from_tree: String,
@@ -416,18 +416,17 @@ pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
         KeyCode::Char('x') if !card.delete_comment() => {
             return Action::Status("No comment of this round on this line");
         }
-        // Lowercase first; the capitals still work for old habits.
-        KeyCode::Char('s' | 'S') => return Action::Send,
-        KeyCode::Char('a' | 'A') => return Action::Approve,
+        KeyCode::Char('s') => return Action::Send,
+        KeyCode::Char('a') => return Action::Approve,
         KeyCode::Char('d') => card.toggle_done(),
-        KeyCode::Char('D') => card.done.clear(),
-        KeyCode::Char('R') => return Action::ToggleFullBranch,
+        KeyCode::Char('u') => card.done.clear(),
+        KeyCode::Char('r') => return Action::ToggleFullBranch,
         _ => {}
     }
     Action::None
 }
 
-/// The message `S` sends: this round's comments, ordered by path then line.
+/// The message `s` sends: this round's comments, ordered by path then line.
 pub fn compose_message(card: &ReviewCard) -> String {
     let mut comments: Vec<&Comment> = card.current_comments().collect();
     comments.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
@@ -792,7 +791,7 @@ diff --git a/src/http.rs b/src/http.rs
         assert!(card.all_done());
         press(&mut card, "d");
         assert!(!card.all_done(), "d on a done file unmarks it");
-        press(&mut card, "D");
+        press(&mut card, "u");
         assert!(card.done.is_empty());
         press(&mut card, "L");
         assert_eq!(card.cursor.file, 0);

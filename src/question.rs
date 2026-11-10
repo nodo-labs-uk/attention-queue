@@ -301,7 +301,7 @@ impl App {
         let page = self.screen.map_or(10, |(_, h)| (h as usize / 2).max(1));
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('a' | 'A' | 'y') if !ctrl => {
+            KeyCode::Char('a' | 'y') if !ctrl => {
                 if !self.settled(id) {
                     self.too_quick("question");
                     return Vec::new();

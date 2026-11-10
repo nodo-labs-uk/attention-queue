@@ -343,7 +343,7 @@ mod tests {
         a.update(ctrl('s'));
         assert_eq!(a.saved_state().drafts.len(), 1);
         let id = a.queue.current().unwrap().id;
-        a.update(key('S'));
+        a.update(key('s'));
         a.update(Msg::SendDone { card: id });
         let state = a.saved_state();
         assert!(state.drafts.is_empty());
@@ -418,12 +418,12 @@ mod tests {
         let req = finish_round(&mut a);
         a.update(computed(req, "base", "t1", fixture_files()));
         let id = a.queue.current().unwrap().id;
-        a.update(key('A'));
+        a.update(key('a'));
         a.update(Msg::SendDone { card: id });
         // Round 2, shown as the whole branch while the comment is written.
         let req = finish_round(&mut a);
         a.update(computed(req.clone(), "t1", "t2", fixture_files()));
-        let effects = a.update(key('R'));
+        let effects = a.update(key('r'));
         let [Effect::ComputeReview(full)] = effects.as_slice() else {
             panic!("expected the full-branch diff, got {effects:?}");
         };

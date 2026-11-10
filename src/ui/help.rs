@@ -51,9 +51,9 @@ finished turn; the card on screen stays as it is.
 
 # Review card
   c  comment     x  delete comment   s  send comments   a  approve all
-  d  mark the file done: it is ticked and skipped   D  show done files again
+  d  mark the file done: it is ticked and skipped   u  show done files again
   j/k line   V range   ]c/[c change   H/L or tab file
-  v  split or unified view           R  whole branch or this round
+  v  split or unified view           r  whole branch or this round
 
 # Step card
   y  allow   n  reject with a reason   e  ask for a different change
