@@ -43,7 +43,7 @@ Each project has a mode, and `M` switches it.
 
 ![An edit waiting on a step card, allowed with y, then another rejected with a reason](docs/media/step.svg)
 
-**Quiz**: when a session finishes, aq picks the parts of the diff that matter and asks you to explain what they do, or why they were done that way, in your own words. A judge marks the answer, and any gap it finds can be sent back as a fix.
+**Quiz**: when a session finishes, aq picks the parts of the diff that matter and asks you to explain what they do, or why they were done that way, in your own words. A judge marks the answer. If it isn't right, or you say you don't know, you get a question that leads towards what you missed and another try, twice at most, before the answer is shown (`e` shows it sooner). A gap the judge finds in the code itself can be sent back as a fix.
 
 ![A quiz question on part of the diff, answered and marked right](docs/media/quiz.svg)
 

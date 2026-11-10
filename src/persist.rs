@@ -63,6 +63,9 @@ pub struct QuizProgress {
     pub fixes: Vec<String>,
     /// The question on screen; `None` once every question is answered.
     pub asking: Option<usize>,
+    /// Tries that were not right yet, by question; absent in older saves.
+    #[serde(default)]
+    pub attempts: std::collections::BTreeMap<usize, Vec<crate::quiz::Attempt>>,
 }
 
 /// Saved drafts and quizzes whose card has not been made again yet.
@@ -145,6 +148,7 @@ impl QuizProgress {
             answers: qc.answers.clone(),
             fixes: qc.fixes.clone(),
             asking,
+            attempts: qc.attempts.clone(),
         })
     }
 
@@ -160,6 +164,7 @@ impl QuizProgress {
             }
         }
         qc.fixes = self.fixes;
+        qc.attempts = self.attempts;
         qc.state = match self.asking {
             Some(i) if i < qc.questions.len() => QuizState::Asking(i),
             _ => QuizState::Done,

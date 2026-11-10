@@ -879,6 +879,7 @@ impl App {
             verdict: JudgeVerdict::Right,
             gap: GAP.into(),
             gap_in: GapIn::Code,
+            hint: String::new(),
             explanation: format!(
                 "The tour marks any answer right; a real judge reads yours. \
                  It also found a gap in the code: {GAP}."

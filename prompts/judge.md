@@ -15,6 +15,16 @@ why it was done this way, or both:
   "understanding" when the code is fine and the developer misread it, "none"
   when there is no gap.
 - `explanation`: what the code actually does, citing it as path:line.
+- `hint`: when the verdict is not "right" and the gap is in understanding,
+  one short question that leads the developer towards what they missed. Start
+  from something they can see in the code, or from what they got right. Never
+  state the missing point, and never ask a yes/no question that gives it
+  away. "" when the verdict is "right" or the gap is in the code.
+- The developer sees only the hint, not the explanation, and tries again.
+  When earlier tries are listed, judge the latest answer together with what
+  those got right, do not repeat a hint, and lead one step further.
+- An answer such as "I don't know" is "wrong"; its hint starts from the most
+  basic thing the code shows.
 - Judge meaning, not wording. Never mark down spelling, grammar or style.
 - Plain British English, short sentences.
 

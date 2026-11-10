@@ -143,6 +143,10 @@ pub fn render_answer(
     let width = inner.width.max(10) as usize;
     let mut question = Vec::new();
     question_text(&mut question, q.scope, &q.question, width, t);
+    // After a try that was not right yet, the judge's leading question.
+    if let Some(last) = qc.tries(draft.question).last() {
+        hint_block(&mut question, &last.judgement.hint, width, t);
+    }
     let [piece, ask, answer] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(question.len() as u16 + 1),
@@ -281,7 +285,24 @@ fn question_block(
 ) {
     let q = &qc.questions[i];
     question_text(lines, q.scope, &q.question, width, t);
+    let tries = qc.tries(i);
+    for a in tries {
+        for l in a.text.lines() {
+            push_wrapped(lines, l, width, Style::new().fg(t.acc), "  ");
+        }
+        hint_block(lines, &a.judgement.hint, width, t);
+    }
     match qc.answers.get(i) {
+        None if !tries.is_empty() => {
+            let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
+            let dim = Style::new().fg(t.dim);
+            lines.push(Line::from(vec![
+                Span::styled("Enter", key),
+                Span::styled(" try again   ", dim),
+                Span::styled("e", key),
+                Span::styled(" show the answer", dim),
+            ]));
+        }
         None => lines.push(Line::from(vec![
             Span::styled("Enter", Style::new().fg(t.key).add_modifier(Modifier::BOLD)),
             Span::styled(" answer in your own words", Style::new().fg(t.dim)),
@@ -293,6 +314,19 @@ fn question_block(
             verdict_block(lines, &a.verdict, width, t);
         }
     }
+}
+
+/// The judge's leading question after a try that was not right yet.
+fn hint_block(lines: &mut Vec<Line<'static>>, hint: &str, width: usize, t: &Theme) {
+    let bar_style = Style::new().fg(t.hi);
+    push_barred(
+        lines,
+        &format!("Not yet. {hint}"),
+        width,
+        Style::new().fg(t.fg),
+        "│ ",
+        bar_style,
+    );
 }
 
 fn verdict_block(lines: &mut Vec<Line<'static>>, verdict: &Verdict, width: usize, t: &Theme) {
