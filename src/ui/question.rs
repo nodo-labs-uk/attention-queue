@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 use super::window_of;
 use crate::app::{App, project_name};
 use crate::model::Card;
-use crate::question::QuestionCard;
+use crate::question::{Kind, QuestionCard};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &QuestionCard) {
     let t = app.theme();
@@ -38,7 +38,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
         .iter()
         .skip(top)
         .take(body.height as usize)
-        .map(|r| Line::styled(r.clone(), Style::new().fg(t.fg)))
+        .map(|row| {
+            Line::from(
+                row.iter()
+                    .map(|(kind, text)| {
+                        let style = match kind {
+                            Kind::Plain => Style::new().fg(t.fg),
+                            Kind::Bold => bold,
+                            Kind::Code => Style::new().fg(t.key),
+                            Kind::Heading => Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
+                            Kind::Mark => dim,
+                        };
+                        Span::styled(text.clone(), style)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect();
     frame.render_widget(Paragraph::new(shown), body);
     let hidden = rows.len().saturating_sub(top + body.height as usize);

@@ -10,7 +10,7 @@ use crate::app::{App, Effect, Overlay, PromptDraft};
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::review::APPROVE_MESSAGE;
 use crate::ui::input::TextInput;
-use crate::visible::{visible_lines, wrap};
+use crate::visible::visible_lines;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestionCard {
@@ -20,9 +20,25 @@ pub struct QuestionCard {
     pub scroll: usize,
 }
 
+/// How a piece of a question's text is drawn. Claude writes Markdown, so
+/// its marks are taken out and shown as style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Plain,
+    Bold,
+    /// Inline code, or a line of a code block.
+    Code,
+    Heading,
+    /// A bullet, a quote bar or a rule: there to give shape.
+    Mark,
+}
+
+/// One row on screen: pieces of text, each with its kind.
+pub type Row = Vec<(Kind, String)>;
+
 impl QuestionCard {
     /// The line that does the asking: the last one with a question mark
-    /// or asking words, else the last one.
+    /// or asking words, else the last one. Without its Markdown marks.
     pub fn ask_line(&self) -> String {
         let said = spoken(&self.text);
         let line = said
@@ -33,21 +49,145 @@ impl QuestionCard {
             .or(said.last())
             .cloned()
             .unwrap_or_default();
-        visible_lines(&line).join(" ")
+        let line = visible_lines(&line).join(" ");
+        inline(&line, Kind::Plain)
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect()
     }
 
-    /// The message as rows of at most `width` characters.
-    pub fn rows(&self, width: usize) -> Vec<String> {
+    /// The message as rows of at most `width` characters, its Markdown
+    /// read: headings, bold, code, bullets, quotes and rules. Anything
+    /// else (a table, say) is shown as written.
+    pub fn rows(&self, width: usize) -> Vec<Row> {
+        let width = width.max(8);
         let mut rows = Vec::new();
+        let mut in_code = false;
         for line in visible_lines(&self.text) {
-            if line.is_empty() {
-                rows.push(String::new());
-            } else {
-                wrap(&line, width, &mut |row| rows.push(row));
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                in_code = !in_code;
+                continue;
             }
+            if in_code {
+                // Code keeps its own line breaks; a long line is cut, not
+                // flowed.
+                let chars: Vec<(Kind, char)> = format!("  {line}")
+                    .chars()
+                    .map(|c| (Kind::Code, c))
+                    .collect();
+                rows.extend(chars.chunks(width).map(pieces));
+                continue;
+            }
+            if trimmed.is_empty() {
+                rows.push(Row::new());
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+            let rule = trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '*');
+            let (mark, body, kind) = if rule {
+                rows.push(vec![(Kind::Mark, "─".repeat(width.min(40)))]);
+                continue;
+            } else if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
+                ("", trimmed[hashes..].trim(), Kind::Heading)
+            } else if let Some(rest) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("* "))
+            {
+                ("• ", rest, Kind::Plain)
+            } else if let Some(rest) = trimmed.strip_prefix("> ") {
+                ("│ ", rest, Kind::Plain)
+            } else {
+                ("", trimmed, Kind::Plain)
+            };
+            // Later rows of a bullet line up under its text.
+            let first: Vec<(Kind, char)> = " "
+                .repeat(indent)
+                .chars()
+                .map(|c| (Kind::Plain, c))
+                .chain(mark.chars().map(|c| (Kind::Mark, c)))
+                .collect();
+            let hang = first.len().min(width / 2);
+            flow(&first, &inline(body, kind), hang, width, &mut rows);
         }
         rows
     }
+}
+
+/// `text` with its inline marks read: `**bold**` and `` `code` ``, each
+/// only when it is closed on the same line.
+fn inline(text: &str, base: Kind) -> Vec<(Kind, char)> {
+    let chars: Vec<char> = text.chars().collect();
+    let closes = |from: usize, mark: &[char]| chars[from..].windows(mark.len()).any(|w| w == mark);
+    let mut out = Vec::new();
+    let (mut bold, mut code) = (false, false);
+    let mut i = 0;
+    while i < chars.len() {
+        let star = chars[i] == '*' && chars.get(i + 1) == Some(&'*');
+        if chars[i] == '`' && (code || closes(i + 1, &['`'])) {
+            code = !code;
+            i += 1;
+        } else if star && !code && (bold || closes(i + 2, &['*', '*'])) {
+            bold = !bold;
+            i += 2;
+        } else {
+            let kind = match (code, bold) {
+                (true, _) => Kind::Code,
+                (false, true) if base == Kind::Plain => Kind::Bold,
+                _ => base,
+            };
+            out.push((kind, chars[i]));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Lays `first` then `body` out in rows of `width`, breaking at spaces
+/// where it can; rows after the first start `hang` spaces in.
+fn flow(
+    first: &[(Kind, char)],
+    body: &[(Kind, char)],
+    hang: usize,
+    width: usize,
+    rows: &mut Vec<Row>,
+) {
+    let mut row: Vec<(Kind, char)> = first.to_vec();
+    let mut rest = body;
+    loop {
+        let room = width.saturating_sub(row.len()).max(1);
+        if rest.len() <= room {
+            row.extend_from_slice(rest);
+            rows.push(pieces(&row));
+            return;
+        }
+        // The last space that fits, else a cut mid-word.
+        let cut = rest[..=room.min(rest.len() - 1)]
+            .iter()
+            .rposition(|(_, c)| *c == ' ')
+            .filter(|&at| at > 0);
+        let (line, next) = match cut {
+            Some(at) => (&rest[..at], &rest[at + 1..]),
+            None => rest.split_at(room),
+        };
+        row.extend_from_slice(line);
+        rows.push(pieces(&row));
+        row = vec![(Kind::Plain, ' '); hang];
+        rest = next;
+    }
+}
+
+/// Characters gathered into runs of one kind.
+fn pieces(chars: &[(Kind, char)]) -> Row {
+    let mut row: Row = Vec::new();
+    for &(kind, c) in chars {
+        match row.last_mut() {
+            Some((k, text)) if *k == kind => text.push(c),
+            _ => row.push((kind, c.to_string())),
+        }
+    }
+    row
 }
 
 /// How much later than its turn's end a question card is dated.
@@ -338,5 +478,42 @@ mod tests {
         };
         assert_eq!(q.scroll, 1);
         assert_eq!(q.rows(80).len(), 51);
+    }
+
+    #[test]
+    fn markdown_is_read_and_not_shown() {
+        use super::{Kind, QuestionCard};
+        let q = QuestionCard {
+            text: "## PR draft\n\n**Title:** Use `Ctrl-O` here\n- one two three four five six\n\
+                   ```\nlet x = a ** b;\n```\n2 * 3 and a lone ` stay\n\nApprove **this**?"
+                .into(),
+            scroll: 0,
+        };
+        let rows = q.rows(20);
+        let text = |r: &super::Row| r.iter().map(|(_, t)| t.as_str()).collect::<String>();
+        let lines: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(
+            lines,
+            [
+                "PR draft",
+                "",
+                "Title: Use Ctrl-O",
+                "here",
+                "• one two three four",
+                "  five six",
+                "  let x = a ** b;",
+                "2 * 3 and a lone `",
+                "stay",
+                "",
+                "Approve this?",
+            ]
+        );
+        assert_eq!(rows[0], [(Kind::Heading, "PR draft".to_string())]);
+        assert_eq!(rows[2][0], (Kind::Bold, "Title:".to_string()));
+        assert!(rows[2].contains(&(Kind::Code, "Ctrl-O".to_string())));
+        assert_eq!(rows[4][0], (Kind::Mark, "• ".to_string()));
+        assert_eq!(rows[6], [(Kind::Code, "  let x = a ** b;".to_string())]);
+        // The line on a review card's heading loses its marks too.
+        assert_eq!(q.ask_line(), "Approve this?");
     }
 }
