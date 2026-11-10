@@ -1236,8 +1236,14 @@ impl App {
             }
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
-            // Space, since s sends on the review board.
-            KeyCode::Char(' ') => {
+            // Space, since s sends on the review board. Where several
+            // options can be ticked, Space ticks one.
+            KeyCode::Char(' ')
+                if !matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(CardKind::Choice(cc)) if cc.multi() && self.overlay.is_none()
+                ) =>
+            {
                 self.queue.skip();
                 Vec::new()
             }

@@ -77,7 +77,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
         lines.push(Line::styled(row, bold));
     }
     if q.multi {
-        lines.push(Line::styled("Pick as many as apply, then Enter.", dim));
+        lines.push(Line::styled(
+            "Tick as many as apply with Space or a number, then Enter.",
+            dim,
+        ));
     }
     let mut options: Vec<Vec<Line>> = Vec::new();
     for (i, o) in q.options.iter().enumerate() {
@@ -125,7 +128,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
 
     let mut spans = Vec::new();
     for (k, label) in [
-        ("1-9", if q.multi { "tick" } else { "pick" }),
+        if q.multi {
+            ("Space/1-9", "tick")
+        } else {
+            ("1-9", "pick")
+        },
         ("Enter", "answer"),
         ("o", "own words"),
         ("u", "back"),
