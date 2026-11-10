@@ -1,6 +1,6 @@
 [package]
 name = "aq"
-version = "0.1.0"
+version = "0.1.1"
 description = "An attention queue for Claude Code sessions in tmux: review, step, quiz or vibe"
 license = "MIT"
 repository = "https://github.com/nodo-labs-uk/attention-queue"

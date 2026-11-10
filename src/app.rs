@@ -342,6 +342,8 @@ pub struct App {
     /// Text being selected with the mouse: from where the button went down
     /// to where it is now. Drawn reversed; copied when the button comes up.
     pub selection: Option<Selection>,
+    /// The tour's practice: which step it is on.
+    pub(crate) practice: Option<usize>,
     /// The conversation last read, and whose.
     pub conversation: Option<(String, Result<Vec<Said>, String>)>,
     /// A `ReadConversation` is on its way.
@@ -418,6 +420,7 @@ impl App {
             touched: BTreeMap::new(),
             live_scroll: 0,
             selection: None,
+            practice: None,
             conversation: None,
             reading_conversation: false,
         }
@@ -1010,6 +1013,13 @@ impl App {
             return Vec::new();
         }
         self.selection = None;
+        match self.practice_step() {
+            Some(step) => self.on_practice_key(key, step),
+            None => self.handle_key(key),
+        }
+    }
+
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         // Not over another overlay: it may hold something being typed.
         if key.code == KeyCode::F(1) && self.overlay.is_none() {
             self.overlay = Some(Overlay::Help { scroll: 0 });

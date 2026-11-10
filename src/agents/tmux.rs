@@ -418,6 +418,9 @@ mod tests {
         let (dir, home) = (root.path().join("aq-shell"), root.path().join("home"));
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join(".zshrc"), "").unwrap();
+        // The system's zshrc (Ubuntu's runs compinit, which can stop to ask
+        // about folder permissions) stays out too.
+        std::fs::write(home.join(".zshenv"), "unsetopt GLOBAL_RCS\n").unwrap();
         super::write_zsh_files(&dir, "touch ran && echo 'it''s'").unwrap();
         let socket = format!("aq-zsh-{}", std::process::id());
         let tmux = |args: &[&str]| {

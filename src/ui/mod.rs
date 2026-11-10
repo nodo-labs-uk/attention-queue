@@ -149,6 +149,9 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
         }
         None => {}
     }
+    if let Some(step) = app.practice_step() {
+        tour::render_coach(frame, body, step, app.theme());
+    }
     if let Some(s) = app.selection {
         draw_selection(frame, s.from, s.to);
     }

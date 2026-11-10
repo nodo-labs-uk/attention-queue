@@ -1,10 +1,29 @@
-<p align="center"><img src="docs/media/logo.svg" width="96" alt="aq logo"></p>
-
-# aq
+<h1 align="center"><img src="docs/media/banner.svg" width="640" alt="aq: an attention queue for Claude Code"></h1>
 
 I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt) in one queue, shown one card at a time.
 
 ![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
+
+> [!TIP]
+> **Quickest install: paste this into Claude Code and let it do the setup.**
+>
+> ```text
+> Set up aq (https://github.com/nodo-labs-uk/attention-queue) for me.
+>
+> 1. Install it: download aq-x86_64-linux.tar.gz from the latest release
+>    (https://github.com/nodo-labs-uk/attention-queue/releases/latest), or
+>    clone the repo and run `cargo install --path .`.
+>    Make sure `aq` is on my PATH and `aq --help` runs.
+> 2. Add the three hooks from contrib/settings-hooks.json to
+>    ~/.claude/settings.json. Back the file up first. Merge them into the
+>    existing PreToolUse, PostToolUse and PermissionRequest arrays, keeping
+>    every hook already there, and skip any that are already present. Show me
+>    the diff before saving.
+> 3. Check that tmux is installed, and tell me which running Claude sessions
+>    need a restart to pick up the hooks.
+>
+> Don't change anything else.
+> ```
 
 ## Why
 
@@ -42,9 +61,9 @@ When nothing is waiting, there is a tab per session with the selected one's scre
 
 ## Keys
 
-The first time aq starts, a short tour walks through the workflow and its keys; `F2` shows it again, and `F1` lists every key.
+The first time aq starts, a tour walks through the workflow and then has you try it: it puts a made-up review card on screen and tells you which key to press, one at a time (move, comment, mark done, send, approve). Nothing on that card reaches a real session. `F2` runs the tour again, and `F1` lists every key.
 
-![The first-run tour, page by page](docs/media/tour.svg)
+![The first-run tour: a few pages, then a practice card where it asks for each key](docs/media/tour.svg)
 
 The ones worth knowing from day one:
 
@@ -84,7 +103,7 @@ aq can start a session (`N`), but it doesn't set up worktrees or manage branches
 
 ## Install
 
-aq runs on Linux, inside tmux. Either take the binary from the [latest release](https://github.com/nodo-labs-uk/attention-queue/releases/latest):
+The prompt at the top of this page does all of this for you. By hand: aq runs on Linux, inside tmux. Either take the binary from the [latest release](https://github.com/nodo-labs-uk/attention-queue/releases/latest):
 
 ```sh
 curl -fsSL https://github.com/nodo-labs-uk/attention-queue/releases/latest/download/aq-x86_64-linux.tar.gz | tar xz
@@ -96,28 +115,6 @@ or build it from source with `cargo install --path .`.
 Then add the hooks from [`contrib/settings-hooks.json`](contrib/settings-hooks.json) to `~/.claude/settings.json`. Merge them into your existing `PreToolUse`, `PostToolUse` and `PermissionRequest` arrays rather than replacing them, or your other hooks will stop running. [docs/hooks.md](docs/hooks.md) has the details.
 
 Run `aq` in a tmux window.
-
-### Or let Claude set it up
-
-Paste this into a Claude Code session:
-
-```text
-Set up aq (https://github.com/nodo-labs-uk/attention-queue) for me.
-
-1. Install it: download aq-x86_64-linux.tar.gz from the latest release
-   (https://github.com/nodo-labs-uk/attention-queue/releases/latest), or
-   clone the repo and run `cargo install --path .`.
-   Make sure `aq` is on my PATH and `aq --help` runs.
-2. Add the three hooks from contrib/settings-hooks.json to
-   ~/.claude/settings.json. Back the file up first. Merge them into the
-   existing PreToolUse, PostToolUse and PermissionRequest arrays, keeping
-   every hook already there, and skip any that are already present. Show me
-   the diff before saving.
-3. Check that tmux is installed, and tell me which running Claude sessions
-   need a restart to pick up the hooks.
-
-Don't change anything else.
-```
 
 ## Files
 

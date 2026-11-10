@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="220" viewBox="0 0 720 220" role="img" aria-label="aq: an attention queue for Claude Code">
+  <!-- A queue of cards, the front one waiting for you, and the name. -->
+  <rect width="720" height="220" rx="20" fill="#282c34"/>
+  <g transform="translate(44 30) scale(1.25)">
+    <rect x="40" y="6" width="64" height="46" rx="8" fill="#3e4451"/>
+    <rect x="32" y="18" width="64" height="46" rx="8" fill="#4b5263"/>
+    <rect x="24" y="30" width="64" height="58" rx="9" fill="#61afef"/>
+    <circle cx="38" cy="45" r="5" fill="#e5c07b"/>
+    <rect x="49" y="41" width="28" height="8" rx="4" fill="#282c34" opacity="0.85"/>
+    <rect x="34" y="57" width="44" height="6" rx="3" fill="#282c34" opacity="0.55"/>
+    <rect x="34" y="69" width="32" height="6" rx="3" fill="#282c34" opacity="0.55"/>
+  </g>
+  <text x="236" y="122" font-family="'JetBrains Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="104" font-weight="bold" fill="#ffffff">aq</text>
+  <text x="390" y="92" font-family="'JetBrains Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="22" fill="#e5c07b">attention queue</text>
+  <text x="390" y="122" font-family="'JetBrains Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="22" fill="#9099a6">for Claude Code</text>
+  <text x="240" y="172" font-family="'JetBrains Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="17" fill="#9099a6">review · step · quiz · vibe</text>
+</svg>

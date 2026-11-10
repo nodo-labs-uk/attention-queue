@@ -752,9 +752,20 @@ def scene_tour():
     w = World([dict(name="api", talk=API_TALK, waiting=True)], tour=True)
     w.see("Welcome to aq")
     with Recorder(w) as rec:
-        time.sleep(3)
-        for _ in range(7):
-            w.keys("Right", gap=3.2)
+        time.sleep(2.5)
+        # The pages up to "Try it", then the practice card, key by key.
+        for _ in range(5):
+            w.keys("Right", gap=2.4)
+        w.see("try it")
+        for k in ("j", "L", "v", "c"):
+            w.keys(k, gap=1.8)
+        w.type("Should this strip tabs too?")
+        time.sleep(0.8)
+        for k in ("C-s", "d", "s", "a"):
+            w.keys(k, gap=2.2)
+        w.see("Step and quiz")
+        for _ in range(2):
+            w.keys("Right", gap=2.4)
         time.sleep(1)
     return w, rec
 

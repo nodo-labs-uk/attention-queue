@@ -190,7 +190,7 @@ impl App {
             drafts: self.unclaimed.drafts.clone(),
             quizzes: self.unclaimed.quizzes.clone(),
         };
-        for card in self.queue.iter() {
+        for card in self.queue.iter().filter(|c| !crate::tour::is_practice(c)) {
             match &card.kind {
                 CardKind::Review(rc) => state.drafts.extend(Draft::of(&card.checkout, rc)),
                 CardKind::Quiz(qc) => state.quizzes.extend(QuizProgress::of(&card.checkout, qc)),
