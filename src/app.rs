@@ -35,7 +35,22 @@ pub enum MouseKind {
 pub struct Selection {
     pub from: (u16, u16),
     pub to: (u16, u16),
+    /// What each end grows to on screen, as in a terminal.
+    pub unit: Unit,
 }
+
+/// What a selection's ends take in: set by clicking once, twice or three
+/// times in a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    Cell,
+    Word,
+    Line,
+}
+
+/// Clicks on one cell closer together than this count as a double or
+/// triple click.
+const MULTI_CLICK: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 pub enum Msg {
@@ -43,11 +58,13 @@ pub enum Msg {
     Key(KeyEvent, Instant),
     /// Time passes; `now` comes from the runtime so `update` stays pure.
     Tick(Instant),
-    /// The left mouse button went down, moved or came up at a cell.
+    /// The left mouse button went down, moved or came up at a cell, stamped
+    /// by the runtime when it was read.
     Mouse {
         kind: MouseKind,
         col: u16,
         row: u16,
+        at: Instant,
     },
     /// The mouse wheel turned one notch.
     Wheel {
@@ -259,12 +276,9 @@ pub enum Effect {
         typed: String,
         base: PathBuf,
     },
-    /// Copy the screen's text between two cells (row by row, as a terminal
+    /// Copy the screen's text under a selection (row by row, as a terminal
     /// selects) to the tmux buffer, and so the clipboard.
-    Copy {
-        from: (u16, u16),
-        to: (u16, u16),
-    },
+    Copy(Selection),
     /// Open a shell in a tmux popup over aq, gone when the shell exits.
     Shell {
         dir: PathBuf,
@@ -373,6 +387,8 @@ pub struct App {
     /// Text being selected with the mouse: from where the button went down
     /// to where it is now. Drawn reversed; copied when the button comes up.
     pub selection: Option<Selection>,
+    /// The last click: where, when, and how many came in a row there.
+    last_click: Option<((u16, u16), Instant, u8)>,
     /// The tour's practice: which step it is on.
     pub(crate) practice: Option<usize>,
     /// The tour's made-up sessions, listed in place of the real ones while
@@ -464,6 +480,7 @@ impl App {
             touched: BTreeMap::new(),
             live_scroll: 0,
             selection: None,
+            last_click: None,
             practice: None,
             practice_agents: Vec::new(),
             conversation: None,
@@ -987,7 +1004,7 @@ impl App {
             }
             Msg::Agents(agents) => self.on_agents(agents),
             Msg::Wheel { up } => self.on_wheel(up),
-            Msg::Mouse { kind, col, row } => self.on_mouse(kind, (col, row)),
+            Msg::Mouse { kind, col, row, at } => self.on_mouse(kind, (col, row), at),
             Msg::PaneCaptured { pane, text } => {
                 self.capturing = false;
                 self.preview = Some(Preview { pane, text });
@@ -1129,11 +1146,30 @@ impl App {
     }
 
     /// Drag to select; letting go copies what was selected. A click alone
-    /// clears the selection.
-    fn on_mouse(&mut self, kind: MouseKind, at: (u16, u16)) -> Vec<Effect> {
+    /// clears the selection; a double click selects a word, a triple click
+    /// the line, and a drag after either goes on by words or lines.
+    fn on_mouse(&mut self, kind: MouseKind, at: (u16, u16), now: Instant) -> Vec<Effect> {
         match kind {
             MouseKind::Down => {
-                self.selection = Some(Selection { from: at, to: at });
+                let clicks = match self.last_click {
+                    Some((cell, then, n))
+                        if cell == at && now.saturating_duration_since(then) < MULTI_CLICK =>
+                    {
+                        n % 3 + 1
+                    }
+                    _ => 1,
+                };
+                self.last_click = Some((at, now, clicks));
+                let unit = match clicks {
+                    1 => Unit::Cell,
+                    2 => Unit::Word,
+                    _ => Unit::Line,
+                };
+                self.selection = Some(Selection {
+                    from: at,
+                    to: at,
+                    unit,
+                });
             }
             MouseKind::Drag => {
                 if let Some(s) = &mut self.selection {
@@ -1145,13 +1181,13 @@ impl App {
                     return Vec::new();
                 };
                 s.to = at;
-                if s.from == s.to {
+                if s.from == s.to && s.unit == Unit::Cell {
                     self.selection = None;
                     return Vec::new();
                 }
-                let (from, to) = (s.from, s.to);
+                let s = *s;
                 self.set_status("Copied the selection".to_string());
-                return vec![Effect::Copy { from, to }];
+                return vec![Effect::Copy(s)];
             }
         }
         Vec::new()
@@ -2843,22 +2879,30 @@ pub(crate) mod tests {
     #[test]
     fn dragging_selects_and_letting_go_copies() {
         let mut a = App::new(Config::default(), builtin_themes());
-        let mouse = |kind, col, row| Msg::Mouse { kind, col, row };
+        let t = Instant::now();
+        let mouse = |kind, col, row| Msg::Mouse {
+            kind,
+            col,
+            row,
+            at: t,
+        };
         assert!(a.update(mouse(MouseKind::Down, 2, 3)).is_empty());
         a.update(mouse(MouseKind::Drag, 9, 4));
         assert_eq!(
             a.selection,
             Some(Selection {
                 from: (2, 3),
-                to: (9, 4)
+                to: (9, 4),
+                unit: Unit::Cell
             })
         );
         assert_eq!(
             a.update(mouse(MouseKind::Up, 10, 4)),
-            [Effect::Copy {
+            [Effect::Copy(Selection {
                 from: (2, 3),
-                to: (10, 4)
-            }]
+                to: (10, 4),
+                unit: Unit::Cell
+            })]
         );
         // It stays shown until a key; a click alone copies nothing.
         assert!(a.selection.is_some());
@@ -2867,6 +2911,43 @@ pub(crate) mod tests {
         a.update(mouse(MouseKind::Down, 5, 5));
         assert!(a.update(mouse(MouseKind::Up, 5, 5)).is_empty());
         assert_eq!(a.selection, None);
+    }
+
+    #[test]
+    fn clicks_in_a_row_select_a_word_then_the_line_and_copy_it() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let t = Instant::now();
+        let click = |a: &mut App, col, ms| {
+            let at = t + Duration::from_millis(ms);
+            a.update(Msg::Mouse {
+                kind: MouseKind::Down,
+                col,
+                row: 2,
+                at,
+            });
+            a.update(Msg::Mouse {
+                kind: MouseKind::Up,
+                col,
+                row: 2,
+                at,
+            })
+        };
+        let copied = |unit| {
+            vec![Effect::Copy(Selection {
+                from: (4, 2),
+                to: (4, 2),
+                unit,
+            })]
+        };
+        assert!(click(&mut a, 4, 0).is_empty());
+        assert_eq!(click(&mut a, 4, 200), copied(Unit::Word));
+        assert_eq!(click(&mut a, 4, 400), copied(Unit::Line));
+        // A fourth starts over as a plain click.
+        assert!(click(&mut a, 4, 600).is_empty());
+        assert_eq!(click(&mut a, 4, 800), copied(Unit::Word));
+        // Too slow, or on another cell: a plain click again.
+        assert!(click(&mut a, 4, 1400).is_empty());
+        assert!(click(&mut a, 5, 1500).is_empty());
     }
 
     #[test]

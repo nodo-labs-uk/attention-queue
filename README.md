@@ -81,6 +81,7 @@ The ones worth knowing from day one:
 | `W` | anywhere | ask the session where it's up to |
 | `N` | anywhere | start a new Claude session in this project; `Tab` puts it in its own worktree, `Ctrl-O` picks another folder |
 | drag | anywhere | select text; letting go copies it |
+| double-click, triple-click | anywhere | copy the word, or the whole line, as in Ghostty |
 | `Space` | card | skip it for now |
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |

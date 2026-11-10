@@ -19,20 +19,23 @@ mod tour;
 mod tree;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
-use crate::app::{App, Overlay, mode_label, project_name, shared_checkout_warning};
+use crate::app::{
+    App, Overlay, Selection, Unit, mode_label, project_name, shared_checkout_warning,
+};
 use crate::highlight::Highlighter;
 use crate::model::{Card, CardKind};
 
-/// The text of `buf` from `from` to `to` (column, row), either way round:
-/// the rest of the first row, whole rows between, the start of the last,
-/// as a terminal selects. Trailing spaces are dropped from each row.
-pub fn selected_text(buf: &ratatui::buffer::Buffer, from: (u16, u16), to: (u16, u16)) -> String {
-    let (a, b) = order(from, to);
+/// The text of `buf` under `sel`, either way round: the rest of the first
+/// row, whole rows between, the start of the last, as a terminal selects.
+/// Trailing spaces are dropped from each row.
+pub fn selected_text(buf: &Buffer, sel: Selection) -> String {
+    let (a, b) = span(buf, sel);
     let area = buf.area;
     let mut rows = Vec::new();
     for y in a.1..=b.1.min(area.bottom().saturating_sub(1)) {
@@ -60,10 +63,47 @@ fn order(from: (u16, u16), to: (u16, u16)) -> ((u16, u16), (u16, u16)) {
     }
 }
 
+/// Characters that end a word for a double click: Ghostty's defaults.
+const WORD_BREAKS: &str = "'\"│`|:;,()[]{}<>$";
+
+fn breaks_word(buf: &Buffer, x: u16, y: u16) -> bool {
+    let s = buf[(x, y)].symbol();
+    s.trim().is_empty() || (s.chars().count() == 1 && WORD_BREAKS.contains(s))
+}
+
+/// Where `sel` starts and ends on screen, earlier end first, once each end
+/// has grown to its whole word or line.
+fn span(buf: &Buffer, sel: Selection) -> ((u16, u16), (u16, u16)) {
+    let (mut a, mut b) = order(sel.from, sel.to);
+    let area = buf.area;
+    let (left, right) = (area.left(), area.right().saturating_sub(1));
+    match sel.unit {
+        Unit::Cell => {}
+        Unit::Line => {
+            a.0 = left;
+            b.0 = right;
+        }
+        Unit::Word => {
+            // A click on a space or a break takes just that cell.
+            if !breaks_word(buf, a.0, a.1) {
+                while a.0 > left && !breaks_word(buf, a.0 - 1, a.1) {
+                    a.0 -= 1;
+                }
+            }
+            if !breaks_word(buf, b.0, b.1) {
+                while b.0 < right && !breaks_word(buf, b.0 + 1, b.1) {
+                    b.0 += 1;
+                }
+            }
+        }
+    }
+    (a, b)
+}
+
 /// The selection drawn reversed over whatever is under it.
-fn draw_selection(frame: &mut Frame, from: (u16, u16), to: (u16, u16)) {
-    let (a, b) = order(from, to);
+fn draw_selection(frame: &mut Frame, sel: Selection) {
     let buf = frame.buffer_mut();
+    let (a, b) = span(buf, sel);
     let area = buf.area;
     for y in a.1..=b.1.min(area.bottom().saturating_sub(1)) {
         let first = if y == a.1 { a.0 } else { area.left() };
@@ -183,7 +223,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
         tour::render_coach(frame, body, step, app.theme());
     }
     if let Some(s) = app.selection {
-        draw_selection(frame, s.from, s.to);
+        draw_selection(frame, s);
     }
 }
 
@@ -282,17 +322,43 @@ pub(crate) mod tests {
     fn a_selection_reads_like_a_terminal_selection() {
         let buf =
             ratatui::buffer::Buffer::with_lines(["first row   ", "second row  ", "third row   "]);
+        let text = |from, to| super::selected_text(&buf, sel(from, to, Unit::Cell));
         // Rest of the first row, all of the middle one, start of the last.
-        assert_eq!(
-            super::selected_text(&buf, (6, 0), (4, 2)),
-            "row\nsecond row\nthird"
-        );
+        assert_eq!(text((6, 0), (4, 2)), "row\nsecond row\nthird");
         // Dragged backwards, the same text.
+        assert_eq!(text((4, 2), (6, 0)), "row\nsecond row\nthird");
+        assert_eq!(text((0, 1), (5, 1)), "second");
+    }
+
+    fn sel(from: (u16, u16), to: (u16, u16), unit: Unit) -> Selection {
+        Selection { from, to, unit }
+    }
+
+    #[test]
+    fn a_double_click_takes_the_word_and_a_triple_click_the_line() {
+        let buf = ratatui::buffer::Buffer::with_lines([
+            "│ src/app.rs:42 (ok)  ",
+            "  let x = foo_bar(1); ",
+        ]);
+        let word = |x, y| super::selected_text(&buf, sel((x, y), (x, y), Unit::Word));
+        // A path stops at the colon and the frame's bar, as in Ghostty.
+        assert_eq!(word(5, 0), "src/app.rs");
+        assert_eq!(word(13, 0), "42");
+        assert_eq!(word(17, 0), "ok");
+        assert_eq!(word(12, 1), "foo_bar");
+        // On a space or a break, just that cell.
+        assert_eq!(word(15, 0), "");
+        assert_eq!(word(12, 0), ":");
+        // Dragged on after a double click: whole words at both ends.
         assert_eq!(
-            super::selected_text(&buf, (4, 2), (6, 0)),
-            "row\nsecond row\nthird"
+            super::selected_text(&buf, sel((3, 1), (10, 1), Unit::Word)),
+            "let x = foo_bar"
         );
-        assert_eq!(super::selected_text(&buf, (0, 1), (5, 1)), "second");
+        // Triple: the whole row, its indent kept and trailing spaces gone.
+        assert_eq!(
+            super::selected_text(&buf, sel((9, 1), (9, 1), Unit::Line)),
+            "  let x = foo_bar(1);"
+        );
     }
 
     #[test]

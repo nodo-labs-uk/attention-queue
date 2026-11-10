@@ -165,6 +165,7 @@ pub const PAGES: &[Page] = &[
             "key:?\task the session a side question; a copy answers",
             "key:!\ta shell in a popup, with Claude's last ! command typed in",
             "key:drag\tselect text; letting go copies it",
+            "key:2 clicks\tcopy the word; a third click copies the line",
             "key:t\tnext theme",
             "key:F1\tevery key",
             "",
