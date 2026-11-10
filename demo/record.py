@@ -655,6 +655,12 @@ def scene_quiz():
         w.wait("api", True)
         w.see("Your answer")
         time.sleep(3)
+        # A first try that is off gets a leading question, not the answer.
+        w.type("It sets the key's count back to zero, I think.")
+        time.sleep(0.8)
+        w.keys("C-s")
+        w.see("Not yet.")
+        time.sleep(4)
         w.type("It tops the bucket up for the hour that passed, at rate tokens a second, "
                "but never past burst, so the key gets its full 10 back.")
         time.sleep(0.8)
@@ -792,7 +798,94 @@ def scene_tour():
     return w, rec
 
 
-SCENES = {"review": scene_review, "step": scene_step, "quiz": scene_quiz, "shell": scene_shell,
+QUESTION_TALK = """\033[1m❯ open a PR for the limiter change\033[0m
+
+● Here is the draft.
+
+  Title: Rate limit per key with a token bucket
+
+  - Each API key gets its own bucket of 10 calls.
+  - The bucket refills at per_minute, so short bursts are allowed.
+
+  Approve and I'll push the branch and open the PR.
+"""
+
+
+def write_transcript(w, name, asked, said):
+    """The session's transcript, where aq reads its last message."""
+    project = w.base / ".claude" / "projects" / f"-demo-{name}"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / f"{SESSION_ID}.jsonl").write_text("\n".join(
+        json.dumps(line, separators=(",", ":")) for line in [
+            {"type": "user", "message": {"content": asked}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": said}]}},
+        ]) + "\n")
+
+
+def scene_questions():
+    w = World([dict(name="api", talk=QUESTION_TALK, waiting=False)], modes={"api": "vibe"})
+    said = QUESTION_TALK.split("● ", 1)[1].replace("\n  ", "\n").strip()
+    write_transcript(w, "api", "open a PR for the limiter change", said)
+    w.see("○")
+    with Recorder(w) as rec:
+        time.sleep(1.5)
+        # The turn ends on a request to approve: its message becomes a card.
+        w.wait("api", True)
+        w.see("Claude is asking")
+        time.sleep(4.5)
+        w.keys("a", gap=2.5)
+        w.wait("api", False)
+        time.sleep(1)
+        # Claude's own option menu, caught by the hook before it shows.
+        hook = w.hook("pre-tool", {
+            "session_id": SESSION_ID, "transcript_path": "", "cwd": str(w.repos["api"]),
+            "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_use_id": "t1",
+            "tool_input": {"questions": [
+                {"question": "The PR is open. What should I do while it is reviewed?",
+                 "header": "Next", "multiSelect": False, "options": [
+                     {"label": "Update the README",
+                      "description": "It still describes the old 60-calls-a-minute window"},
+                     {"label": "Add a burst test",
+                      "description": "Nothing checks that an 11th quick call is refused"},
+                     {"label": "Nothing", "description": "Wait for the review"}]}]}})
+        w.see("What should I do")
+        time.sleep(4)
+        w.keys("j", gap=1.2)
+        w.keys("Enter", gap=1)
+        hook.wait(timeout=10)
+        time.sleep(2.5)
+    return w, rec
+
+
+def scene_new():
+    w = World([
+        dict(name="api", talk=API_TALK, waiting=True),
+        dict(name="web", talk=WEB_TALK),
+    ])
+    w.see("each key now gets")
+    with Recorder(w) as rec:
+        time.sleep(2)
+        # In this project, in a worktree of its own.
+        w.keys("N", gap=1.5)
+        w.type("Add a test that an 11th quick call is refused")
+        time.sleep(0.8)
+        w.keys("Tab", gap=1.8)
+        w.keys("Enter", gap=2.5)
+        # In another folder, one that is not there yet.
+        w.keys("N", gap=1.2)
+        w.keys("C-o", gap=2.5)
+        w.keys("Down", gap=0.8)
+        w.keys("Down", gap=1.2)
+        w.type("cli")
+        time.sleep(2.5)
+        w.keys("Enter", gap=1.8)
+        w.type("Start a small CLI client for the API")
+        time.sleep(0.8)
+        w.keys("Enter", gap=3)
+    return w, rec
+
+
+SCENES = {"review": scene_review, "questions": scene_questions, "new": scene_new, "step": scene_step, "quiz": scene_quiz, "shell": scene_shell,
           "tour": scene_tour,
           "sessions": scene_sessions}
 
