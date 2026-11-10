@@ -502,7 +502,7 @@ impl App {
             KeyCode::Char('g') => {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
-            KeyCode::Char('P') => return self.ask_for_pr(current),
+            KeyCode::Char('p' | 'P') => return self.ask_for_pr(current),
             KeyCode::Esc => return self.on_empty_esc(current),
             KeyCode::Char('x') => self.overlay = Some(Overlay::CloseAgent(current)),
             KeyCode::Enter | KeyCode::Char('i') => {
@@ -1082,7 +1082,7 @@ impl App {
                 }
                 Vec::new()
             }
-            KeyCode::Char('T') => self.next_theme(),
+            KeyCode::Char('t' | 'T') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             // Space, since s sends on the review board.
             KeyCode::Char(' ') => {

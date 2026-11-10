@@ -32,7 +32,7 @@ Each project has a mode, and `M` switches it.
 
 ## Sessions
 
-When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `P` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt.
+When nothing is waiting, there is a tab per session with the selected one's screen live underneath. `Enter` messages it (sent once it's idle), `W` asks where it's up to without interrupting it, `p` asks it to open a PR, and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt.
 
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
 
@@ -120,7 +120,7 @@ Don't change anything else.
 
 ## Files
 
-- `~/.config/aq/config.toml`: the theme, each checkout's mode, and whether the tour has been seen (`T` cycles themes).
+- `~/.config/aq/config.toml`: the theme, each checkout's mode, and whether the tour has been seen (`t` cycles themes).
 - `~/.local/state/aq/state.json`: review rounds, unsent comments and quiz progress, so a restart loses nothing.
 - Socket: `$XDG_RUNTIME_DIR/aq.sock`, or `/tmp/aq-$UID/aq.sock`. `AQ_SOCKET` overrides it.
 

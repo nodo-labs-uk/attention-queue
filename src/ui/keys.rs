@@ -148,14 +148,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("h/l", "pick".into()),
             ("Enter", "message".into()),
             ("g", "go to window".into()),
-            ("P", "open PR".into()),
+            ("p", "open PR".into()),
             ("x", "close".into()),
             ("M", "mode".into()),
             ("W", "where are we".into()),
-            ("T", "theme".into()),
+            ("t", "theme".into()),
             ("Q", "quit".into()),
         ],
-        (None, None) => vec![("T", "theme".into()), ("Q", "quit".into())],
+        (None, None) => vec![("t", "theme".into()), ("Q", "quit".into())],
     };
     let mut spans = vec![Span::raw(" ")];
     for (k, label) in keys {

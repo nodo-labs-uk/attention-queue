@@ -35,7 +35,7 @@ finished turn; the card on screen stays as it is.
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. It closes when the shell exits
-  M    next mode for this project         T    next theme
+  M    next mode for this project         t    next theme
   F1   this help                          Q    quit aq
   F2   the tour again
 
@@ -78,7 +78,7 @@ one's screen fills the rest. After you send or approve a review, that
 session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
   Enter  message it: sent now, or once it is idle (Esc cancels)
-  P      ask an idle session to open a PR (/create-pr) and go there
+  p      ask an idle session to open a PR (/create-pr) and go there
   ?  W  ask it a side question, or where it is up to; a copy of the
          session answers, so the session itself never sees it
   x      close the session's pane, after a yes (claude --resume reopens it)
