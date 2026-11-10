@@ -649,8 +649,14 @@ impl App {
                 card: None,
             }];
         }
+        // Say which of the two it waits on: only one of them is yours to fix.
+        let status = if self.prompt_has_text(&agent) {
+            format!("Queued: {name} has text typed in its box. Clear it there and this is sent")
+        } else {
+            format!("Queued: will send to {name} when it is idle")
+        };
         self.prompts.insert(agent, text);
-        self.set_status(format!("Queued: will send to {name} when it is idle"));
+        self.set_status(status);
         Vec::new()
     }
 
@@ -2588,6 +2594,11 @@ pub(crate) mod tests {
         typed(&mut a, "next");
         let enter = Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
         assert!(a.update(enter).is_empty(), "never pasted onto typed text");
+        assert!(
+            a.status_text()
+                .unwrap()
+                .contains("has text typed in its box")
+        );
         assert!(a.prompt_waiting(&busy.id) && a.prompt_has_text(&busy.id));
         // Unread screen and busy: still waits.
         busy.input = InputBox::Unseen;
