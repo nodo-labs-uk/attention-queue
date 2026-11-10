@@ -11,7 +11,16 @@ use crate::theme::Theme;
 /// The questions and answers in a panel over the card, with the question
 /// being typed in a box along its bottom edge.
 pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
-    let panel = panel(area);
+    let most = panel(area);
+    // As tall as what was asked and answered, and no shorter than a few
+    // rows, so a short answer does not sit in an empty screen-high box.
+    let text_rows = ask.lines(usize::from(most.width.saturating_sub(2))).0.len();
+    let input_rows = if ask.input.is_some() { 2 } else { 0 };
+    let want = u16::try_from(text_rows + input_rows + 2).unwrap_or(u16::MAX);
+    let panel = Rect {
+        height: want.clamp(most.height.min(8), most.height),
+        ..most
+    };
     frame.render_widget(Clear, panel);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
