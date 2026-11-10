@@ -5,13 +5,20 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
+use super::quiz::wrap;
 use super::window_of;
 use crate::app::{App, project_name};
 use crate::choice::ChoiceCard;
 use crate::model::Card;
 use crate::visible::visible_code;
+
+/// The widest the card's text runs.
+const MEASURE: usize = 100;
+
+/// What every row of an option starts with: room for its cursor and number.
+const INDENT: &str = "     ";
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &ChoiceCard) {
     let t = app.theme();
@@ -36,22 +43,43 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
     let [head_area, body, _, keys] = crate::permission::areas(area);
     frame.render_widget(Paragraph::new(head), head_area);
 
+    // Text this wide reads in one sweep; a wider screen leaves the rest blank.
+    let width = usize::from(body.width).min(MEASURE);
     let mut lines = Vec::new();
-    // What was answered so far, so a second question is read in its light.
+    // What was answered so far, so a second question is read in its light:
+    // the menu's short name for the question, then the answer.
+    let name = |q: &crate::choice::ChoiceQuestion| {
+        let short = if q.header.is_empty() {
+            &q.question
+        } else {
+            &q.header
+        };
+        visible_code(short)
+    };
+    let names = cc.questions[..at]
+        .iter()
+        .map(|q| name(q).chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(width / 2);
     for (earlier, answer) in cc.questions.iter().zip(&cc.answers) {
+        let short: String = name(earlier).chars().take(names).collect();
         lines.push(Line::from(vec![
-            Span::styled(format!("{}  ", visible_code(&earlier.question)), dim),
-            Span::styled(visible_code(answer), Style::new().fg(t.ok)),
+            Span::styled("✓ ", Style::new().fg(t.ok)),
+            Span::styled(format!("{short:names$}  "), dim),
+            Span::styled(visible_code(answer), Style::new().fg(t.fg)),
         ]));
     }
     if at > 0 {
         lines.push(Line::raw(""));
     }
-    lines.push(Line::styled(visible_code(&q.question), bold));
+    for row in wrap(&visible_code(&q.question), width, "") {
+        lines.push(Line::styled(row, bold));
+    }
     if q.multi {
         lines.push(Line::styled("Pick as many as apply, then Enter.", dim));
     }
-    lines.push(Line::raw(""));
+    let mut options: Vec<Vec<Line>> = Vec::new();
     for (i, o) in q.options.iter().enumerate() {
         let on = i == cc.cursor;
         let tick = match (q.multi, cc.ticked.contains(&i)) {
@@ -59,22 +87,41 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
             (true, true) => "[x] ",
             (true, false) => "[ ] ",
         };
-        lines.push(Line::from(vec![
-            Span::styled(if on { "▸ " } else { "  " }, Style::new().fg(t.acc)),
-            Span::styled(format!("{}", i + 1), key),
-            Span::styled(
-                format!("  {tick}{}", visible_code(&o.label)),
+        // Every row of an option starts under its label.
+        let label = wrap(&format!("{tick}{}", visible_code(&o.label)), width, INDENT);
+        let mut rows: Vec<Line> = Vec::new();
+        for (n, row) in label.iter().enumerate() {
+            let text = Span::styled(
+                row[INDENT.len()..].to_string(),
                 if on { bold } else { Style::new().fg(t.fg) },
-            ),
-        ]));
-        if !o.description.is_empty() {
-            lines.push(Line::styled(
-                format!("      {}", visible_code(&o.description)),
-                dim,
-            ));
+            );
+            rows.push(if n == 0 {
+                Line::from(vec![
+                    Span::styled(if on { "▸ " } else { "  " }, Style::new().fg(t.acc)),
+                    Span::styled(format!("{:<3}", i + 1), key),
+                    text,
+                ])
+            } else {
+                Line::from(vec![Span::raw(INDENT), text])
+            });
         }
+        if !o.description.is_empty() {
+            for row in wrap(&visible_code(&o.description), width, INDENT) {
+                rows.push(Line::styled(row, dim));
+            }
+        }
+        options.push(rows);
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+    // A blank row before the options, and between them while there is room.
+    let tight = lines.len() + options.iter().map(Vec::len).sum::<usize>();
+    let roomy = tight + options.len() <= usize::from(body.height);
+    for (n, rows) in options.into_iter().enumerate() {
+        if n == 0 || roomy {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(rows);
+    }
+    frame.render_widget(Paragraph::new(lines), body);
 
     let mut spans = Vec::new();
     for (k, label) in [

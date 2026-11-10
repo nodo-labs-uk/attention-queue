@@ -69,9 +69,15 @@ pub enum LineKind {
     Error,
 }
 
-/// Where the overlay sits in the body area.
+/// The widest the overlay gets: text this wide reads in one sweep.
+const PANEL_WIDTH: u16 = 100;
+
+/// The most room the overlay takes in the body area. It is drawn only as
+/// tall as its text, from the same top row.
 pub fn panel(area: Rect) -> Rect {
-    let w = (area.width * 4 / 5).max(area.width.min(20));
+    let w = (area.width * 4 / 5)
+        .min(PANEL_WIDTH)
+        .max(area.width.min(20));
     let h = area.height.saturating_sub(2).max(area.height.min(6));
     Rect::new(
         area.x + (area.width - w) / 2,
@@ -104,7 +110,7 @@ impl AskState {
                 &mut out,
                 LineKind::Question,
                 "? ",
-                &visible_text(&e.question),
+                &visible_text(shown_question(&e.question)),
                 width,
             );
             match &e.answer {
@@ -135,6 +141,15 @@ impl AskState {
             cwd: self.checkout.0.clone(),
             prompt: ask_prompt(&self.context, &self.entries[index].question),
         }
+    }
+}
+
+/// A question as the panel shows it: `W`'s long wording is for the model.
+fn shown_question(question: &str) -> &str {
+    if question == WHERE_ARE_WE {
+        "Where are we?"
+    } else {
+        question
     }
 }
 

@@ -452,7 +452,7 @@ pub fn render_code(
 }
 
 /// Word-wraps `text` to `width`, each line starting with `prefix`.
-fn wrap(text: &str, width: usize, prefix: &str) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: usize, prefix: &str) -> Vec<String> {
     let room = width.saturating_sub(prefix.chars().count()).max(10);
     let mut out = Vec::new();
     let mut line = String::new();
