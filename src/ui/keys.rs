@@ -28,8 +28,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "new line".into()),
             ("Esc", "cancel".into()),
         ],
+        (Some(Overlay::NewSession(d)), _) if d.folder.is_some() => vec![
+            ("Tab", "complete".into()),
+            ("↑/↓", "choose".into()),
+            ("Enter", "use it".into()),
+            ("Esc", "back".into()),
+        ],
         (Some(Overlay::NewSession(d)), _) => vec![
             ("Enter", "start".into()),
+            ("Ctrl-O", "other folder".into()),
             (
                 "Tab",
                 if d.worktree {

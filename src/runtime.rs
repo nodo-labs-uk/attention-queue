@@ -26,6 +26,7 @@ use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
 use crate::llm::{Children, ClaudeCli, Llm, LlmJob, run_job};
 use crate::model::{AgentId, Checkout, Mode};
+use crate::new_session::DirListing;
 use crate::persist::{self, SavedState};
 use crate::quiz::{CodeRequest, snippet};
 use crate::shell::{SnapshotRequest, Taken};
@@ -442,6 +443,7 @@ fn apply(
                 prompt,
                 worktree,
             } => Job::NewSession(dir, prompt, worktree),
+            Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
             Effect::Copy { from, to } => {
                 let text = workers
                     .screen
@@ -593,6 +595,7 @@ enum Job {
     Shell(PathBuf, String, Option<String>),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
+    ListDirs(String, PathBuf),
     Quiz {
         checkout: Checkout,
         agent: AgentId,
@@ -697,10 +700,16 @@ fn spawn_effect_worker(
                 } => Some(compute_quiz(checkout, agent, from_tree)),
                 Job::ReadCode(req) => Some(read_code(req)),
                 Job::NewSession(dir, prompt, worktree) => {
-                    crate::agents::tmux::new_claude(&dir, prompt.as_deref(), worktree)
+                    let dir = expand_home(&dir);
+                    std::fs::create_dir_all(&dir)
+                        .with_context(|| format!("making {}", dir.display()))
+                        .and_then(|()| {
+                            crate::agents::tmux::new_claude(&dir, prompt.as_deref(), worktree)
+                        })
                         .err()
                         .map(|e| Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
                 }
+                Job::ListDirs(typed, base) => Some(Msg::Dirs(list_dirs(typed, &base))),
                 Job::Copy(text) => crate::agents::tmux::copy(&text)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not copy: {e:#}"))),
@@ -954,6 +963,40 @@ fn load_post(req: PostToolReq) -> Msg {
     }
 }
 
+/// `path` with a leading `~` as the home directory.
+fn expand_home(path: &Path) -> PathBuf {
+    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
+        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The folders beside the last part of `typed` whose names start with it,
+/// and whether `typed` is itself a folder. Hidden ones only when asked for
+/// with a dot.
+fn list_dirs(typed: String, base: &Path) -> DirListing {
+    use crate::new_session::resolve;
+    const MOST: usize = 200;
+    let cut = typed.rfind('/').map_or(0, |i| i + 1);
+    let (parent, start) = typed.split_at(cut);
+    let mut names: Vec<String> = std::fs::read_dir(expand_home(&resolve(parent, base)))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(start) && (start.starts_with('.') || !n.starts_with('.')))
+        .collect();
+    names.sort();
+    names.truncate(MOST);
+    let exists = !typed.trim().is_empty() && expand_home(&resolve(typed.trim(), base)).is_dir();
+    DirListing {
+        typed,
+        names,
+        exists,
+    }
+}
+
 /// The directory `command` starts by changing to (`cd dir && ...`), from
 /// `cwd`; `~` is the home directory.
 fn leading_cd(cwd: &Path, command: &str) -> Option<PathBuf> {
@@ -1092,6 +1135,38 @@ fn spawn_ticker(tx: UnboundedSender<Msg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folders_are_listed_by_the_start_of_their_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("api");
+        for d in ["api", "web", "worker", ".cache", "web/src"] {
+            std::fs::create_dir_all(tmp.path().join(d)).unwrap();
+        }
+        std::fs::write(tmp.path().join("wfile"), "").unwrap();
+        let root = format!("{}/", tmp.path().display());
+        let l = list_dirs(root.clone(), &base);
+        assert_eq!(
+            l.names,
+            ["api", "web", "worker"],
+            "no files, nothing hidden"
+        );
+        assert!(l.exists);
+        let l = list_dirs(format!("{root}w"), &base);
+        assert_eq!(
+            (l.names.as_slice(), l.exists),
+            (&["web".to_string(), "worker".into()][..], false)
+        );
+        assert_eq!(list_dirs(format!("{root}."), &base).names, [".cache"]);
+        // A bare name is looked for inside the project; `..` leaves it.
+        assert_eq!(list_dirs("../web/".into(), &base).names, ["src"]);
+        let l = list_dirs("new".into(), &base);
+        assert!(l.names.is_empty() && !l.exists);
+        assert_eq!(expand_home(Path::new("/x/~")), Path::new("/x/~"));
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(expand_home(Path::new("~/a")), home.join("a"));
+        assert_eq!(expand_home(Path::new("~")), home.join(""));
+    }
 
     /// Workers whose threads never take anything: a wedged effect worker
     /// and loader. The receivers are returned so the channels stay open.

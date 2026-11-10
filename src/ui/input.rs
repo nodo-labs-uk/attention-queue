@@ -46,6 +46,16 @@ impl TextInput {
         }
     }
 
+    /// A single-line box holding `text`, the cursor at its end.
+    pub fn single_line_with(text: &str) -> Self {
+        TextInput {
+            lines: vec![text.to_string()],
+            row: 0,
+            col: text.chars().count(),
+            multi_line: false,
+        }
+    }
+
     pub fn text(&self) -> String {
         self.lines.join("\n")
     }
@@ -201,6 +211,29 @@ pub fn render(frame: &mut Frame, area: Rect, input: &TextInput, title: &str, t: 
 
 /// `render` in a box of `size` (columns, rows), shrunk to fit `area`;
 /// `submit` names what the submitting key does.
+/// Where a box of `size` sits in `area`: centred.
+fn panel(area: Rect, size: (u16, u16)) -> Rect {
+    let [h] = Layout::horizontal([Constraint::Length(size.0.min(area.width))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [panel] = Layout::vertical([Constraint::Length(size.1.min(area.height))])
+        .flex(Flex::Center)
+        .areas(h);
+    panel
+}
+
+/// The rows under the first inside a box of `size`, for what goes with a
+/// one-line input.
+pub fn below_first_row(area: Rect, size: (u16, u16)) -> Rect {
+    let p = panel(area, size);
+    Rect::new(
+        p.x + 2,
+        p.y + 2,
+        p.width.saturating_sub(4),
+        p.height.saturating_sub(3),
+    )
+}
+
 pub fn render_sized(
     frame: &mut Frame,
     area: Rect,
@@ -210,12 +243,7 @@ pub fn render_sized(
     t: &Theme,
     size: (u16, u16),
 ) {
-    let [h] = Layout::horizontal([Constraint::Length(size.0.min(area.width))])
-        .flex(Flex::Center)
-        .areas(area);
-    let [panel] = Layout::vertical([Constraint::Length(size.1.min(area.height))])
-        .flex(Flex::Center)
-        .areas(h);
+    let panel = panel(area, size);
     frame.render_widget(Clear, panel);
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(t.dim);

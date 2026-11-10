@@ -748,12 +748,10 @@ impl App {
             }
             "g" => self.set_status(format!("Practice: tmux would switch to {name}'s window")),
             "N" => {
-                self.overlay = Some(Overlay::NewSession(NewSessionDraft {
-                    dir: agent.cwd,
-                    name: name.clone(),
-                    worktree: false,
-                    input: TextInput::single_line(),
-                }));
+                self.overlay = Some(Overlay::NewSession(NewSessionDraft::new(
+                    agent.cwd,
+                    name.clone(),
+                )));
             }
             "M" => {
                 let mode = match self.config.mode_for(&checkout) {

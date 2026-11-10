@@ -10,6 +10,8 @@ use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout, Mode};
+use crate::new_session::DirListing;
+pub use crate::new_session::NewSessionDraft;
 use crate::permission::{DenyDraft, PermissionRequest};
 use crate::queue::Queue;
 use crate::quiz::{AnswerDraft, CodeRequest, Snippet};
@@ -56,6 +58,8 @@ pub enum Msg {
         session_id: String,
         said: Result<Vec<Said>, String>,
     },
+    /// The folders an `Effect::ListDirs` asked for.
+    Dirs(DirListing),
     Agents(Vec<Agent>),
     /// Listing agents failed; the last known list stays.
     AgentsFailed(String),
@@ -221,13 +225,19 @@ pub enum Effect {
     Interrupt {
         pane: String,
     },
-    /// Start `claude` in a new tmux window in `dir`, with `prompt` as its
-    /// first message if there is one.
+    /// Start `claude` in a new tmux window in `dir`, made first if it is
+    /// not there, with `prompt` as its first message if there is one.
     NewSession {
         dir: PathBuf,
         prompt: Option<String>,
         /// In a git worktree of its own, made by `claude --worktree`.
         worktree: bool,
+    },
+    /// List the folders matching `typed`, a path as `new_session::resolve`
+    /// reads it against `base`, for the new session's folder box.
+    ListDirs {
+        typed: String,
+        base: PathBuf,
     },
     /// Copy the screen's text between two cells (row by row, as a terminal
     /// selects) to the tmux buffer, and so the clipboard.
@@ -275,16 +285,6 @@ pub enum Overlay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptDraft {
     pub agent: AgentId,
-    pub input: TextInput,
-}
-
-/// `N`: what a new Claude session should start on, and where.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewSessionDraft {
-    pub dir: PathBuf,
-    pub name: String,
-    /// Tab: start it in a git worktree of its own.
-    pub worktree: bool,
     pub input: TextInput,
 }
 
@@ -874,6 +874,10 @@ impl App {
                 }
                 effects
             }
+            Msg::Dirs(listing) => {
+                self.on_dirs(listing);
+                Vec::new()
+            }
             Msg::Conversation { session_id, said } => {
                 self.reading_conversation = false;
                 self.conversation = Some((session_id, said));
@@ -1111,12 +1115,7 @@ impl App {
             KeyCode::Char('!') => self.open_shell(),
             KeyCode::Char('N') => {
                 if let Some((dir, name, _)) = self.here() {
-                    self.overlay = Some(Overlay::NewSession(NewSessionDraft {
-                        dir,
-                        name,
-                        worktree: false,
-                        input: TextInput::single_line(),
-                    }));
+                    self.open_new_session(dir, name);
                 }
                 Vec::new()
             }
@@ -1153,41 +1152,6 @@ impl App {
                 (dir, a.window_name.clone(), Some(a))
             }),
         }
-    }
-
-    /// Enter starts the session, with the text as its first prompt if any;
-    /// Esc keeps things as they were.
-    fn on_new_session_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let Some(Overlay::NewSession(draft)) = &mut self.overlay else {
-            return Vec::new();
-        };
-        if key.code == KeyCode::Tab {
-            draft.worktree = !draft.worktree;
-            return Vec::new();
-        }
-        let text = match draft.input.handle_key(key) {
-            InputEvent::Editing => return Vec::new(),
-            InputEvent::Cancel => None,
-            InputEvent::Submit(text) => Some(text),
-        };
-        let Some(Overlay::NewSession(draft)) = self.overlay.take() else {
-            return Vec::new();
-        };
-        let Some(text) = text else {
-            return Vec::new();
-        };
-        let place = if draft.worktree {
-            "a new worktree of "
-        } else {
-            ""
-        };
-        self.set_status(format!("Started a Claude session in {place}{}", draft.name));
-        let prompt = Some(text.trim().to_string()).filter(|t| !t.is_empty());
-        vec![Effect::NewSession {
-            dir: draft.dir,
-            prompt,
-            worktree: draft.worktree,
-        }]
     }
 
     /// `!`: a shell in a popup, in the current card's checkout or the picked
