@@ -461,12 +461,12 @@ fn apply(
                 worktree,
             } => Job::NewSession(dir, prompt, worktree),
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
-            Effect::Copy { from, to } => {
+            Effect::Copy(sel) => {
                 let text = workers
                     .screen
                     .lock()
                     .ok()
-                    .and_then(|s| s.as_ref().map(|b| crate::ui::selected_text(b, from, to)))
+                    .and_then(|s| s.as_ref().map(|b| crate::ui::selected_text(b, sel)))
                     .unwrap_or_default();
                 Job::Copy(text)
             }
@@ -1148,16 +1148,19 @@ fn spawn_key_reader(tx: UnboundedSender<Msg>) {
                         kind: MouseKind::Down,
                         col: m.column,
                         row: m.row,
+                        at: std::time::Instant::now(),
                     },
                     event::MouseEventKind::Drag(event::MouseButton::Left) => Msg::Mouse {
                         kind: MouseKind::Drag,
                         col: m.column,
                         row: m.row,
+                        at: std::time::Instant::now(),
                     },
                     event::MouseEventKind::Up(event::MouseButton::Left) => Msg::Mouse {
                         kind: MouseKind::Up,
                         col: m.column,
                         row: m.row,
+                        at: std::time::Instant::now(),
                     },
                     _ => continue,
                 },
