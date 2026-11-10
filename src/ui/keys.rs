@@ -157,18 +157,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (
             None,
             Some(Card {
-                kind: CardKind::Choice(_),
+                kind: CardKind::Choice(cc),
                 ..
             }),
         ) => vec![
-            ("1-9", "pick".into()),
+            if cc.multi() {
+                ("Space/1-9", "tick".into())
+            } else {
+                ("1-9", "pick".into())
+            },
             ("j/k", "move".into()),
             ("Enter", "answer".into()),
             ("o", "own words".into()),
             ("u", "back".into()),
             ("x", "answer in the window".into()),
             ("g", "go to window".into()),
-            ("Space", "skip".into()),
         ],
         (
             None,

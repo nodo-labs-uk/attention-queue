@@ -52,6 +52,11 @@ impl ChoiceCard {
     pub fn current(&self) -> Option<&ChoiceQuestion> {
         self.questions.get(self.answers.len())
     }
+
+    /// Whether the question on screen takes several options.
+    pub fn multi(&self) -> bool {
+        self.current().is_some_and(|q| q.multi)
+    }
 }
 
 /// `o` on a choice card: an answer in your own words.
@@ -188,6 +193,11 @@ impl App {
         let digit = match key.code {
             KeyCode::Char(c @ '1'..='9') => Some(c as usize - '1' as usize).filter(|&i| i < n),
             _ => None,
+        };
+        // Space ticks the option under the cursor, as a number ticks its own.
+        let digit = match key.code {
+            KeyCode::Char(' ') if q.multi => Some(cc.cursor),
+            _ => digit,
         };
         let picked = match (key.code, digit) {
             (_, Some(i)) if q.multi => {
@@ -390,6 +400,20 @@ mod tests {
         );
         assert_eq!(input["questions"], menu()["questions"], "handed back whole");
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn space_ticks_the_option_under_the_cursor() {
+        let (mut a, _) = asked(menu());
+        a.update(key('1'));
+        // The second question takes several: Space ticks, j moves.
+        a.update(key(' '));
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key(' '));
+        assert_eq!(a.queue.len(), 1, "Space did not skip the card");
+        let effects = press(&mut a, KeyCode::Enter);
+        assert_eq!(answer(&effects)["answers"]["Which checks?"], "Tests, Docs");
     }
 
     #[test]

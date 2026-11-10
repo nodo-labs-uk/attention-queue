@@ -76,7 +76,8 @@ draft, to choose between two ways), its message becomes a card.
   x  put the card away   g  go to the session's window   j/k scroll
 
 When Claude asks with its own menu of options, the card lists them:
-  1-9  pick (or tick, where several apply)   j/k + Enter  the same
+  1-9  pick   j/k + Enter  the same
+  where several apply: Space or 1-9 ticks, Enter answers
   o  answer in your own words   u  back a question
   x  let the menu show in the session's window instead   g  and go there
 This needs AskUserQuestion in the PreToolUse hook's matcher.
