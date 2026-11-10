@@ -51,9 +51,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
         None => left.push(Span::styled(" nothing waiting", Style::new().fg(t.dim))),
     }
-    if app.preempted() {
+    let flag = if app.on_stale() {
+        Some(" answered elsewhere ")
+    } else if app.preempted() {
+        Some(" new card ")
+    } else {
+        None
+    };
+    if let Some(flag) = flag {
         left.push(Span::styled(
-            " new card ",
+            flag,
             Style::new().fg(t.bg).bg(t.hi).add_modifier(Modifier::BOLD),
         ));
     }

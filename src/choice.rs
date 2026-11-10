@@ -155,11 +155,10 @@ impl App {
         else {
             return false;
         };
-        self.queue.remove(id);
         if matches!(&self.overlay, Some(Overlay::OwnAnswer(d)) if d.card == id) {
             self.overlay = None;
         }
-        self.set_status("Question closed: its session stopped waiting for the answer");
+        self.answered_elsewhere(id);
         true
     }
 
@@ -438,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn x_hands_the_menu_to_the_window_and_a_gone_hook_closes_the_card() {
+    fn x_hands_the_menu_to_the_window_and_a_gone_hook_marks_the_card() {
         let (mut a, _) = asked(menu());
         assert_eq!(
             a.update(key('x')),
@@ -450,6 +449,9 @@ mod tests {
         assert!(a.queue.is_empty());
         let (mut a, _) = asked(menu());
         a.update(Msg::HookGone { req_id: 7 });
+        assert!(a.on_stale());
+        // A number would pick an option; here it only closes the card.
+        assert!(a.update(key('1')).is_empty());
         assert!(a.queue.is_empty());
     }
 

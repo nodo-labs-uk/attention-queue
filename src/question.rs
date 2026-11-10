@@ -278,7 +278,7 @@ impl App {
         if !self.agent(&agent).is_some_and(|a| a.waiting) {
             return;
         }
-        self.drop_questions(|a| *a == agent);
+        self.drop_questions(true, |a| *a == agent);
         if !asks(&text) {
             return;
         }
@@ -303,9 +303,10 @@ impl App {
         })
     }
 
-    /// Takes away the question cards of the sessions `gone` picks: a
-    /// question is over once its session is answered or working again.
-    pub(crate) fn drop_questions(&mut self, gone: impl Fn(&AgentId) -> bool) {
+    /// Closes the question cards of the sessions `gone` picks: a question
+    /// is over once its session is answered or working again. Answered
+    /// `elsewhere` (not from aq), the one on screen stays, marked.
+    pub(crate) fn drop_questions(&mut self, elsewhere: bool, gone: impl Fn(&AgentId) -> bool) {
         let ids: Vec<u64> = self
             .queue
             .iter()
@@ -313,7 +314,11 @@ impl App {
             .map(|c| c.id)
             .collect();
         for id in ids {
-            self.queue.remove(id);
+            if elsewhere {
+                self.answered_elsewhere(id);
+            } else {
+                self.queue.remove(id);
+            }
         }
     }
 
@@ -497,9 +502,13 @@ mod tests {
             Effect::ReadLastMessage { session_id, .. } if session_id == "s1"
         )));
         said(&mut a, "Shall I go on?");
-        // The next turn's question takes its place.
+        // The next turn's question waits behind the one on screen, which
+        // was answered in the window and is marked so.
         said(&mut a, "And now: tabs or spaces?");
-        assert_eq!(a.queue.len(), 1);
+        assert_eq!(a.queue.len(), 2);
+        assert_eq!(question(&a), Some("Shall I go on?"));
+        assert!(a.on_stale());
+        assert!(a.update(key('a')).is_empty(), "nothing sent");
         assert_eq!(question(&a), Some("And now: tabs or spaces?"));
         // x only puts it away.
         assert!(a.update(key('x')).is_empty());
@@ -509,6 +518,8 @@ mod tests {
         let mut busy = a.agents.clone();
         busy[0].waiting = false;
         a.update(Msg::Agents(busy));
+        assert!(a.on_stale());
+        assert!(a.update(key('a')).is_empty(), "nothing sent");
         assert!(a.queue.is_empty());
         // A message read after the session moved on is not shown.
         said(&mut a, "Shall I go on?");

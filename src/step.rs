@@ -28,8 +28,8 @@ pub const RETRY_FOR: Duration = Duration::from_secs(10 * 60);
 /// a key typed ahead does not decide a card nobody saw.
 pub const LOOK_FOR: Duration = Duration::from_millis(300);
 /// How long a card that took the screen without a key of the user's (one
-/// that jumped ahead, or came up when the card before it went) ignores
-/// decision keys, so a key meant for the card before cannot decide it.
+/// that came up when the card before it went by itself) ignores decision
+/// keys, so a key meant for the card before cannot decide it.
 pub const PREEMPT_FOR: Duration = Duration::from_millis(1500);
 /// Lines in the changed middle of a file above which no line diff is tried.
 const DIFF_MAX: usize = 4000;
@@ -527,6 +527,7 @@ impl App {
             .find_mut(|c| matches!(&c.kind, CardKind::Step(s) if s.key == key));
         let mut req_ids = vec![req_id];
         let mut step_no = None;
+        let mut replaced = None;
         if let Some(Card {
             id,
             kind: CardKind::Step(sc),
@@ -538,10 +539,9 @@ impl App {
                 return Vec::new();
             }
             // The file changed under the open card: a fresh card replaces it.
-            let id = *id;
+            replaced = Some(*id);
             req_ids.splice(0..0, sc.req_ids.iter().copied());
             step_no = Some(sc.step_no);
-            self.queue.remove(id);
         }
         let step_no = step_no.unwrap_or_else(|| {
             let count = self.steps.counts.entry(e.session_id.clone()).or_insert(0);
@@ -563,13 +563,17 @@ impl App {
         let created = e.at;
         let mut card = StepCard::new(req_id, key, step_no, e);
         card.req_ids = req_ids;
-        self.queue.push(Card {
+        let card = Card {
             id: self.next_card_id,
             checkout,
             agent,
             created,
             kind: CardKind::Step(Box::new(card)),
-        });
+        };
+        match replaced {
+            Some(old) => self.queue.replace(old, card),
+            None => self.queue.push(card),
+        }
         Vec::new()
     }
 
@@ -961,6 +965,27 @@ pub(crate) mod tests {
         assert_eq!(step(&a).req_ids, [2, 3]);
         assert_eq!(step(&a).step_no, 2);
         assert_eq!(step(&a).preview, pending("s1", "/a", input()).preview);
+    }
+
+    #[test]
+    fn a_card_replaced_on_screen_keeps_its_place_and_waits_for_a_look() {
+        let mut a = step_app();
+        pre_tool(&mut a, 1, pending("s1", "/a", input()));
+        a.queue.push(crate::queue::tests::card(
+            99,
+            "/b",
+            CardKind::Permission(Default::default()),
+            1000,
+        ));
+        a.update(Msg::Tick(tick()));
+        assert!(matches!(a.queue.current().unwrap().kind, CardKind::Step(_)));
+        // Its file changes: the fresh card takes the old one's place, not
+        // the permission waiting behind it, and the bar flags it.
+        assert!(pre_tool(&mut a, 2, pending_on_changed_file("s1")).is_empty());
+        a.update(Msg::Tick(tick()));
+        assert_eq!(step(&a).req_ids, [1, 2]);
+        assert_eq!(step(&a).preview, pending_on_changed_file("s1").preview);
+        assert!(a.preempted());
     }
 
     #[test]

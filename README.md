@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/media/banner.svg" width="640" alt="aq: an attention queue for Claude Code"></h1>
 
-I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt, a question) in one queue, shown one card at a time.
+I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt, a question) in one queue, shown one card at a time. A card that comes in while I'm on another waits its turn; it never takes the screen. If I answer the card on screen in its own window instead, it stays, marked "answered elsewhere", until I press a key.
 
 ![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
 

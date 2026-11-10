@@ -253,7 +253,7 @@ impl App {
         Vec::new()
     }
 
-    /// Removes the card whose hook went away. Returns whether there was one.
+    /// Closes the card whose hook went away. Returns whether there was one.
     pub(crate) fn close_permission(&mut self, req_id: u64) -> bool {
         let Some(id) = self
             .queue
@@ -263,11 +263,10 @@ impl App {
         else {
             return false;
         };
-        self.queue.remove(id);
         if matches!(&self.overlay, Some(Overlay::Deny(d)) if d.card == id) {
             self.overlay = None;
         }
-        self.set_status("Permission request closed: answered in the window or timed out");
+        self.answered_elsewhere(id);
         true
     }
 
@@ -448,7 +447,6 @@ mod tests {
     use crate::ipc::{HookReply, HookRequest};
     use crate::model::CardKind;
     use crate::queue::tests::card;
-    use crate::step::PREEMPT_FOR;
     use crate::theme::builtin_themes;
 
     fn app() -> App {
@@ -568,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn a_card_that_jumps_ahead_ignores_decision_keys_for_a_while() {
+    fn a_permission_waits_behind_the_card_on_screen() {
         use crate::step::tests::{input, pending};
         let mut a = app();
         a.config
@@ -581,7 +579,7 @@ mod tests {
         });
         assert!(matches!(a.queue.current().unwrap().kind, CardKind::Step(_)));
         // The user is on the step card and about to press `y` when a
-        // permission request takes the screen.
+        // permission request comes in: it queues, and `y` decides the step.
         let t1 = t0 + Duration::from_secs(5);
         ipc_at(
             &mut a,
@@ -589,45 +587,61 @@ mod tests {
             ask("Bash", json!({"command": "rm -rf /"}), Some("%5"), "s5"),
             t1,
         );
+        assert!(matches!(a.queue.current().unwrap().kind, CardKind::Step(_)));
+        assert_eq!(a.queue.len(), 2);
+        assert!(!a.preempted());
+        assert!(matches!(
+            a.update(key('y', t1 + Duration::from_millis(100))).first(),
+            Some(Effect::Reply { req_id: 1, .. })
+        ));
+        // The permission comes up next, by the user's own key.
         assert_eq!(perm(&a).req_id, 2);
-        assert!(a.preempted(), "the bar flags the new card");
-        assert!(
-            a.update(key('y', t1 + Duration::from_millis(400)))
-                .is_empty()
-        );
-        assert_eq!(a.queue.len(), 2, "neither card decided");
-        assert!(
-            a.status_text().unwrap().contains("New card"),
-            "{:?}",
-            a.status_text()
-        );
-        assert!(
-            a.update(key('n', t1 + Duration::from_millis(1400)))
-                .is_empty()
-        );
-        assert!(a.overlay.is_none());
-        let late = t1 + PREEMPT_FOR;
-        a.update(Msg::Tick(late));
-        assert!(!a.preempted(), "the flag goes after a while");
+        a.update(Msg::Tick(t1 + Duration::from_millis(200)));
+        assert!(!a.preempted());
         assert_eq!(
-            a.update(key('y', late)),
+            a.update(key('y', t1 + Duration::from_millis(600))),
             [Effect::Reply {
                 req_id: 2,
                 decision: HookReply::Allow
             }]
         );
-        // Back on the step card by the user's own key: the usual short look.
-        let back = late + Duration::from_millis(300);
-        assert!(!a.preempted());
-        assert_eq!(a.update(key('y', back)).len(), 1);
     }
 
     #[test]
-    fn closed_hook_removes_card() {
-        let (mut a, _) = seen();
-        assert_eq!(a.queue.len(), 1);
+    fn closed_hook_on_screen_keeps_the_card_until_a_key() {
+        let (mut a, later) = seen();
         a.update(Msg::HookGone { req_id: 1 });
+        assert_eq!(a.queue.len(), 1);
+        assert!(a.on_stale());
+        let screen = crate::ui::tests::render(&a, 90, 10);
+        assert!(
+            screen
+                .lines()
+                .next()
+                .unwrap()
+                .contains("answered elsewhere"),
+            "{screen}"
+        );
+        // Moving keys still move; `y` sends nothing and closes the card.
+        assert!(a.update(key('j', later)).is_empty());
+        assert_eq!(a.queue.len(), 1);
+        assert!(a.update(key('y', later)).is_empty());
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn closed_hook_behind_the_card_on_screen_removes_its_card() {
+        let (mut a, _) = seen();
+        ipc(
+            &mut a,
+            2,
+            ask("Bash", json!({"command": "pwd"}), Some("%5"), "s5"),
+        );
+        assert_eq!(a.queue.len(), 2);
+        a.update(Msg::HookGone { req_id: 2 });
+        assert_eq!(a.queue.len(), 1);
+        assert_eq!(perm(&a).req_id, 1);
+        assert!(!a.on_stale());
     }
 
     #[test]

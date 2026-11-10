@@ -12,7 +12,7 @@ Success: the user reviews and steers all their agents from one tmux window, and 
 
 ## Goals
 
-1. One screen, one card at a time, with a queue bar that shows what is waiting behind it.
+1. One screen, one card at a time, with a queue bar that shows what is waiting behind it. A new card joins the queue and never displaces the card on screen.
 2. Three modes, chosen per project:
    - **Review board.** The agent finishes, then the user reviews the whole diff, comments on lines, and sends all the comments back as one message. The next round arrives as a new card.
    - **Step by step.** Each change arrives before it is applied, shown inside its full file, with a one-line description and the reason. The agent waits for approve, reject with a reason, or "change it like this". One project is worked through at a time.
@@ -69,6 +69,12 @@ Success: the user reviews and steers all their agents from one tmux window, and 
 9. **Side questions (`?`).** Answered by `claude -p --resume <session-id> --fork-session`, so the answer knows the conversation but the live session is not interrupted or changed. The answer shows in a panel over the card. If forking is not available, fall back to a plain `claude -p` with the diff.
 10. **Mode per project.** Set in `aq` with a key and stored in a small config file keyed by git root. The default is review board.
 11. **Ordering.** Oldest card first. Step-mode projects are worked through one at a time: while a step-mode project has cards, other projects' cards wait behind it. A key skips the current card to the back.
+
+    **The card on screen stays until the user acts on it (decided by the user).** A new card never replaces the card being shown, whatever its kind or priority. It joins the queue, and the queue bar shows it. The ordering rules here and under Cards decide only which waiting card comes next. The shown card leaves the screen only when the user answers it (approve, send, reject, allow, deny, finish the quiz) or skips it.
+
+    **Stale cards (decided by the user).** A card goes stale when the thing it asks about is settled elsewhere: a permission or option-menu hook times out, or the user answers the prompt or question directly in the tmux window. A stale card that is still waiting in the queue is removed without notice. A stale card that is on screen stays there, marked "answered elsewhere", and nothing it does can reach the agent. Moving keys still scroll it; any other card key dismisses it and sends nothing.
+
+    **A step card whose file changes under it** is replaced by a fresh card for the same edit. The fresh card takes the old card's place, on screen if the old one was there, and ignores decision keys for a moment so a key meant for the old version cannot decide it.
 12. **Where it runs.** In its own tmux window, for example `main:aq`. One instance per user. The hook and the TUI talk over the socket; nothing listens on the network.
 13. **Installing the hook.** Added to `dot_claude/settings.json.tmpl` in the chezmoi repo, next to the existing hooks, once the hook works.
 14. **Location.** New repo at `~/devel/attention-queue`. This design moves there when the repo is created.
@@ -80,7 +86,7 @@ Success: the user reviews and steers all their agents from one tmux window, and 
 
 ## Cards
 
-Each card has: project, agent window, mode, kind (review, step, shell change, quiz, permission), creation time, and its content. Permission cards go to the front of the queue, since an agent is stopped until they are answered. Cards are kept in memory. Comments being drafted and quiz progress are saved to disk under `~/.local/state/aq/`, so a restart of `aq` loses nothing the user typed.
+Each card has: project, agent window, mode, kind (review, step, shell change, quiz, permission), creation time, and its content. Permission cards go next in the queue, behind the card on screen, since an agent is stopped until they are answered. Cards are kept in memory. Comments being drafted and quiz progress are saved to disk under `~/.local/state/aq/`, so a restart of `aq` loses nothing the user typed.
 
 A review card is created when an agent in review mode goes from working to waiting and its diff is not empty. If the agent sent a new round, the card shows the round number, and comments from earlier rounds are visible but marked as old.
 
