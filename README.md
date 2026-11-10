@@ -87,8 +87,8 @@ aq can start a session (`N`), but it doesn't set up worktrees or manage branches
 aq runs on Linux, inside tmux. Either take the binary from the [latest release](https://github.com/nodo-labs-uk/attention-queue/releases/latest):
 
 ```sh
-gh release download --repo nodo-labs-uk/attention-queue --pattern 'aq-x86_64-linux.tar.gz'
-tar xzf aq-x86_64-linux.tar.gz && install aq-x86_64-linux/aq ~/.local/bin/
+curl -fsSL https://github.com/nodo-labs-uk/attention-queue/releases/latest/download/aq-x86_64-linux.tar.gz | tar xz
+install aq-x86_64-linux/aq ~/.local/bin/
 ```
 
 or build it from source with `cargo install --path .`.
@@ -104,8 +104,9 @@ Paste this into a Claude Code session:
 ```text
 Set up aq (https://github.com/nodo-labs-uk/attention-queue) for me.
 
-1. Install it: download aq-x86_64-linux.tar.gz from the latest release with
-   `gh release download`, or clone the repo and run `cargo install --path .`.
+1. Install it: download aq-x86_64-linux.tar.gz from the latest release
+   (https://github.com/nodo-labs-uk/attention-queue/releases/latest), or
+   clone the repo and run `cargo install --path .`.
    Make sure `aq` is on my PATH and `aq --help` runs.
 2. Add the three hooks from contrib/settings-hooks.json to
    ~/.claude/settings.json. Back the file up first. Merge them into the
