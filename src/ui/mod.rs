@@ -139,6 +139,32 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                     format!("Close {name}? Its Claude session ends."),
                     "Its conversation is kept: claude --resume picks it up.".into(),
                 ],
+                &[("y", "yes"), ("n", "no")],
+                t,
+            );
+        }
+        Some(Overlay::Model(id)) => {
+            let name = app
+                .agent(id)
+                .map_or_else(|| id.pane.clone(), |a| a.window_name.clone());
+            let keys: Vec<String> = crate::app::MODELS
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect();
+            let hints: Vec<(&str, &str)> = keys
+                .iter()
+                .zip(crate::app::MODELS)
+                .map(|(k, (_, model))| (k.as_str(), model))
+                .collect();
+            confirm::render(
+                frame,
+                body,
+                &format!("Model for {name}"),
+                &[
+                    "Sends /model to the session. Claude Code also keeps it".into(),
+                    "as the default for new sessions. Esc changes nothing.".into(),
+                ],
+                &hints,
                 t,
             );
         }

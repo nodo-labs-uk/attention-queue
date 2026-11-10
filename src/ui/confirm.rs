@@ -6,8 +6,16 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 use crate::theme::Theme;
 
-/// A yes/no question in the same rounded box as the text inputs.
-pub fn render(frame: &mut Frame, area: Rect, title: &str, lines: &[String], t: &Theme) {
+/// A question in the same rounded box as the text inputs, with the keys
+/// that answer it (`hints`: key, then what it does) along the bottom.
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: &[String],
+    hints: &[(&str, &str)],
+    t: &Theme,
+) {
     let [h] = Layout::horizontal([Constraint::Length(64.min(area.width))])
         .flex(Flex::Center)
         .areas(area);
@@ -18,12 +26,13 @@ pub fn render(frame: &mut Frame, area: Rect, title: &str, lines: &[String], t: &
     frame.render_widget(Clear, panel);
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(t.dim);
-    let hints = Line::from(vec![
-        Span::styled(" y", key),
-        Span::styled(" yes  ", dim),
-        Span::styled("n", key),
-        Span::styled(" no ", dim),
-    ]);
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (k, what)) in hints.iter().enumerate() {
+        let gap = if i + 1 == hints.len() { " " } else { "  " };
+        spans.push(Span::styled(*k, key));
+        spans.push(Span::styled(format!(" {what}{gap}"), dim));
+    }
+    let hints = Line::from(spans);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(t.acc))
