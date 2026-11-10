@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -246,6 +246,114 @@ pub fn kill_pane(pane: &str, server: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// A shell in `dir`, in a popup over aq's own pane; returns when it closes.
+/// `typed` is copied (to the tmux buffer, and so the clipboard), and with
+/// zsh it is also typed in at the prompt, not run. `zsh_dir` holds the
+/// startup files that do the typing.
+pub fn popup_shell(dir: &Path, title: &str, typed: Option<&str>, zsh_dir: &Path) -> Result<()> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+    let mut title = title.to_string();
+    let mut command = None;
+    if let Some(typed) = typed {
+        let _ = Command::new("tmux")
+            .args(["set-buffer", "-w", "--", typed])
+            .output();
+        if shell.ends_with("/zsh") && write_zsh_files(zsh_dir, typed).is_ok() {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+            let real = std::env::var("ZDOTDIR").unwrap_or(home);
+            command = Some(format!(
+                "env ZDOTDIR={} AQ_ZDOTDIR={} {}",
+                shell_quote(&zsh_dir.to_string_lossy()),
+                shell_quote(&real),
+                shell_quote(&shell)
+            ));
+            title.push_str("· Claude's last ! command is typed in, Enter runs it ");
+        } else {
+            title.push_str("· Claude's last ! command is copied ");
+        }
+    }
+    let title = format_literal(&title);
+    let mut cmd = Command::new("tmux");
+    cmd.args([
+        "display-popup",
+        "-E",
+        "-w",
+        "90%",
+        "-h",
+        "85%",
+        "-T",
+        &title,
+        "-d",
+    ])
+    .arg(dir);
+    if let Ok(pane) = std::env::var("TMUX_PANE") {
+        cmd.args(["-t", &pane]);
+    }
+    if let Some(c) = command {
+        cmd.arg(format_literal(&c));
+    }
+    let out = cmd.output().context("running tmux display-popup")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// Startup files for the popup's zsh: they load the user's own, then put
+/// `typed` on the command line with `print -z`, once.
+fn write_zsh_files(dir: &Path, typed: &str) -> Result<()> {
+    crate::ipc::ensure_private_dir(dir)?;
+    let q = shell_quote(&dir.to_string_lossy());
+    std::fs::write(
+        dir.join(".zshenv"),
+        format!(
+            "# Written by aq for its ! shell: your own startup files, then the\n\
+             # command Claude suggested, typed in.\n\
+             ZDOTDIR=$AQ_ZDOTDIR\n\
+             [[ -r $ZDOTDIR/.zshenv ]] && source $ZDOTDIR/.zshenv\n\
+             AQ_ZDOTDIR=$ZDOTDIR\n\
+             ZDOTDIR={q}\n"
+        ),
+    )?;
+    std::fs::write(
+        dir.join(".zshrc"),
+        format!(
+            "ZDOTDIR=$AQ_ZDOTDIR\n\
+             unset AQ_ZDOTDIR\n\
+             [[ -r $ZDOTDIR/.zshrc ]] && source $ZDOTDIR/.zshrc\n\
+             if [[ -r {q}/typed ]]; then\n  \
+               print -z -- \"$(<{q}/typed)\"\n  \
+               rm -f {q}/typed\n\
+             fi\n"
+        ),
+    )?;
+    std::fs::write(dir.join("typed"), typed)?;
+    Ok(())
+}
+
+/// `s` in single quotes for `sh`.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Puts `text` in the tmux buffer and, through `-w`, the clipboard.
+pub fn copy(text: &str) -> Result<()> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["load-buffer", "-w", "-"]);
+    let (status, _, err) =
+        super::run_for(cmd, text, TMUX_TIMEOUT).context("running tmux load-buffer")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
+/// `text` for a tmux format, shown as written: a window name can be set by
+/// the program in it, and `#(...)` in a format runs a command.
+fn format_literal(text: &str) -> String {
+    text.replace('#', "##")
+}
+
 /// Presses Escape in `pane`, which stops a Claude Code turn.
 pub fn press_escape(pane: &str, server: &[&str]) -> Result<()> {
     let mut cmd = Command::new("tmux");
@@ -271,6 +379,71 @@ pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};
     use super::*;
+
+    #[test]
+    fn shell_quote_survives_quotes() {
+        assert_eq!(super::shell_quote("it's"), r"'it'\''s'");
+    }
+
+    /// zsh in a private tmux server, with a bare home so your own startup
+    /// files stay out of it: the command is typed at the prompt, not run.
+    #[test]
+    fn zsh_comes_up_with_the_command_typed_in() {
+        if Command::new("zsh").arg("-c").arg("true").output().is_err() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (dir, home) = (root.path().join("aq-shell"), root.path().join("home"));
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join(".zshrc"), "").unwrap();
+        super::write_zsh_files(&dir, "touch ran && echo 'it''s'").unwrap();
+        let socket = format!("aq-zsh-{}", std::process::id());
+        let tmux = |args: &[&str]| {
+            Command::new("tmux")
+                .env_remove("TMUX")
+                .args(["-L", &socket, "-f", "/dev/null"])
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let start = format!(
+            "env ZDOTDIR={} AQ_ZDOTDIR={} zsh",
+            super::shell_quote(&dir.to_string_lossy()),
+            super::shell_quote(&home.to_string_lossy())
+        );
+        tmux(&[
+            "new-session",
+            "-d",
+            "-x",
+            "80",
+            "-y",
+            "5",
+            "-c",
+            &root.path().to_string_lossy(),
+            &start,
+        ]);
+        let mut screen = String::new();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            screen = String::from_utf8_lossy(&tmux(&["capture-pane", "-p"]).stdout).into_owned();
+            if screen.contains("touch ran") {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        tmux(&["kill-server"]);
+        assert!(screen.contains("touch ran && echo 'it''s'"), "{screen}");
+        assert!(!root.path().join("ran").exists(), "it ran");
+        assert!(!dir.join("typed").exists(), "typed once only");
+    }
+
+    #[test]
+    fn popup_title_cannot_run_a_command() {
+        assert_eq!(
+            super::format_literal(" shell in #(touch x) "),
+            " shell in ##(touch x) "
+        );
+    }
 
     #[test]
     fn strip_controls_keeps_only_newline_and_tab() {

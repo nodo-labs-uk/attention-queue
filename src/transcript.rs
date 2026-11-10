@@ -157,6 +157,55 @@ pub fn description_before(transcript: &Path, tool_use_id: &str) -> Option<String
     last.map(cut)
 }
 
+/// The last command Claude suggested you run yourself with Claude Code's
+/// `!` prefix: inline as `` `! cmd` ``, or a line `! cmd` (a line ending in
+/// `\` takes the next one with it). Without the `! `. Placeholders such as
+/// `! <command>` are skipped.
+pub fn last_bang_command(said: &[Said]) -> Option<String> {
+    said.iter().rev().find_map(|s| match s {
+        Said::Claude(text) => last_bang_in(text),
+        _ => None,
+    })
+}
+
+fn last_bang_in(text: &str) -> Option<String> {
+    let mut found: Vec<(usize, String)> = Vec::new();
+    // Inline code: the odd pieces between backticks.
+    let mut at = 0;
+    for (i, piece) in text.split('`').enumerate() {
+        if i % 2 == 1
+            && let Some(cmd) = piece.strip_prefix("! ")
+        {
+            found.push((at, cmd.trim().to_string()));
+        }
+        at += piece.len() + 1;
+    }
+    // Whole lines, joining continuations.
+    let lines: Vec<&str> = text.lines().collect();
+    let mut at = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        let start = at;
+        at += lines[i].len() + 1;
+        if let Some(first) = lines[i].trim_start().strip_prefix("! ") {
+            let mut cmd = first.trim_end().to_string();
+            while cmd.ends_with('\\') && i + 1 < lines.len() {
+                i += 1;
+                at += lines[i].len() + 1;
+                cmd.push('\n');
+                cmd.push_str(lines[i].trim_end());
+            }
+            found.push((start, cmd));
+        }
+        i += 1;
+    }
+    found
+        .into_iter()
+        .filter(|(_, c)| !c.is_empty() && !c.starts_with('<'))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, c)| c)
+}
+
 fn cut(text: String) -> String {
     text.chars().take(DESCRIPTION_MAX).collect()
 }
@@ -167,6 +216,32 @@ mod tests {
 
     fn fixture() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcript.jsonl")
+    }
+
+    #[test]
+    fn the_last_bang_command_is_found_inline_or_on_a_line() {
+        use super::{Said, last_bang_command};
+        let said = vec![
+            Said::Claude("Run `! aws sso login --profile nodo` first.".into()),
+            Said::User("done".into()),
+            Said::Claude(
+                "Now this, then `! <command>` for anything else:\n\n```\n! sudo apt install \\\n    jq\n```\nand `ls` too."
+                    .into(),
+            ),
+            Said::Tool("Bash(! not this)".into()),
+        ];
+        assert_eq!(
+            last_bang_command(&said).as_deref(),
+            Some("sudo apt install \\\n    jq")
+        );
+        assert_eq!(
+            last_bang_command(&said[..2]).as_deref(),
+            Some("aws sso login --profile nodo")
+        );
+        assert_eq!(
+            last_bang_command(&[Said::Claude("no `!` here".into())]),
+            None
+        );
     }
 
     #[test]

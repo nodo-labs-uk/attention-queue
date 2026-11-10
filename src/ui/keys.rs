@@ -40,6 +40,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
+        (Some(Overlay::Tour { .. }), _) => vec![
+            ("→", "next".into()),
+            ("←", "back".into()),
+            ("Esc", "skip".into()),
+        ],
         (Some(Overlay::Help { .. }), _) => vec![
             ("j/k", "scroll".into()),
             ("PgUp/PgDn", "page".into()),

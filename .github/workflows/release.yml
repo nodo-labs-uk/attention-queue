@@ -1,0 +1,36 @@
+# Builds aq when a version tag is pushed (git tag v0.1.0 && git push --tags)
+# and attaches the binary to a GitHub release. Linux only: aq reads /proc.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: |
+          sudo apt-get install -y tmux zsh
+          cargo test
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          # No version in the name, so the latest release always has the same file.
+          name="aq-x86_64-linux"
+          mkdir "$name"
+          cp target/release/aq README.md LICENSE contrib/settings-hooks.json "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" aq-*.tar.gz aq-*.tar.gz.sha256 \
+            --title "aq $GITHUB_REF_NAME" --generate-notes

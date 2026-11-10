@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::agents::{self, AgentConn};
-use crate::app::{App, Effect, Msg, ReviewRequest};
+use crate::app::{App, Effect, MouseKind, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
 use crate::edit::apply_edit;
 use crate::git;
@@ -49,6 +49,7 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     let config = Config::load(&paths.config_file)?;
     let themes = load_themes(&paths.themes_dir);
     let mut app = App::new(config, themes);
+    app.start_tour_if_new();
     // Before raw mode, so "aq is already running" shows on the terminal.
     let listener = ipc::listen(&paths.socket)?;
     match persist::load(&persist::state_file(&paths)) {
@@ -122,6 +123,8 @@ pub(crate) struct Workers {
     /// Reads for hooks, apart from `jobs` so a slow diff, snapshot or send
     /// never holds up an edit.
     loads: std::sync::mpsc::Sender<Load>,
+    /// The last frame drawn while a selection is shown, to copy it from.
+    screen: Arc<std::sync::Mutex<Option<ratatui::buffer::Buffer>>>,
 }
 
 impl Workers {
@@ -162,6 +165,7 @@ async fn event_loop(
     let workers = Workers {
         jobs,
         loads: spawn_loader(tx.clone()),
+        screen: Default::default(),
     };
     spawn_agent_poll(tx.clone(), conn);
     spawn_key_reader(tx.clone());
@@ -222,7 +226,12 @@ async fn serve(
                     hl_theme = app.theme().name.clone();
                 }
                 sync_size(terminal, app, workers, waiting)?;
-                terminal.draw(|f| crate::ui::draw(f, app, &mut hl))?;
+                let frame = terminal.draw(|f| crate::ui::draw(f, app, &mut hl))?;
+                if app.selection.is_some()
+                    && let Ok(mut screen) = workers.screen.lock()
+                {
+                    *screen = Some(frame.buffer.clone());
+                }
                 dirty = false;
                 next_frame = Instant::now() + FRAME;
             }
@@ -428,6 +437,20 @@ fn apply(
             Effect::ReadConversation { session_id } => Job::Conversation(session_id),
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
+            Effect::Copy { from, to } => {
+                let text = workers
+                    .screen
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.as_ref().map(|b| crate::ui::selected_text(b, from, to)))
+                    .unwrap_or_default();
+                Job::Copy(text)
+            }
+            Effect::Shell {
+                dir,
+                title,
+                session_id,
+            } => Job::Shell(dir, title, session_id),
             Effect::ComputeQuiz {
                 checkout,
                 agent,
@@ -562,6 +585,8 @@ enum Job {
     Conversation(String),
     Close(String),
     Interrupt(String),
+    Shell(PathBuf, String, Option<String>),
+    Copy(String),
     Quiz {
         checkout: Checkout,
         agent: AgentId,
@@ -665,6 +690,32 @@ fn spawn_effect_worker(
                     from_tree,
                 } => Some(compute_quiz(checkout, agent, from_tree)),
                 Job::ReadCode(req) => Some(read_code(req)),
+                Job::Copy(text) => crate::agents::tmux::copy(&text)
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not copy: {e:#}"))),
+                // The popup lasts as long as the shell, so it is waited on
+                // apart from the other jobs.
+                Job::Shell(dir, title, session_id) => {
+                    let tx = tx.clone();
+                    let zsh_dir = paths.socket.with_file_name("aq-shell");
+                    std::thread::spawn(move || {
+                        let typed = session_id
+                            .and_then(|s| crate::transcript::find(&s))
+                            .and_then(|p| crate::transcript::conversation(&p).ok())
+                            .and_then(|said| crate::transcript::last_bang_command(&said));
+                        let r = crate::agents::tmux::popup_shell(
+                            &dir,
+                            &title,
+                            typed.as_deref(),
+                            &zsh_dir,
+                        );
+                        if let Err(e) = r {
+                            let _ = tx
+                                .send(Msg::EffectFailed(format!("Could not open a shell: {e:#}")));
+                        }
+                    });
+                    None
+                }
                 Job::Llm(job) => {
                     let (llm, tx) = (llm.clone(), tx.clone());
                     std::thread::spawn(move || {
@@ -987,6 +1038,21 @@ fn spawn_key_reader(tx: UnboundedSender<Msg>) {
                 Event::Mouse(m) => match m.kind {
                     event::MouseEventKind::ScrollUp => Msg::Wheel { up: true },
                     event::MouseEventKind::ScrollDown => Msg::Wheel { up: false },
+                    event::MouseEventKind::Down(event::MouseButton::Left) => Msg::Mouse {
+                        kind: MouseKind::Down,
+                        col: m.column,
+                        row: m.row,
+                    },
+                    event::MouseEventKind::Drag(event::MouseButton::Left) => Msg::Mouse {
+                        kind: MouseKind::Drag,
+                        col: m.column,
+                        row: m.row,
+                    },
+                    event::MouseEventKind::Up(event::MouseButton::Left) => Msg::Mouse {
+                        kind: MouseKind::Up,
+                        col: m.column,
+                        row: m.row,
+                    },
                     _ => continue,
                 },
                 // A tick redraws, which picks up the new size.
@@ -1025,7 +1091,15 @@ mod tests {
     ) {
         let (jobs, job_rx) = std::sync::mpsc::channel();
         let (loads, load_rx) = std::sync::mpsc::channel();
-        (Workers { jobs, loads }, job_rx, load_rx)
+        (
+            Workers {
+                jobs,
+                loads,
+                screen: Default::default(),
+            },
+            job_rx,
+            load_rx,
+        )
     }
 
     /// A hook request as the socket hands it over, and the hook's end.
@@ -1134,6 +1208,7 @@ mod tests {
         let workers = Workers {
             jobs,
             loads: spawn_loader(tx),
+            screen: Default::default(),
         };
         let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
         let cwd = checkout.0.display().to_string();
@@ -1195,6 +1270,7 @@ mod tests {
         let workers = Workers {
             jobs,
             loads: spawn_loader(tx),
+            screen: Default::default(),
         };
         let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
         let ask = HookRequest::Permission {

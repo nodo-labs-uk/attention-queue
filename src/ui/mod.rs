@@ -12,6 +12,7 @@ mod quiz;
 mod review;
 mod shell;
 mod step;
+mod tour;
 mod tree;
 
 use ratatui::Frame;
@@ -23,6 +24,56 @@ use ratatui::widgets::Block;
 use crate::app::{App, Overlay, mode_label, project_name, shared_checkout_warning};
 use crate::highlight::Highlighter;
 use crate::model::{Card, CardKind};
+
+/// The text of `buf` from `from` to `to` (column, row), either way round:
+/// the rest of the first row, whole rows between, the start of the last,
+/// as a terminal selects. Trailing spaces are dropped from each row.
+pub fn selected_text(buf: &ratatui::buffer::Buffer, from: (u16, u16), to: (u16, u16)) -> String {
+    let (a, b) = order(from, to);
+    let area = buf.area;
+    let mut rows = Vec::new();
+    for y in a.1..=b.1.min(area.bottom().saturating_sub(1)) {
+        let first = if y == a.1 { a.0 } else { area.left() };
+        let last = if y == b.1 {
+            b.0
+        } else {
+            area.right().saturating_sub(1)
+        };
+        let mut row = String::new();
+        for x in first..=last.min(area.right().saturating_sub(1)) {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        rows.push(row.trim_end().to_string());
+    }
+    rows.join("\n")
+}
+
+/// `from` and `to` with the earlier one (by row, then column) first.
+fn order(from: (u16, u16), to: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+    if (from.1, from.0) <= (to.1, to.0) {
+        (from, to)
+    } else {
+        (to, from)
+    }
+}
+
+/// The selection drawn reversed over whatever is under it.
+fn draw_selection(frame: &mut Frame, from: (u16, u16), to: (u16, u16)) {
+    let (a, b) = order(from, to);
+    let buf = frame.buffer_mut();
+    let area = buf.area;
+    for y in a.1..=b.1.min(area.bottom().saturating_sub(1)) {
+        let first = if y == a.1 { a.0 } else { area.left() };
+        let last = if y == b.1 {
+            b.0
+        } else {
+            area.right().saturating_sub(1)
+        };
+        for x in first..=last.min(area.right().saturating_sub(1)) {
+            buf[(x, y)].modifier.toggle(Modifier::REVERSED);
+        }
+    }
+}
 
 pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
     let t = app.theme();
@@ -69,6 +120,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             quiz::render_code(frame, body, app, *card, *question, hl);
         }
         Some(Overlay::Help { scroll }) => help::render(frame, body, *scroll, t),
+        Some(Overlay::Tour { page }) => tour::render(frame, body, *page, t),
         Some(Overlay::CloseAgent(id)) => {
             let name = app
                 .agent(id)
@@ -92,6 +144,9 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
         None => {}
+    }
+    if let Some(s) = app.selection {
+        draw_selection(frame, s.from, s.to);
     }
 }
 
@@ -174,6 +229,23 @@ pub(crate) mod tests {
 
     pub(crate) fn app() -> App {
         App::new(Config::default(), builtin_themes())
+    }
+
+    #[test]
+    fn a_selection_reads_like_a_terminal_selection() {
+        let buf =
+            ratatui::buffer::Buffer::with_lines(["first row   ", "second row  ", "third row   "]);
+        // Rest of the first row, all of the middle one, start of the last.
+        assert_eq!(
+            super::selected_text(&buf, (6, 0), (4, 2)),
+            "row\nsecond row\nthird"
+        );
+        // Dragged backwards, the same text.
+        assert_eq!(
+            super::selected_text(&buf, (4, 2), (6, 0)),
+            "row\nsecond row\nthird"
+        );
+        assert_eq!(super::selected_text(&buf, (0, 1), (5, 1)), "second");
     }
 
     #[test]

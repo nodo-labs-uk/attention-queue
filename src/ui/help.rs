@@ -30,8 +30,12 @@ finished turn; the card on screen stays as it is.
 # Every card
   ?    ask the agent a side question      s    skip this card
   W    where are we: a short summary of what is done and what is left
+  !    a shell in a popup, in this project; for sudo, logins, or commands
+       Claude may not run. Claude's last suggested `! command` is copied
+       and, in zsh, typed in ready to run. It closes when the shell exits
   M    next mode for this project         T    next theme
   F1   this help                          Q    quit aq
+  F2   the tour again
 
 # Moving around, vim style
   j/k        line                 Ctrl-d/Ctrl-u  half a page

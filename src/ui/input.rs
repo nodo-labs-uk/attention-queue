@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use crate::theme::Theme;
 
@@ -238,6 +238,8 @@ pub fn render_sized(
         .border_style(Style::new().fg(t.acc))
         .title(format!(" {title} "))
         .title_bottom(Line::from(hints).right_aligned())
+        // A space each side keeps the text off the border.
+        .padding(Padding::horizontal(1))
         .style(Style::new().bg(t.panel).fg(t.fg));
     let inner = block.inner(panel);
     frame.render_widget(block, panel);

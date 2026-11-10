@@ -142,10 +142,16 @@ def git(repo, *args):
     run("git", "-C", str(repo), "-c", "user.name=demo", "-c", "user.email=demo@example.com", *args)
 
 
+# Every World made, so a failed scene still gets its tmux server shut down.
+WORLDS = []
+
+
 class World:
     """A private tmux server with fake agents and aq, removed on close."""
 
-    def __init__(self, agents, modes=None):
+    def __init__(self, agents, modes=None, client=False, tour=False):
+        WORLDS.append(self)
+        self.client = None
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name).resolve()
         os.chmod(base, 0o700)
@@ -197,7 +203,8 @@ class World:
                     f.write(modes_toml)
         cfg = base / "config" / "aq" / "config.toml"
         body = cfg.read_text() if cfg.exists() else ""
-        cfg.write_text('theme = "ghostty"\n\n[modes]\n' + body)
+        tour = "false" if tour else "true"
+        cfg.write_text(f'theme = "ghostty"\ntutorial_done = {tour}\n\n[modes]\n' + body)
         (base / "agents.json").write_text(json.dumps(listing))
         self.repos = {a["name"]: base / a["name"] for a in agents}
         env = {
@@ -207,6 +214,8 @@ class World:
             "XDG_STATE_HOME": base / "state",
             "XDG_RUNTIME_DIR": base / "run",
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            # Transcripts and the `!` shell's startup files come from here.
+            "HOME": base,
         }
         # tmux runs the command through your shell, whose startup files may
         # put the real `claude` back in front; `env` sets PATH after them.
@@ -215,6 +224,17 @@ class World:
         self.tmux(*args, str(AQ))
         self.aq = self.tmux("display-message", "-p", "-t", "demo:aq", "#{pane_id}").strip()
         self.wait_for("aq's socket", lambda: self.aq_socket.exists())
+        # A popup needs a client to show on: one attached through a pty.
+        if client:
+            env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+            self.client = subprocess.Popen(
+                ["script", "-qfec", f"stty cols {COLS} rows {ROWS}; "
+                 f"exec tmux -L {self.socket} attach -t demo:aq", "/dev/null"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=env)
+            self.wait_for("a client", lambda: self.tmux("list-clients").strip())
+        # A pane laid over aq's frames where tmux draws a popup: (pane, title).
+        self.overlay = None
 
     def tmux(self, *args):
         env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
@@ -227,7 +247,8 @@ class World:
         end = time.time() + timeout
         while not test():
             if time.time() > end:
-                sys.exit(f"timed out waiting for {what}:\n{self.tmux('capture-pane', '-p', '-t', self.aq)}")
+                raise TimeoutError(f"waiting for {what}:\n"
+                                   f"{self.tmux('capture-pane', '-p', '-t', self.aq)}")
             time.sleep(0.05)
 
     def see(self, text, timeout=20):
@@ -263,7 +284,12 @@ class World:
         return p
 
     def close(self):
+        if self in WORLDS:
+            WORLDS.remove(self)
         subprocess.run(["tmux", "-L", self.socket, "kill-server"], capture_output=True)
+        if self.client:
+            self.client.kill()
+            self.client.wait()
         self.tmp.cleanup()
 
 
@@ -276,6 +302,10 @@ class Recorder:
         start = time.time()
         while not self.stop.is_set():
             s = self.world.screen()
+            if self.world.overlay:
+                pane, title = self.world.overlay
+                popup = self.world.tmux("capture-pane", "-p", "-e", "-t", pane)
+                s = composite(s, popup, title)
             if not self.frames or self.frames[-1][1] != s:
                 self.frames.append((time.time() - start, s))
             time.sleep(0.1)
@@ -473,6 +503,78 @@ text{{font-family:"JetBrains Mono","DejaVu Sans Mono",Menlo,Consolas,monospace;f
 '''
 
 
+# ---- a popup laid over a frame --------------------------------------------
+
+# tmux's popup at -w 90% -h 85%, centred, as aq opens it.
+POP_W, POP_H = COLS * 90 // 100, ROWS * 85 // 100
+POP_X, POP_Y = (COLS - POP_W) // 2, (ROWS - POP_H) // 2
+
+
+def grid(line):
+    """A row as COLS cells of (char, style); the second half of a wide
+    character is None."""
+    row = [(" ", (FG, BG, False, False, False, False))] * COLS
+    for col, c, w, style in cells(line):
+        if col < COLS:
+            row[col] = (c, style)
+            if w == 2 and col + 1 < COLS:
+                row[col + 1] = None
+    return row
+
+
+def put(row, col, cell):
+    if row[col] is None and col > 0:
+        row[col - 1] = (" ", row[col - 1][1] if row[col - 1] else cell[1])
+    if row[col] is not None and row[col][0] and col + 1 < COLS and row[col + 1] is None:
+        row[col + 1] = (" ", row[col][1])
+    row[col] = cell
+
+
+def sgr_of(style):
+    fg, bg, bold, dim, italic, under = style
+    rgb = lambda h: ";".join(str(int(h[i:i + 2], 16)) for i in (1, 3, 5))
+    codes = ["0", f"38;2;{rgb(fg)}", f"48;2;{rgb(bg)}"]
+    codes += [c for c, on in (("1", bold), ("2", dim), ("3", italic), ("4", under)) if on]
+    return f"\x1b[{';'.join(codes)}m"
+
+
+def serialise(row):
+    out, cur = "", None
+    for cell in row:
+        if cell is None:
+            continue
+        if cell[1] != cur:
+            out += sgr_of(cell[1])
+            cur = cell[1]
+        out += cell[0]
+    return out + "\x1b[0m"
+
+
+def composite(screen, popup, title):
+    """`popup`'s screen in a bordered box over `screen`, as tmux shows it."""
+    rows = [grid(l) for l in (screen.split("\n") + [""] * ROWS)[:ROWS]]
+    inner = (popup.split("\n") + [""] * POP_H)[:POP_H - 2]
+    border = (FG, BG, False, False, False, False)
+    top = "┌" + title[:POP_W - 2].ljust(POP_W - 2, "─") + "┐"
+    for y in range(POP_H):
+        row = rows[POP_Y + y]
+        if y in (0, POP_H - 1):
+            text = top if y == 0 else "└" + "─" * (POP_W - 2) + "┘"
+            for i, c in enumerate(text):
+                put(row, POP_X + i, (c, border))
+            continue
+        put(row, POP_X, ("│", border))
+        put(row, POP_X + POP_W - 1, ("│", border))
+        cells_in = grid(inner[y - 1])
+        for i in range(POP_W - 2):
+            cell = cells_in[i]
+            if cell is None:
+                row[POP_X + 1 + i] = None
+            else:
+                put(row, POP_X + 1 + i, cell)
+    return "\n".join(serialise(r) for r in rows)
+
+
 # ---- the scenes ------------------------------------------------------------
 
 def api_agent(**kw):
@@ -593,7 +695,72 @@ def scene_sessions():
     return w, rec
 
 
-SCENES = {"review": scene_review, "step": scene_step, "quiz": scene_quiz,
+SHELL_TALK = """\033[1m❯ put the new limits live on the server too\033[0m
+
+● The config on the server is updated, but the running service still has
+  the old limits. Restarting it needs sudo, which I can't run from here.
+  Run this yourself:
+
+  ! sudo systemctl restart api
+
+  Then I'll make a few test calls to check the new limits.
+"""
+
+
+def scene_shell():
+    w = World([dict(name="api", talk=SHELL_TALK, waiting=True)], client=True)
+    base, repo = w.base, w.repos["api"]
+    # The session's transcript, where aq finds the suggested command, and a
+    # plain prompt for the shell.
+    said = SHELL_TALK.split("● ", 1)[1].replace("\n  ", "\n").strip()
+    project = base / ".claude" / "projects" / "-demo-api"
+    project.mkdir(parents=True)
+    # Compact, as Claude Code writes them.
+    (project / f"{SESSION_ID}.jsonl").write_text("\n".join(json.dumps(line, separators=(",", ":")) for line in [
+        {"type": "user", "message": {"content": "put the new limits live on the server too"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": said}]}},
+    ]) + "\n")
+    (base / ".zshrc").write_text("PS1='%F{blue}%~%f ❯ '\n")
+    w.see("sudo systemctl")
+    with Recorder(w) as rec:
+        time.sleep(2.5)
+        w.keys("!", gap=0)
+        aq_files = base / "run" / "aq-shell"
+        w.wait_for("aq's zsh files", lambda: (aq_files / ".zshrc").exists())
+        # aq's popup is real but tmux draws it outside any pane, so the same
+        # zsh setup runs in a hidden pane of the popup's size, laid over the
+        # frames. Its own copy of the files, since the popup uses up `typed`.
+        mine = base / "popup-shell"
+        mine.mkdir(mode=0o700)
+        for name in (".zshenv", ".zshrc"):
+            text = (aq_files / name).read_text().replace(str(aq_files), str(mine))
+            (mine / name).write_text(text)
+        (mine / "typed").write_text("sudo systemctl restart api")
+        w.tmux("new-window", "-d", "-n", "popup", "-c", str(repo),
+               f"env HOME={base} ZDOTDIR={mine} AQ_ZDOTDIR={base} zsh")
+        w.tmux("set-option", "-w", "-t", "demo:popup", "window-size", "manual")
+        w.tmux("resize-window", "-t", "demo:popup", "-x", str(POP_W - 2), "-y", str(POP_H - 2))
+        pane = w.tmux("display-message", "-p", "-t", "demo:popup", "#{pane_id}").strip()
+        w.wait_for("the typed command", lambda: "restart api" in w.tmux("capture-pane", "-p", "-t", pane))
+        w.overlay = (pane, " shell in api · exit or Ctrl-D closes it · Claude's last ! command is "
+                           "typed in, Enter runs it ")
+        time.sleep(5)
+    return w, rec
+
+
+def scene_tour():
+    w = World([dict(name="api", talk=API_TALK, waiting=True)], tour=True)
+    w.see("Welcome to aq")
+    with Recorder(w) as rec:
+        time.sleep(3)
+        for _ in range(7):
+            w.keys("Right", gap=3.2)
+        time.sleep(1)
+    return w, rec
+
+
+SCENES = {"review": scene_review, "step": scene_step, "quiz": scene_quiz, "shell": scene_shell,
+          "tour": scene_tour,
           "sessions": scene_sessions}
 
 
@@ -602,11 +769,12 @@ def main():
     run("cargo", "build", "-q", cwd=ROOT)
     OUT.mkdir(parents=True, exist_ok=True)
     for name in names:
-        w, rec = SCENES[name]()
         try:
+            w, rec = SCENES[name]()
             svg = to_svg(rec.frames, rec.end)
         finally:
-            w.close()
+            for w in list(WORLDS):
+                w.close()
         (OUT / f"{name}.svg").write_text(svg)
         if dump := os.environ.get("DEMO_DUMP"):
             plain = [run("sed", "s/\x1b\\[[0-9;]*m//g", inp=f) for _, f in rec.frames]

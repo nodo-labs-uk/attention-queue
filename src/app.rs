@@ -20,12 +20,33 @@ use crate::theme::Theme;
 use crate::transcript::Said;
 use crate::ui::input::{InputEvent, TextInput};
 
+/// What the left mouse button did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Down,
+    Drag,
+    Up,
+}
+
+/// A mouse selection, from the cell where it started to where it is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub from: (u16, u16),
+    pub to: (u16, u16),
+}
+
 #[derive(Debug)]
 pub enum Msg {
     /// A key, stamped by the runtime when it was read.
     Key(KeyEvent, Instant),
     /// Time passes; `now` comes from the runtime so `update` stays pure.
     Tick(Instant),
+    /// The left mouse button went down, moved or came up at a cell.
+    Mouse {
+        kind: MouseKind,
+        col: u16,
+        row: u16,
+    },
     /// The mouse wheel turned one notch.
     Wheel {
         up: bool,
@@ -200,6 +221,19 @@ pub enum Effect {
     Interrupt {
         pane: String,
     },
+    /// Copy the screen's text between two cells (row by row, as a terminal
+    /// selects) to the tmux buffer, and so the clipboard.
+    Copy {
+        from: (u16, u16),
+        to: (u16, u16),
+    },
+    /// Open a shell in a tmux popup over aq, gone when the shell exits.
+    Shell {
+        dir: PathBuf,
+        title: String,
+        /// Whose last `! command` to have typed in, if any.
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,6 +254,8 @@ pub enum Overlay {
     QuizCode { card: u64, question: usize },
     /// F1: the help page, scrolled down by `scroll` lines.
     Help { scroll: u16 },
+    /// The tour, on a first run or after F2: page `page`.
+    Tour { page: usize },
     /// `i` on the empty screen: a message being typed to an agent.
     Prompt(PromptDraft),
     /// `x` on the empty screen: asking before closing an agent's pane.
@@ -287,6 +323,9 @@ pub struct App {
     /// 0: the live view shows the picked agent's screen. More: it shows
     /// its conversation, scrolled up this many rows less one from the end.
     pub live_scroll: usize,
+    /// Text being selected with the mouse: from where the button went down
+    /// to where it is now. Drawn reversed; copied when the button comes up.
+    pub selection: Option<Selection>,
     /// The conversation last read, and whose.
     pub conversation: Option<(String, Result<Vec<Said>, String>)>,
     /// A `ReadConversation` is on its way.
@@ -362,6 +401,7 @@ impl App {
             prompts: BTreeMap::new(),
             touched: BTreeMap::new(),
             live_scroll: 0,
+            selection: None,
             conversation: None,
             reading_conversation: false,
         }
@@ -795,6 +835,7 @@ impl App {
             }
             Msg::Agents(agents) => self.on_agents(agents),
             Msg::Wheel { up } => self.on_wheel(up),
+            Msg::Mouse { kind, col, row } => self.on_mouse(kind, (col, row)),
             Msg::PaneCaptured { pane, text } => {
                 self.capturing = false;
                 self.preview = Some(Preview { pane, text });
@@ -919,14 +960,51 @@ impl App {
         }
     }
 
+    /// Drag to select; letting go copies what was selected. A click alone
+    /// clears the selection.
+    fn on_mouse(&mut self, kind: MouseKind, at: (u16, u16)) -> Vec<Effect> {
+        match kind {
+            MouseKind::Down => {
+                self.selection = Some(Selection { from: at, to: at });
+            }
+            MouseKind::Drag => {
+                if let Some(s) = &mut self.selection {
+                    s.to = at;
+                }
+            }
+            MouseKind::Up => {
+                let Some(s) = &mut self.selection else {
+                    return Vec::new();
+                };
+                s.to = at;
+                if s.from == s.to {
+                    self.selection = None;
+                    return Vec::new();
+                }
+                let (from, to) = (s.from, s.to);
+                self.set_status("Copied the selection".to_string());
+                return vec![Effect::Copy { from, to }];
+            }
+        }
+        Vec::new()
+    }
+
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
+        self.selection = None;
         // Not over another overlay: it may hold something being typed.
         if key.code == KeyCode::F(1) && self.overlay.is_none() {
             self.overlay = Some(Overlay::Help { scroll: 0 });
             return Vec::new();
+        }
+        if key.code == KeyCode::F(2) && matches!(self.overlay, None | Some(Overlay::Help { .. })) {
+            self.open_tour();
+            return Vec::new();
+        }
+        if matches!(self.overlay, Some(Overlay::Tour { .. })) {
+            return self.on_tour_key(key);
         }
         if let Some(effects) = self.on_page_key(key) {
             return effects;
@@ -976,6 +1054,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('W') => self.ask_where_are_we(),
+            KeyCode::Char('!') => self.open_shell(),
             KeyCode::Char('T') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             KeyCode::Char('s') => {
@@ -992,6 +1071,35 @@ impl App {
             },
             _ => Vec::new(),
         }
+    }
+
+    /// `!`: a shell in a popup, in the current card's checkout or the picked
+    /// session's, for what the agent may not run itself (sudo, a login, a
+    /// command its permissions block). The session's last suggested
+    /// `! command` comes typed in.
+    fn open_shell(&mut self) -> Vec<Effect> {
+        let (dir, name, agent) = match self.queue.current() {
+            Some(card) => (
+                card.checkout.0.clone(),
+                project_name(&card.checkout),
+                self.agent(&card.agent),
+            ),
+            None => match self.picked_agent() {
+                Some(a) => {
+                    let dir = a.checkout.as_ref().map_or(&a.cwd, |c| &c.0).clone();
+                    (dir, a.window_name.clone(), Some(a))
+                }
+                None => return Vec::new(),
+            },
+        };
+        let session_id = agent
+            .map(|a| a.session_id.clone())
+            .filter(|s| crate::llm::valid_session_id(s));
+        vec![Effect::Shell {
+            dir,
+            title: format!(" shell in {name} · exit or Ctrl-D closes it "),
+            session_id,
+        }]
     }
 
     fn next_theme(&mut self) -> Vec<Effect> {
@@ -2360,6 +2468,65 @@ pub(crate) mod tests {
         a.update(esc(t2));
         assert!(a.update(esc(t2)).is_empty());
         assert_eq!(a.status_text(), Some("api is not working on anything"));
+    }
+
+    #[test]
+    fn bang_opens_a_shell_where_the_card_or_session_is() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        let e = a.update(key('!'));
+        assert!(
+            matches!(&e[..], [Effect::Shell { dir, title, session_id: Some(s) }]
+                if dir == std::path::Path::new("/w/api") && title.contains("api") && s == "s1"),
+            "{e:?}"
+        );
+        a.queue.push(crate::queue::tests::card(
+            1,
+            "/w/web",
+            CardKind::Review(crate::model::ReviewCard::new(
+                1,
+                "a".into(),
+                "b".into(),
+                Vec::new(),
+                Vec::new(),
+                false,
+            )),
+            0,
+        ));
+        let e = a.update(key('!'));
+        assert!(
+            matches!(&e[..], [Effect::Shell { dir, .. }] if dir == std::path::Path::new("/w/web")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn dragging_selects_and_letting_go_copies() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mouse = |kind, col, row| Msg::Mouse { kind, col, row };
+        assert!(a.update(mouse(MouseKind::Down, 2, 3)).is_empty());
+        a.update(mouse(MouseKind::Drag, 9, 4));
+        assert_eq!(
+            a.selection,
+            Some(Selection {
+                from: (2, 3),
+                to: (9, 4)
+            })
+        );
+        assert_eq!(
+            a.update(mouse(MouseKind::Up, 10, 4)),
+            [Effect::Copy {
+                from: (2, 3),
+                to: (10, 4)
+            }]
+        );
+        // It stays shown until a key; a click alone copies nothing.
+        assert!(a.selection.is_some());
+        a.update(key('j'));
+        assert_eq!(a.selection, None);
+        a.update(mouse(MouseKind::Down, 5, 5));
+        assert!(a.update(mouse(MouseKind::Up, 5, 5)).is_empty());
+        assert_eq!(a.selection, None);
     }
 
     #[test]

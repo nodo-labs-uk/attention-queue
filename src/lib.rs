@@ -18,6 +18,7 @@ pub mod runtime;
 pub mod shell;
 pub mod step;
 pub mod theme;
+pub mod tour;
 pub mod transcript;
 pub mod ui;
 pub mod visible;

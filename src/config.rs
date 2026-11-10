@@ -11,6 +11,9 @@ use crate::model::{Checkout, Mode};
 pub struct Config {
     pub theme: String,
     pub modes: BTreeMap<PathBuf, Mode>,
+    /// The tour has been finished or skipped once, so it no longer opens
+    /// by itself.
+    pub tutorial_done: bool,
 }
 
 impl Default for Config {
@@ -18,6 +21,7 @@ impl Default for Config {
         Config {
             theme: "tokyo-night".to_string(),
             modes: BTreeMap::new(),
+            tutorial_done: false,
         }
     }
 }

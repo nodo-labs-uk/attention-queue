@@ -161,10 +161,12 @@ impl World {
         std::fs::create_dir_all(config.join("aq")).unwrap();
         std::fs::create_dir(&run).unwrap();
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // The tour would take the first keys.
+        let mut toml = String::from("tutorial_done = true\n\n[modes]\n");
         if step {
-            let toml = format!("[modes]\n{:?} = \"step\"\n", repo.display().to_string());
-            std::fs::write(config.join("aq/config.toml"), toml).unwrap();
+            toml.push_str(&format!("{:?} = \"step\"\n", repo.display().to_string()));
         }
+        std::fs::write(config.join("aq/config.toml"), toml).unwrap();
         let socket = run.join("aq.sock");
         let out = base.join("agent-out.txt");
         std::fs::write(&out, "").unwrap();
