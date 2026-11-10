@@ -9,6 +9,7 @@ pub mod hook;
 pub mod ipc;
 pub mod llm;
 pub mod model;
+pub mod new_session;
 pub mod permission;
 pub mod persist;
 pub mod queue;

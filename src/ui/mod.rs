@@ -7,6 +7,7 @@ pub mod fold;
 pub mod help;
 pub mod input;
 mod keys;
+mod new_session;
 mod permission;
 mod quiz;
 mod review;
@@ -143,14 +144,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             let title = format!("Message to {name}");
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
-        Some(Overlay::NewSession(d)) => {
-            let place = if d.worktree { "a new worktree of " } else { "" };
-            let title = format!(
-                "New Claude session in {place}{} (empty starts it bare)",
-                d.name
-            );
-            input::render_sized(frame, body, &d.input, &title, "start", t, (100, 12));
-        }
+        Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
         None => {}
     }
     if let Some(step) = app.practice_step() {
