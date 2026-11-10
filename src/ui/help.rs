@@ -28,7 +28,7 @@ finished turn; the card on screen stays as it is.
                  A gap the judge finds becomes keep-as-is or send-a-fix
 
 # Every card
-  ?    ask the agent a side question      s    skip this card
+  ?    ask the agent a side question      Space  skip this card
   W    where are we: a short summary of what is done and what is left
   N    a new Claude session in this project, in a tmux window of its own;
        what you type is its first prompt
@@ -47,7 +47,7 @@ finished turn; the card on screen stays as it is.
                  (on a step card, H/L and tab move between changes)
 
 # Review card
-  c  comment     x  delete comment   S  send comments   A  approve all
+  c  comment     x  delete comment   s  send comments   a  approve all
   d  mark the file done: it is ticked and skipped   D  show done files again
   j/k line   V range   ]c/[c change   H/L or tab file
   v  split or unified view           R  whole branch or this round

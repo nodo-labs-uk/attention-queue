@@ -18,7 +18,7 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 Each project has a mode, and `M` switches it.
 
-**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `S` sends all the comments, `A` approves, and `d` marks a file as done so it's out of the way. This is the video above.
+**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. This is the video above.
 
 **Step**: every edit waits for approval before it's applied. `y` lets it through, `n` sends it back with a reason.
 
@@ -56,8 +56,8 @@ The ones worth knowing from day one:
 | `W` | anywhere | ask the session where it's up to |
 | `N` | anywhere | start a new Claude session in this project |
 | drag | anywhere | select text; letting go copies it |
-| `s` | card | skip it for now |
-| `c` `S` `A` | review | comment, send the comments, approve the lot |
+| `Space` | card | skip it for now |
+| `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
 | `y` `n` | step, permission | allow, or refuse with a reason |
 | `h` `l` | sessions | pick a session |

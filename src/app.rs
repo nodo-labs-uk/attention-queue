@@ -1084,7 +1084,8 @@ impl App {
             }
             KeyCode::Char('T') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
-            KeyCode::Char('s') => {
+            // Space, since s sends on the review board.
+            KeyCode::Char(' ') => {
                 self.queue.skip();
                 Vec::new()
             }
@@ -1350,7 +1351,7 @@ impl App {
             return Vec::new();
         };
         let id = card.id;
-        if matches!(key.code, KeyCode::Char('S' | 'A')) && !self.settled(id) {
+        if matches!(key.code, KeyCode::Char('s' | 'S' | 'a' | 'A')) && !self.settled(id) {
             self.too_quick("review");
             return Vec::new();
         }
@@ -1892,7 +1893,7 @@ pub(crate) mod tests {
             .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 10));
         a.queue
             .push(card(2, "/b", CardKind::Review(ReviewCard::default()), 5));
-        a.update(key('s'));
+        a.update(key(' '));
         assert_eq!(a.queue.current().unwrap().id, 2);
     }
 

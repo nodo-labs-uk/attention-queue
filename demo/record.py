@@ -602,7 +602,7 @@ def scene_review():
         time.sleep(1.5)
         w.keys("L")
         time.sleep(1.5)
-        w.keys("S")
+        w.keys("s")
         w.see("Good catch")
         time.sleep(1)
     return w, rec

@@ -416,8 +416,9 @@ pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
         KeyCode::Char('x') if !card.delete_comment() => {
             return Action::Status("No comment of this round on this line");
         }
-        KeyCode::Char('S') => return Action::Send,
-        KeyCode::Char('A') => return Action::Approve,
+        // Lowercase first; the capitals still work for old habits.
+        KeyCode::Char('s' | 'S') => return Action::Send,
+        KeyCode::Char('a' | 'A') => return Action::Approve,
         KeyCode::Char('d') => card.toggle_done(),
         KeyCode::Char('D') => card.done.clear(),
         KeyCode::Char('R') => return Action::ToggleFullBranch,

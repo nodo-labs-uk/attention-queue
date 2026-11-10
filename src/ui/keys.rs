@@ -78,7 +78,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ),
             ("w/b", "word".into()),
             ("m", if sc.view.raw { "file" } else { "raw" }.into()),
-            ("s", "skip".into()),
+            ("Space", "skip".into()),
         ],
         (
             None,
@@ -88,8 +88,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             }),
         ) => vec![
             ("c", "comment".into()),
-            ("S", format!("send {}", rc.current_comments().count())),
-            ("A", "approve".into()),
+            ("s", format!("send {}", rc.current_comments().count())),
+            ("a", "approve".into()),
             ("v", "view".into()),
             ("]c", "change".into()),
             ("H/L", "file".into()),
@@ -106,7 +106,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .into(),
             ),
             ("j/k", "line".into()),
-            ("s", "skip".into()),
+            ("Space", "skip".into()),
             ("?", "ask".into()),
         ],
         (
@@ -119,7 +119,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("y", "allow".into()),
             ("n", "deny".into()),
             ("g", "go to window".into()),
-            ("s", "skip".into()),
+            ("Space", "skip".into()),
             ("?", "ask".into()),
         ],
         (
@@ -135,7 +135,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("]c", "change".into()),
             ("H/L", "file".into()),
             ("j/k", "line".into()),
-            ("s", "skip".into()),
+            ("Space", "skip".into()),
         ],
         (
             None,
@@ -207,6 +207,6 @@ fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
             None => vec![("Enter", "answer".into()), ("m", "whole file".into())],
         },
     };
-    keys.extend([("s", "skip".into()), ("M", "mode".into())]);
+    keys.extend([("Space", "skip".into()), ("M", "mode".into())]);
     keys
 }
