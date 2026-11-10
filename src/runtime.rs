@@ -454,6 +454,7 @@ fn apply(
             } => Job::LastMessage(agent, session_id, checkout),
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
+            Effect::SwitchModel { agent, model } => Job::SwitchModel(agent, model),
             Effect::NewSession {
                 dir,
                 prompt,
@@ -610,6 +611,7 @@ enum Job {
     Conversation(String),
     Close(String),
     Interrupt(String),
+    SwitchModel(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
@@ -785,6 +787,21 @@ fn spawn_effect_worker(
                 Job::Close(pane) => crate::agents::tmux::kill_pane(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not close {pane}: {e:#}"))),
+                Job::SwitchModel(agent, model) => {
+                    use crate::agents::tmux::{capture_pane, confirm_model_switch};
+                    capture_pane(&agent.pane, &[])
+                        .and_then(|before| {
+                            conn.send_text(&agent, &format!("/model {model}"))?;
+                            confirm_model_switch(&agent.pane, &before, &[])
+                        })
+                        .err()
+                        .map(|e| {
+                            Msg::EffectFailed(format!(
+                                "Could not switch {} to {model}: {e:#}",
+                                agent.pane
+                            ))
+                        })
+                }
                 Job::Interrupt(pane) => crate::agents::tmux::press_escape(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not stop {pane}: {e:#}"))),

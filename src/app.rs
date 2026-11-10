@@ -235,6 +235,12 @@ pub enum Effect {
     ClosePane {
         pane: String,
     },
+    /// Send `/model` to a session, and say yes if Claude Code asks whether
+    /// to switch.
+    SwitchModel {
+        agent: AgentId,
+        model: &'static str,
+    },
     /// Press Escape in a pane, stopping the agent's turn.
     Interrupt {
         pane: String,
@@ -901,11 +907,7 @@ impl App {
             .agent(&agent)
             .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
         self.set_status(format!("Switched {name} to {model}"));
-        vec![Effect::Send {
-            agent,
-            text: format!("/model {model}"),
-            card: None,
-        }]
+        vec![Effect::SwitchModel { agent, model }]
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
@@ -2869,10 +2871,9 @@ pub(crate) mod tests {
         a.update(key('m'));
         assert_eq!(
             a.update(key('o')),
-            [Effect::Send {
+            [Effect::SwitchModel {
                 agent: a.agents[0].id.clone(),
-                text: "/model opus".into(),
-                card: None,
+                model: "opus",
             }]
         );
         assert_eq!(a.overlay, None);

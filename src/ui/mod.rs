@@ -162,7 +162,8 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 &format!("Model for {name}"),
                 &[
                     "Sends /model to the session. Claude Code also keeps it".into(),
-                    "as the default for new sessions. Esc changes nothing.".into(),
+                    "as the default for new sessions. A session with history".into(),
+                    "re-reads it on the new model. Esc changes nothing.".into(),
                 ],
                 &hints,
                 t,
