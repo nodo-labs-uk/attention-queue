@@ -8,7 +8,7 @@ use crate::agents::Agent;
 use crate::app::{App, project_name};
 use crate::model::{AgentId, Mode};
 use crate::transcript::Said;
-use crate::visible::wrap;
+use crate::visible::{push_visible, wrap};
 
 /// With agents: a strip of tabs, one per agent, and the picked agent's
 /// screen filling the rest. Without: a short note in the middle.
@@ -61,14 +61,16 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
         } else {
             ("○", t.dim)
         };
+        // A program can name its own window, so names are shown as visible text.
+        let name = visible(&a.window_name);
         let window = if one_session {
-            format!("{} {}", a.window_index, a.window_name)
+            format!("{} {}", a.window_index, name)
         } else {
-            format!("{}:{} {}", a.session, a.window_index, a.window_name)
+            format!("{}:{} {}", visible(&a.session), a.window_index, name)
         };
-        let project = agent_project(a);
+        let project = visible(&agent_project(a));
         let mut label = format!(" {dot} {window}");
-        if project != a.window_name {
+        if project != name {
             label.push_str(&format!(" {project}"));
         }
         // Review is the default; any other mode is worth knowing at a glance,
@@ -130,7 +132,9 @@ fn render_live(frame: &mut Frame, area: Rect, app: &App) {
             // Wrapped to the area, so the bottom rows are counted after wrapping.
             let mut rows = Vec::new();
             for line in without_input_box(text) {
-                wrap(line.trim_end(), area.width as usize, &mut |r| rows.push(r));
+                wrap(&visible(line.trim_end()), area.width as usize, &mut |r| {
+                    rows.push(r)
+                });
             }
             let skip = rows.len().saturating_sub(area.height as usize);
             rows.drain(skip..)
@@ -167,7 +171,7 @@ pub fn conversation_rows(said: &[Said], width: usize) -> Vec<(RowKind, String)> 
         let room = width.saturating_sub(indent.len()).max(1);
         let mut first = true;
         for line in text.lines() {
-            wrap(line.trim_end(), room, &mut |r| {
+            wrap(&visible(line.trim_end()), room, &mut |r| {
                 let lead = if first { mark } else { indent.as_str() };
                 first = false;
                 rows.push((kind, format!("{lead}{r}")));
@@ -221,6 +225,15 @@ fn render_conversation(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// `s` with control and invisible characters spelled out, so text from an
+/// agent cannot move the cursor, recolour the terminal or reorder what is
+/// shown.
+fn visible(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    s.chars().for_each(|c| push_visible(c, &mut out));
+    out
+}
+
 /// The screen's lines down to Claude Code's input box: the rule above its
 /// last `❯` line, the prompt, and the status lines under it are left out,
 /// since the message box here takes their place. A screen without that box
@@ -246,6 +259,19 @@ fn agent_project(a: &Agent) -> String {
 #[cfg(test)]
 mod tests {
     use super::without_input_box;
+
+    #[test]
+    fn agent_text_is_shown_with_controls_spelled_out() {
+        use crate::transcript::Said;
+        let said = [Said::Claude("ok \u{1b}[2J\u{202e}gnp.exe".into())];
+        let rows = super::conversation_rows(&said, 80);
+        let all: String = rows.iter().map(|(_, r)| r.as_str()).collect();
+        assert!(
+            !all.contains('\u{1b}') && !all.contains('\u{202e}'),
+            "{all:?}"
+        );
+        assert!(all.contains("^[") && all.contains("\\u{202e}"), "{all:?}");
+    }
 
     #[test]
     fn input_box_and_status_lines_are_left_out() {

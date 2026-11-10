@@ -54,7 +54,7 @@ impl CodeRef {
     pub fn end(&self) -> u32 {
         self.end_line
             .unwrap_or(self.line)
-            .clamp(self.line, self.line + PIECE_MAX - 1)
+            .clamp(self.line, self.line.saturating_add(PIECE_MAX - 1))
     }
 
     /// `path:line` or `path:line-end`.
@@ -1087,6 +1087,16 @@ pub(crate) mod tests {
         let job = answer_free(a, "x");
         let fake = FakeLlm::new(vec![Ok(verdict.into())]);
         a.update(Msg::Llm(run_job(&fake, job)))
+    }
+
+    #[test]
+    fn a_piece_at_the_end_of_u32_does_not_overflow() {
+        let r = CodeRef {
+            path: "a.rs".into(),
+            line: u32::MAX - 2,
+            end_line: Some(u32::MAX),
+        };
+        assert_eq!(r.end(), u32::MAX);
     }
 
     #[test]
