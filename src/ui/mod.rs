@@ -1,5 +1,6 @@
 mod ask;
 mod bar;
+mod choice;
 mod confirm;
 mod diffview;
 pub mod empty;
@@ -113,6 +114,9 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             };
             input::render(frame, body, &d.input, title, t);
         }
+        Some(Overlay::OwnAnswer(d)) => {
+            input::render(frame, body, &d.input, "Answer in your own words", t);
+        }
         Some(Overlay::Deny(d)) => {
             input::render(frame, body, &d.input, "Deny: tell Claude why", t);
         }
@@ -159,7 +163,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
 pub fn kind_label(kind: &CardKind) -> &'static str {
     match kind {
         CardKind::Permission(_) => "permission",
-        CardKind::Question(_) => "question",
+        CardKind::Question(_) | CardKind::Choice(_) => "question",
         CardKind::Step(_) => "step",
         CardKind::ShellChange(_) => "shell change",
         CardKind::Review(_) => "review",
@@ -199,6 +203,13 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
             Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
         ));
     }
+    if let Some(q) = app.question_of(&card.agent) {
+        // Sending from this card answers it; its own card has it in full.
+        lines.push(Line::styled(
+            format!("Claude asks: {}", q.ask_line()),
+            Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
+        ));
+    }
     if let Some(w) = shared_checkout_warning(card, &app.agents) {
         lines.push(Line::styled(w, Style::new().fg(t.hi)));
     }
@@ -212,6 +223,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::ShellChange(sc) => shell::render(frame, area, app, card, sc, hl),
         CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
         CardKind::Question(qc) => question::render(frame, area, app, card, qc),
+        CardKind::Choice(cc) => choice::render(frame, area, app, card, cc),
         CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }
 }

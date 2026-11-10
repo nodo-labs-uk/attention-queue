@@ -46,7 +46,14 @@ pub enum HookRequest {
 #[serde(tag = "kind")]
 pub enum HookReply {
     Allow,
-    Deny { reason: String },
+    Deny {
+        reason: String,
+    },
+    /// Let the tool run on `input` in place of its own: an option menu's
+    /// questions with the answers added.
+    Answer {
+        input: Value,
+    },
     NoDecision,
 }
 

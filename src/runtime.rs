@@ -287,6 +287,17 @@ fn on_ipc(
             }))?;
             Ok(())
         }
+        // An option menu waits for its card in any mode.
+        req @ HookRequest::PreTool { .. } if matches!(&req, HookRequest::PreTool { tool_name, .. } if tool_name == crate::choice::TOOL) =>
+        {
+            waiting.insert(req_id, reply);
+            loading.insert(req_id, false);
+            workers.load(Load::Permission {
+                req_id,
+                req,
+                at: std::time::SystemTime::now(),
+            })
+        }
         HookRequest::PreTool {
             session_id,
             transcript_path,
@@ -555,7 +566,9 @@ fn spawn_loader(tx: UnboundedSender<Msg>) -> std::sync::mpsc::Sender<Load> {
                 Load::Post(req) => load_post(req),
                 Load::Permission { req_id, req, at } => {
                     let checkout = match &req {
-                        HookRequest::Permission { cwd, .. } => checkouts.of(Path::new(cwd)),
+                        HookRequest::Permission { cwd, .. } | HookRequest::PreTool { cwd, .. } => {
+                            checkouts.of(Path::new(cwd))
+                        }
                         _ => None,
                     };
                     Msg::Ipc {

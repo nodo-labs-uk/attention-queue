@@ -625,7 +625,7 @@ impl App {
 
     /// A hook gave up waiting. Its card stays for Claude's retry.
     pub(crate) fn on_hook_gone(&mut self, req_id: u64) {
-        if self.close_permission(req_id) {
+        if self.close_permission(req_id) || self.close_choice(req_id) {
             return;
         }
         let card = self

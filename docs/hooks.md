@@ -40,6 +40,23 @@ Output ([hooks: PreToolUse decision control](https://code.claude.com/docs/en/hoo
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
 ```
 
+### Option menus (AskUserQuestion)
+
+The same hook, with `AskUserQuestion` in its matcher, catches Claude's
+option menu before it shows. aq holds the call, shows the questions on a
+card, and answers by handing the input back with an `answers` object added
+([hooks: tools that require user interaction](https://code.claude.com/docs/en/hooks)):
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"questions":[...],"answers":{"<question text>":"<option label>"}}}}
+```
+
+Several picked labels are joined with ", ". An answer in your own words is
+sent as the answer string; the docs do not say how the menu's own "Other"
+is encoded, so that case rests on Claude reading the string as given. With
+no answer (aq closed, `x` on the card, or the deadline) the hook prints
+nothing and the menu shows in the window as usual.
+
 - `permissionDecision` is `allow`, `deny`, `ask` or `defer`. `aq` uses only
   `allow` and `deny`.
 - For `deny`, Claude reads `permissionDecisionReason`. For `allow`, the reason

@@ -264,6 +264,13 @@ pub fn context_for(card: &Card) -> String {
             }
             s
         }
+        CardKind::Choice(cc) => format!(
+            "The agent is asking the developer to choose, with this input to its question tool:\n\n{}",
+            cap_text(
+                &serde_json::to_string_pretty(&cc.input).unwrap_or_default(),
+                CONTEXT_CAP
+            )
+        ),
         CardKind::Question(qc) => format!(
             "The agent ended its turn by asking the developer this:\n\n{}",
             cap_text(&qc.text, CONTEXT_CAP)
