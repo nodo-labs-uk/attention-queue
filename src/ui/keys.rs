@@ -173,18 +173,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (
             None,
             Some(Card {
-                kind: CardKind::Question(_),
+                kind: CardKind::Question(qc),
                 ..
             }),
-        ) => vec![
-            ("a", "approve".into()),
-            ("Enter", "reply".into()),
-            ("x", "put away".into()),
-            ("g", "go to window".into()),
-            ("j/k", "scroll".into()),
-            ("Space", "skip".into()),
-            ("?", "ask".into()),
-        ],
+        ) => qc
+            .approvable()
+            .then_some(("a", "approve".into()))
+            .into_iter()
+            .chain([
+                ("Enter", "reply".into()),
+                ("x", "put away".into()),
+                ("g", "go to window".into()),
+                ("j/k", "scroll".into()),
+                ("Space", "skip".into()),
+                ("?", "ask".into()),
+            ])
+            .collect(),
         (
             None,
             Some(Card {

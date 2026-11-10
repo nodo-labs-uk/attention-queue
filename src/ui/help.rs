@@ -72,6 +72,7 @@ finished turn; the card on screen stays as it is.
 When a session ends its turn by asking you something (to approve a
 draft, to choose between two ways), its message becomes a card.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words
+     a is there only when the question asks for a go-ahead
   x  put the card away   g  go to the session's window   j/k scroll
 
 When Claude asks with its own menu of options, the card lists them:

@@ -67,13 +67,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
     }
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
-    for (k, label) in [
-        ("a", "approve"),
+    let approve = qc.approvable().then_some(("a", "approve"));
+    for (k, label) in approve.into_iter().chain([
         ("Enter", "reply"),
         ("x", "put away"),
         ("g", "go to window"),
         ("?", "ask"),
-    ] {
+    ]) {
         spans.push(Span::styled(k, key));
         spans.push(Span::styled(format!(" {label}  "), dim));
     }
