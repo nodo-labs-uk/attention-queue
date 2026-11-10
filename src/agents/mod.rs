@@ -32,6 +32,128 @@ pub struct Agent {
     pub session_id: String,
     pub status: AgentStatus,
     pub waiting: bool,
+    /// Claude Code's input box, read from the screen of a waiting agent.
+    pub input: InputBox,
+}
+
+/// Claude Code's input box as last read from the agent's screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum InputBox {
+    /// Not on screen (a turn or a menu is showing), or the screen was not read.
+    #[default]
+    Unseen,
+    /// On screen and empty: text pasted now becomes the whole message.
+    Empty,
+    /// Holding text typed and not sent.
+    Holding(String),
+}
+
+/// Whether `line` is one of the rules around Claude Code's input box.
+fn is_rule(line: &str) -> bool {
+    let l = line.trim();
+    !l.is_empty() && l.chars().all(|c| c == '─')
+}
+
+/// The row of Claude Code's input box on a plain screen: the last `❯` line
+/// with a rule right above it. Menus use `❯` too, but with no rule above.
+pub fn input_row(lines: &[&str]) -> Option<usize> {
+    let p = lines.iter().rposition(|l| l.starts_with('❯'))?;
+    (p > 0 && is_rule(lines[p - 1])).then_some(p)
+}
+
+/// Reads the input box from a screen captured with its colours
+/// (`capture-pane -e`). Typed text is drawn in the default colour; a dimmed
+/// or coloured suggestion in an empty box does not count as typed.
+pub fn read_input_box(screen: &str) -> InputBox {
+    let styled: Vec<&str> = screen.lines().collect();
+    let plain: Vec<String> = styled.iter().map(|l| strip_sgr(l)).collect();
+    let rows: Vec<&str> = plain.iter().map(String::as_str).collect();
+    let Some(p) = input_row(&rows) else {
+        return InputBox::Unseen;
+    };
+    let mut text = typed_after_prompt(styled[p]);
+    for row in rows[p + 1..].iter().take_while(|r| !is_rule(r)) {
+        text.push('\n');
+        text.push_str(row);
+    }
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        InputBox::Empty
+    } else {
+        InputBox::Holding(text)
+    }
+}
+
+/// `line` without its colour escapes.
+fn strip_sgr(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ESC [ params final-byte
+            for d in chars.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The text after `❯` on a styled line that is drawn in the default colour
+/// and not dimmed.
+fn typed_after_prompt(line: &str) -> String {
+    let (mut dim, mut coloured, mut seen) = (false, false, false);
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            let mut seq = String::new();
+            for d in chars.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    if d == 'm' {
+                        apply_sgr(&seq, &mut dim, &mut coloured);
+                    }
+                    break;
+                }
+                seq.push(d);
+            }
+        } else if !seen {
+            seen = c == '❯';
+        } else if !dim && !coloured {
+            out.push(if c == '\u{a0}' { ' ' } else { c });
+        }
+    }
+    out
+}
+
+/// Updates the dim and foreground-colour state from one SGR sequence (`[1;2m` without the m).
+fn apply_sgr(seq: &str, dim: &mut bool, coloured: &mut bool) {
+    let params: Vec<&str> = seq.trim_start_matches('[').split(';').collect();
+    let mut i = 0;
+    while i < params.len() {
+        match params[i].parse::<u16>().unwrap_or(0) {
+            0 => (*dim, *coloured) = (false, false),
+            2 => *dim = true,
+            22 => *dim = false,
+            30..=37 | 90..=97 => *coloured = true,
+            39 => *coloured = false,
+            38 => {
+                *coloured = true;
+                // 38;5;n or 38;2;r;g;b
+                i += if params.get(i + 1) == Some(&"2") {
+                    4
+                } else {
+                    2
+                };
+            }
+            _ => {}
+        }
+        i += 1;
+    }
 }
 
 pub trait AgentConn: Send + Sync {
@@ -94,5 +216,53 @@ mod tests {
         assert!(here.0.is_absolute());
         let tmp = tempfile::tempdir().unwrap();
         assert!(checkout_of(tmp.path()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod input_box_tests {
+    use super::*;
+
+    const RULE: &str = "\x1b[2m──────────\x1b[0m";
+
+    fn screen(prompt_line: &str) -> String {
+        format!("● Done.\n{RULE}\n{prompt_line}\n{RULE}\n  ctx:11% Opus\n")
+    }
+
+    #[test]
+    fn empty_typed_and_suggested_prompts() {
+        assert_eq!(read_input_box(&screen("\x1b[39m❯\u{a0}")), InputBox::Empty);
+        assert_eq!(
+            read_input_box(&screen("\x1b[39m❯\u{a0}go ahead and add those")),
+            InputBox::Holding("go ahead and add those".into())
+        );
+        // A dimmed or grey suggestion is not typed text.
+        assert_eq!(
+            read_input_box(&screen(
+                "\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\x1b[22m"
+            )),
+            InputBox::Empty
+        );
+        assert_eq!(
+            read_input_box(&screen(
+                "\x1b[39m❯\u{a0}\x1b[38;5;246mrun the tests\x1b[39m"
+            )),
+            InputBox::Empty
+        );
+        assert_eq!(
+            read_input_box(&screen(
+                "\x1b[39m❯\u{a0}\x1b[38;2;153;153;153mrun the tests\x1b[39m"
+            )),
+            InputBox::Empty
+        );
+    }
+
+    #[test]
+    fn a_menu_or_a_turn_is_no_input_box() {
+        assert_eq!(
+            read_input_box("Allow this?\n❯ 1. Yes\n  2. No\n"),
+            InputBox::Unseen
+        );
+        assert_eq!(read_input_box("✻ Working… (12s)\n"), InputBox::Unseen);
     }
 }

@@ -2,10 +2,10 @@
 source: src/ui/mod.rs
 expression: "render(&app(), 50, 7)"
 ---
-" aq  nothing waiting                              "
+" aq  nothing waiting                      F1 help "
+"                                                  "
 "                                                  "
 "          Nothing needs you.                      "
-"                                                  "
 "          No Claude agents found in tmux.         "
 "                                                  "
 " T theme   Q quit                                 "

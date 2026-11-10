@@ -1,8 +1,10 @@
 mod ask;
 mod bar;
+mod confirm;
 mod diffview;
-mod empty;
+pub mod empty;
 pub mod fold;
+pub mod help;
 pub mod input;
 mod keys;
 mod permission;
@@ -62,11 +64,32 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render(frame, body, &d.input, "Deny: tell Claude why", t);
         }
         Some(Overlay::Search(list)) => step::render_search(frame, body, list, t),
-        Some(Overlay::QuizAnswer(d)) => {
-            input::render(frame, body, &d.input, "Your answer", t);
-        }
+        Some(Overlay::QuizAnswer(d)) => quiz::render_answer(frame, body, app, d, hl),
         Some(Overlay::QuizCode { card, question }) => {
             quiz::render_code(frame, body, app, *card, *question, hl);
+        }
+        Some(Overlay::Help { scroll }) => help::render(frame, body, *scroll, t),
+        Some(Overlay::CloseAgent(id)) => {
+            let name = app
+                .agent(id)
+                .map_or_else(|| id.pane.clone(), |a| a.window_name.clone());
+            confirm::render(
+                frame,
+                body,
+                "Close session",
+                &[
+                    format!("Close {name}? Its Claude session ends."),
+                    "Its conversation is kept: claude --resume picks it up.".into(),
+                ],
+                t,
+            );
+        }
+        Some(Overlay::Prompt(d)) => {
+            let name = app
+                .agent(&d.agent)
+                .map_or_else(|| d.agent.pane.clone(), |a| a.window_name.clone());
+            let title = format!("Message to {name}");
+            input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
         None => {}
     }
@@ -215,18 +238,82 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn empty_state_tabs_flow_onto_more_rows_when_narrow() {
+        let mut a = app();
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 4, "chezmoi", "/home/u/.local/share/chezmoi", false),
+            agent("%3", 12, "web-redesign", "/w/web", true),
+        ];
+        insta::assert_snapshot!(render(&a, 34, 8));
+    }
+
+    #[test]
     fn empty_state_shows_the_picked_agents_screen() {
         let mut a = app();
         a.agents = vec![
             agent("%1", 1, "api", "/w/api", true),
             agent("%2", 2, "web", "/w/web", false),
         ];
-        let screen: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let mut screen: Vec<String> = (1..=18).map(|i| format!("line {i}")).collect();
+        screen.push(format!("long {}", "word ".repeat(15)));
         a.preview = Some(crate::app::Preview {
             pane: "%1".into(),
             text: Ok(screen.join("\n") + "\n> \n\n"),
         });
         insta::assert_snapshot!(render(&a, 60, 16));
+    }
+
+    #[test]
+    fn scrolling_up_shows_the_conversation_and_g_comes_back() {
+        use crate::app::{Effect, Msg};
+        use crate::transcript::Said;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app();
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        a.update(Msg::Resize {
+            width: 60,
+            height: 16,
+        });
+        a.preview = Some(crate::app::Preview {
+            pane: "%1".into(),
+            text: Ok("live pane text".into()),
+        });
+        let key = |code, m| Msg::Key(KeyEvent::new(code, m), std::time::Instant::now());
+        let effects = a.update(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(
+            effects,
+            [Effect::ReadConversation {
+                session_id: "s1".into()
+            }]
+        );
+        assert!(render(&a, 60, 16).contains("Reading the conversation"));
+        let mut said = Vec::new();
+        for i in 1..=30 {
+            said.push(Said::User(format!("prompt {i}")));
+            said.push(Said::Claude(format!("reply {i}")));
+            said.push(Said::Tool(format!("Bash(step {i})")));
+        }
+        a.update(Msg::Conversation {
+            session_id: "s1".into(),
+            said: Ok(said),
+        });
+        let screen = render(&a, 60, 16);
+        assert!(
+            screen.contains("reply 30") && screen.contains("⎿ Bash(step 30)"),
+            "{screen}"
+        );
+        assert!(!screen.contains("live pane text"), "{screen}");
+        a.update(Msg::Wheel { up: true });
+        let screen = render(&a, 60, 16);
+        assert!(!screen.contains("step 30)"), "{screen}");
+        assert!(screen.contains("3 more rows"), "{screen}");
+        a.update(key(KeyCode::Home, KeyModifiers::NONE));
+        assert!(render(&a, 60, 16).contains("❯ prompt 1"), "the top");
+        a.update(key(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(a.live_scroll, 0);
+        assert!(render(&a, 60, 16).contains("live pane text"));
+        assert_eq!(a.picked_agent().unwrap().id.pane, "%1", "the pick stays");
     }
 
     #[test]

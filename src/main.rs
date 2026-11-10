@@ -42,6 +42,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         None => {
             let conn = Arc::new(TmuxConn::default());
+            let _open = OpenFlag::set();
             tokio::runtime::Runtime::new()?.block_on(aq::runtime::run(aq::config::paths(), conn))
         }
         Some(Command::Hook {
@@ -51,6 +52,22 @@ fn main() -> anyhow::Result<()> {
             hook(event, Duration::from_secs(deadline_secs));
             Ok(())
         }
+    }
+}
+
+/// Marks aq as open in tmux until dropped, panics included.
+struct OpenFlag;
+
+impl OpenFlag {
+    fn set() -> Self {
+        aq::agents::tmux::mark_open(true);
+        OpenFlag
+    }
+}
+
+impl Drop for OpenFlag {
+    fn drop(&mut self) {
+        aq::agents::tmux::mark_open(false);
     }
 }
 

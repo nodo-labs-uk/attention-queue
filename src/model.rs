@@ -16,6 +16,8 @@ pub enum Mode {
     Review,
     Step,
     Quiz,
+    /// Nothing is checked: the agent just codes.
+    Vibe,
 }
 
 /// Worktree root, canonicalised.
@@ -30,7 +32,7 @@ impl Checkout {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AgentId {
     /// tmux pane id, like `%54`.
     pub pane: String,

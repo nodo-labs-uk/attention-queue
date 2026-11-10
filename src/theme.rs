@@ -89,6 +89,7 @@ pub fn builtin_themes() -> Vec<Theme> {
         include_str!("../themes/catppuccin-mocha.toml"),
         include_str!("../themes/gruvbox-dark.toml"),
         include_str!("../themes/rose-pine-dawn.toml"),
+        include_str!("../themes/ghostty.toml"),
     ]
     .iter()
     .map(|t| Theme::from_toml(t).expect("built-in theme is valid"))
@@ -136,7 +137,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn four_builtins_named() {
+    fn five_builtins_named() {
         let names: Vec<_> = builtin_themes().into_iter().map(|t| t.name).collect();
         assert_eq!(
             names,
@@ -144,7 +145,8 @@ mod tests {
                 "tokyo-night",
                 "catppuccin-mocha",
                 "gruvbox-dark",
-                "rose-pine-dawn"
+                "rose-pine-dawn",
+                "ghostty"
             ]
         );
     }
@@ -164,7 +166,7 @@ mod tests {
         good.push('\n');
         std::fs::write(d.path().join("good.toml"), good).unwrap();
         let all = load_themes(d.path());
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), builtin_themes().len() + 1);
         assert!(all.iter().any(|t| t.name == "mine"));
     }
 
@@ -172,7 +174,8 @@ mod tests {
     fn next_theme_wraps() {
         let all = builtin_themes();
         assert_eq!(next_theme("tokyo-night", &all).name, "catppuccin-mocha");
-        assert_eq!(next_theme("rose-pine-dawn", &all).name, "tokyo-night");
+        assert_eq!(next_theme("rose-pine-dawn", &all).name, "ghostty");
+        assert_eq!(next_theme("ghostty", &all).name, "tokyo-night");
         assert_eq!(next_theme("missing", &all).name, "tokyo-night");
     }
 }

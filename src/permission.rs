@@ -291,9 +291,12 @@ impl App {
             | KeyCode::Down
             | KeyCode::Up
             | KeyCode::PageDown
-            | KeyCode::PageUp => {
+            | KeyCode::PageUp
+            | KeyCode::Home
+            | KeyCode::End => {
                 self.scroll_permission(key.code);
             }
+            KeyCode::Char('G') => self.scroll_permission(KeyCode::End),
             KeyCode::Char('n') => {
                 self.overlay = Some(Overlay::Deny(DenyDraft {
                     card: id,
@@ -348,6 +351,8 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => top + 1,
             KeyCode::PageDown => top + page,
             KeyCode::Char('k') | KeyCode::Up => top.saturating_sub(1),
+            KeyCode::End => last,
+            KeyCode::Home => 0,
             _ => top.saturating_sub(page),
         }
         .min(last);

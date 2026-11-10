@@ -2,7 +2,7 @@
 source: src/ui/step.rs
 expression: "render(&a, 90, 24)"
 ---
-" aq  step a · api                                                                 1 step  "
+" aq  step a · api                                                         1 step  F1 help "
 " step  a  window api  step by step  step 1                                                "
 " Return 429 when a client runs out of tokens.                                             "
 " Why: The plan says limits must be visible to clients.                                    "
@@ -25,4 +25,4 @@ expression: "render(&a, 90, 24)"
 "                                                                                          "
 "                                                                                          "
 "                                                                                          "
-" y allow   n reject   e change   tab next   za fold   zR unfold all   gd find   w/b word  "
+" y allow   n reject   e change   H/L change   za fold   zR unfold all   gd find   w/b word"

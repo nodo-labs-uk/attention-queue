@@ -17,7 +17,8 @@ const KIND_ORDER: [fn(&CardKind) -> bool; 5] = [
     |k| matches!(k, CardKind::Quiz(_)),
 ];
 
-/// Top row: the current card on the left, counts of everything queued on the right.
+/// Top row: the current card on the left, counts of everything queued and
+/// the help key on the right.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let base = Style::new().bg(t.panel).fg(t.fg);
@@ -73,6 +74,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(t.dim),
         ));
     }
+    right.push(Span::styled(
+        "F1",
+        Style::new().fg(t.key).add_modifier(Modifier::BOLD),
+    ));
+    right.push(Span::styled(" help ", Style::new().fg(t.dim)));
     frame.render_widget(
         Paragraph::new(Line::from(right)).alignment(Alignment::Right),
         area,

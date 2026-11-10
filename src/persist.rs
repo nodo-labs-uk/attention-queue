@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::App;
 use crate::config::{Paths, write_atomic};
+use crate::git::FileDiff;
 use crate::model::{CardKind, Checkout, Mode};
 use crate::quiz::{Answer, Question, QuizCard, QuizState, Verdict};
 use crate::review::{Comment, LastRound};
@@ -25,7 +26,18 @@ pub struct SavedState {
     /// Last sent review round per checkout root.
     pub rounds: BTreeMap<PathBuf, LastRound>,
     pub drafts: Vec<Draft>,
+    #[serde(deserialize_with = "readable_quizzes")]
     pub quizzes: Vec<QuizProgress>,
+}
+
+/// The saved quizzes that still read; one saved in an older form is
+/// dropped rather than losing the rest of the state with it.
+fn readable_quizzes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<QuizProgress>, D::Error> {
+    let all = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(all
+        .into_iter()
+        .filter_map(|q| serde_json::from_value(q).ok())
+        .collect())
 }
 
 /// The card a draft or quiz belongs to.
@@ -138,8 +150,8 @@ impl QuizProgress {
 
     /// The quiz card again. An answer that was being judged can be judged
     /// again with `r`.
-    pub fn into_card(self, diff: String) -> QuizCard {
-        let mut qc = QuizCard::new(self.card.from_tree, self.card.to_tree, diff);
+    pub fn into_card(self, files: Vec<FileDiff>) -> QuizCard {
+        let mut qc = QuizCard::new(self.card.from_tree, self.card.to_tree, files);
         qc.questions = self.questions;
         qc.answers = self.answers;
         for a in &mut qc.answers {
@@ -228,7 +240,7 @@ mod tests {
         agent, app, computed, ctrl, finish_round, fixture_files, key, review, typed,
     };
     use crate::app::{Effect, Msg, ReviewRequest};
-    use crate::quiz::tests::{answer_free, asking, file, quiz};
+    use crate::quiz::tests::{RIGHT, answer_free, answered, asking, file, quiz};
     use crate::review::Side;
 
     /// aq starts again with the state `a` saved, and sees agent `%1` in
@@ -335,11 +347,19 @@ mod tests {
     }
 
     #[test]
+    fn a_quiz_saved_in_an_older_form_is_dropped_not_the_state() {
+        let text = r#"{"rounds":{},"drafts":[],"quizzes":[
+            {"card":{"checkout":"/a","from_tree":"b","to_tree":"t"},"questions":[],
+             "answers":[{"given":{"Choice":0},"verdict":"Right"}],"fixes":[],"asking":0}]}"#;
+        let state: SavedState = serde_json::from_str(text).unwrap();
+        assert!(state.quizzes.is_empty());
+    }
+
+    #[test]
     fn quiz_progress_survives_restart() {
         let mut a = asking();
-        // Question 1 is a choice; its right answer is the third.
-        a.update(key('3'));
-        // Question 2 is free text; the judge is still on it at exit.
+        answered(&mut a, RIGHT);
+        // The judge is still on question 2 at exit.
         answer_free(&mut a, "no negative count");
         let before = quiz(&a).clone();
         assert_eq!(before.answers[1].verdict, Verdict::Judging);
@@ -362,7 +382,10 @@ mod tests {
             files: vec![file()],
             at: SystemTime::UNIX_EPOCH,
         });
-        assert!(effects.is_empty(), "no new questions asked: {effects:?}");
+        assert!(
+            matches!(effects.as_slice(), [Effect::ReadCode(r)] if r.question == 1),
+            "no new questions asked, only the current one's code read: {effects:?}"
+        );
         let qc = quiz(&b);
         assert_eq!(qc.questions, before.questions);
         assert_eq!(qc.state, QuizState::Asking(1));

@@ -1,5 +1,6 @@
 //! The quiz card: the last answered question with its verdict, then the
-//! current one. And the code view `m` opens.
+//! current one under the piece of the diff it asks about. The answer is
+//! typed in a modal showing that piece again. And the code view `m` opens.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
@@ -8,17 +9,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use super::card_header;
+use super::input;
 use crate::app::App;
+use crate::git::DiffLine;
 use crate::highlight::Highlighter;
 use crate::model::{Card, CardKind};
-use crate::quiz::{
-    Answer, Code, Given, JudgeVerdict, Question, QuestionKind, QuizCard, QuizState, Snippet,
-    Verdict,
-};
+use crate::quiz::{AnswerDraft, Code, JudgeVerdict, QuizCard, QuizState, Scope, Snippet, Verdict};
+use crate::review::file_path;
 use crate::theme::Theme;
 
-/// Lines of code either side of `code_ref` shown under a wrong answer.
-const INLINE_CONTEXT: u32 = 3;
+/// Lines either side of the piece, when it is shown from the file because
+/// the diff does not have it.
+const PIECE_CONTEXT: u32 = 1;
+/// Rows of the answer box in the modal.
+const ANSWER_ROWS: u16 = 9;
 
 /// For the top bar: which questions are on screen, and the score.
 pub fn progress(qc: &QuizCard) -> Option<(String, String)> {
@@ -66,10 +70,12 @@ pub fn render(
         QuizState::Asking(i) => {
             let i = *i;
             if i > 0 {
-                question_block(&mut lines, qc, i - 1, width, t, hl);
+                question_block(&mut lines, qc, i - 1, width, t);
                 lines.push(Line::raw(""));
             }
-            question_block(&mut lines, qc, i, width, t, hl);
+            lines.extend(piece_lines(qc, i, t, hl));
+            lines.push(Line::raw(""));
+            question_block(&mut lines, qc, i, width, t);
         }
         QuizState::Done => {
             let (right, total) = qc.score();
@@ -95,96 +101,204 @@ pub fn render(
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
+/// The answer modal: the piece of the diff, the question, and a box for
+/// the answer in the developer's own words.
+pub fn render_answer(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    draft: &AnswerDraft,
+    hl: &mut Highlighter,
+) {
+    let t = app.theme();
+    let Some(CardKind::Quiz(qc)) = app
+        .queue
+        .iter()
+        .find(|c| c.id == draft.card)
+        .map(|c| &c.kind)
+    else {
+        return;
+    };
+    let Some(q) = qc.questions.get(draft.question) else {
+        return;
+    };
+    let [h] = Layout::horizontal([Constraint::Length(area.width.min(120))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [panel] = Layout::vertical([Constraint::Percentage(92)])
+        .flex(Flex::Center)
+        .areas(h);
+    frame.render_widget(Clear, panel);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.acc))
+        .title(format!(
+            " Question {} of {} ",
+            draft.question + 1,
+            qc.questions.len()
+        ))
+        .style(Style::new().bg(t.panel).fg(t.fg));
+    let inner = block.inner(panel).inner(Margin::new(1, 0));
+    frame.render_widget(block, panel);
+    let width = inner.width.max(10) as usize;
+    let mut question = Vec::new();
+    question_text(&mut question, q.scope, &q.question, width, t);
+    let [piece, ask, answer] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(question.len() as u16 + 1),
+        Constraint::Length(ANSWER_ROWS),
+    ])
+    .areas(inner);
+    let piece_rows = piece_lines(qc, draft.question, t, hl);
+    let cut = piece_rows.len() > piece.height as usize;
+    let mut shown: Vec<Line> = piece_rows.into_iter().take(piece.height as usize).collect();
+    if cut && let Some(last) = shown.last_mut() {
+        *last = Line::styled(
+            "… more below: m shows the whole file",
+            Style::new().fg(t.dim),
+        );
+    }
+    frame.render_widget(Paragraph::new(shown), piece);
+    frame.render_widget(Paragraph::new(question), ask.inner(Margin::new(0, 0)));
+    input::render_sized(
+        frame,
+        answer,
+        &draft.input,
+        "Your answer",
+        "submit",
+        t,
+        (answer.width, answer.height),
+    );
+}
+
+/// What question `i` is about: its piece of the diff, or the piece from the
+/// file when the diff does not have it, or the files of a whole change.
+fn piece_lines(qc: &QuizCard, i: usize, t: &Theme, hl: &mut Highlighter) -> Vec<Line<'static>> {
+    let q = &qc.questions[i];
+    let dim = Style::new().fg(t.dim);
+    if q.scope == Scope::Change {
+        let mut lines = vec![Line::styled("The whole change:", dim)];
+        for f in &qc.files {
+            let (mut add, mut del) = (0, 0);
+            for l in f.hunks.iter().flat_map(|h| &h.lines) {
+                match l {
+                    DiffLine::Add { .. } => add += 1,
+                    DiffLine::Del { .. } => del += 1,
+                    DiffLine::Context { .. } => {}
+                }
+            }
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {}  ", file_path(f).display()),
+                    Style::new().fg(t.fg),
+                ),
+                Span::styled(format!("+{add} "), Style::new().fg(t.add)),
+                Span::styled(format!("-{del}"), Style::new().fg(t.del)),
+            ]));
+        }
+        return lines;
+    }
+    let mut lines = vec![Line::styled(q.code_ref.cite(), dim)];
+    let excerpt = qc.excerpt(i);
+    if !excerpt.is_empty() {
+        lines.extend(diff_lines(&q.code_ref.path, &excerpt, t, hl));
+        return lines;
+    }
+    match qc.code.get(&i) {
+        Some(Code::Loaded(s)) => {
+            let near = s.target.saturating_sub(PIECE_CONTEXT)..=s.end + PIECE_CONTEXT;
+            lines.extend(code_lines(s, Some(near), t, hl));
+        }
+        Some(Code::Failed(e)) => lines.push(Line::styled(e.clone(), Style::new().fg(t.del))),
+        _ => lines.push(Line::styled("Reading the code...", dim)),
+    }
+    lines
+}
+
+/// Diff lines numbered, marked `+`/`-` and coloured as in the review card.
+fn diff_lines(
+    path: &std::path::Path,
+    excerpt: &[&DiffLine],
+    t: &Theme,
+    hl: &mut Highlighter,
+) -> Vec<Line<'static>> {
+    excerpt
+        .iter()
+        .map(|l| {
+            let (no, sign, bg, text) = match l {
+                DiffLine::Context { new, text, .. } => (*new, " ", None, text),
+                DiffLine::Add { new, text } => (*new, "+", Some((t.add, t.add_bg)), text),
+                DiffLine::Del { old, text } => (*old, "-", Some((t.del, t.del_bg)), text),
+            };
+            let mut spans = vec![
+                Span::styled(format!("{no:>5} "), Style::new().fg(t.dim)),
+                Span::styled(
+                    sign.to_string(),
+                    Style::new().fg(bg.map_or(t.dim, |(fg, _)| fg)),
+                ),
+            ];
+            for (style, piece) in hl.highlight_line(path, no, text) {
+                let style = match bg {
+                    Some((_, b)) => style.bg(b),
+                    None => style,
+                };
+                spans.push(Span::styled(crate::visible::visible_code(&piece), style));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The label and the question, wrapped to `width`.
+fn question_text(
+    lines: &mut Vec<Line<'static>>,
+    scope: Scope,
+    question: &str,
+    width: usize,
+    t: &Theme,
+) {
+    if scope == Scope::Change {
+        lines.push(Line::styled(
+            "About the whole change",
+            Style::new().fg(t.dim),
+        ));
+    }
+    push_wrapped(
+        lines,
+        question,
+        width,
+        Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
+        "",
+    );
+}
+
 fn question_block(
     lines: &mut Vec<Line<'static>>,
     qc: &QuizCard,
     i: usize,
     width: usize,
     t: &Theme,
-    hl: &mut Highlighter,
 ) {
     let q = &qc.questions[i];
-    let answer = qc.answers.get(i);
-    let label = match q.kind {
-        QuestionKind::Choice => "multiple choice",
-        QuestionKind::Free => "free text",
-    };
-    lines.push(Line::styled(label, Style::new().fg(t.dim)));
-    push_wrapped(
-        lines,
-        &q.question,
-        width,
-        Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
-        "",
-    );
-    match q.kind {
-        QuestionKind::Choice => {
-            let picked = match answer.map(|a| &a.given) {
-                Some(Given::Choice(p)) => Some(*p),
-                _ => None,
-            };
-            for (n, c) in q.choices.iter().enumerate() {
-                let (mark, style) = match picked {
-                    Some(_) if q.answer_index == Some(n) => ("✓", Style::new().fg(t.ok)),
-                    Some(p) if p == n => ("✗", Style::new().fg(t.del)),
-                    Some(_) => (" ", Style::new().fg(t.dim)),
-                    None => (" ", Style::new().fg(t.fg)),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!(" {mark} "), style),
-                    Span::styled(
-                        format!("{} ", n + 1),
-                        Style::new().fg(t.key).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(c.clone(), style),
-                ]));
+    question_text(lines, q.scope, &q.question, width, t);
+    match qc.answers.get(i) {
+        None => lines.push(Line::from(vec![
+            Span::styled("Enter", Style::new().fg(t.key).add_modifier(Modifier::BOLD)),
+            Span::styled(" answer in your own words", Style::new().fg(t.dim)),
+        ])),
+        Some(a) => {
+            for l in a.text.lines() {
+                push_wrapped(lines, l, width, Style::new().fg(t.acc), "  ");
             }
+            verdict_block(lines, &a.verdict, width, t);
         }
-        QuestionKind::Free => {
-            if let Some(Answer {
-                given: Given::Free(text),
-                ..
-            }) = answer
-            {
-                for l in text.lines() {
-                    push_wrapped(lines, l, width, Style::new().fg(t.acc), "  ");
-                }
-            }
-        }
-    }
-    if let Some(a) = answer {
-        verdict_block(lines, q, a, qc.code.get(&i), width, t, hl);
     }
 }
 
-fn verdict_block(
-    lines: &mut Vec<Line<'static>>,
-    q: &Question,
-    a: &Answer,
-    code: Option<&Code>,
-    width: usize,
-    t: &Theme,
-    hl: &mut Highlighter,
-) {
-    let cite = format!("{}:{}", q.code_ref.path.display(), q.code_ref.line);
+fn verdict_block(lines: &mut Vec<Line<'static>>, verdict: &Verdict, width: usize, t: &Theme) {
     let dim = Style::new().fg(t.dim);
     let fg = Style::new().fg(t.fg);
-    let (colour, text, rest, code_gap): (Color, String, String, bool) = match &a.verdict {
-        Verdict::Right => (
-            t.ok,
-            format!("✓ right. {}", q.explanation),
-            cite.clone(),
-            false,
-        ),
-        Verdict::Wrong => {
-            let right = q.answer_index.map_or(0, |n| n + 1);
-            (
-                t.del,
-                format!("✗ not quite: the answer is {right}. {}", q.explanation),
-                String::new(),
-                false,
-            )
-        }
+    let (colour, text, rest, code_gap): (Color, String, String, bool) = match verdict {
         Verdict::Judging => (t.dim, "Judging your answer...".into(), String::new(), false),
         Verdict::JudgeFailed(e) => (
             t.del,
@@ -215,20 +329,6 @@ fn verdict_block(
     if !rest.is_empty() {
         push_barred(lines, &rest, width, dim, bar, bar_style);
     }
-    if a.verdict == Verdict::Wrong {
-        match code {
-            Some(Code::Loaded(s)) => {
-                let near = s.target.saturating_sub(INLINE_CONTEXT)..=s.target + INLINE_CONTEXT;
-                for l in code_lines(s, Some(near), t, hl) {
-                    let mut spans = vec![Span::styled(bar, bar_style)];
-                    spans.extend(l.spans);
-                    lines.push(Line::from(spans));
-                }
-            }
-            Some(Code::Failed(e)) => push_barred(lines, e, width, dim, bar, bar_style),
-            _ => push_barred(lines, &format!("{cite} ..."), width, dim, bar, bar_style),
-        }
-    }
     if code_gap {
         let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
         lines.push(Line::from(vec![
@@ -244,7 +344,7 @@ fn verdict_block(
 }
 
 /// Numbered, highlighted lines of `s` (those in `range`, or all), the
-/// `code_ref` line marked.
+/// `code_ref` piece marked.
 fn code_lines(
     s: &Snippet,
     range: Option<std::ops::RangeInclusive<u32>>,
@@ -255,7 +355,7 @@ fn code_lines(
         .zip(&s.lines)
         .filter(|(n, _)| range.as_ref().is_none_or(|r| r.contains(n)))
         .map(|(n, text)| {
-            let target = n == s.target;
+            let target = (s.target..=s.end).contains(&n);
             let num_style = if target {
                 Style::new().fg(t.acc).add_modifier(Modifier::BOLD)
             } else {
@@ -297,11 +397,7 @@ pub fn render_code(
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(t.acc))
-        .title(format!(
-            " {}:{} ",
-            q.code_ref.path.display(),
-            q.code_ref.line
-        ))
+        .title(format!(" {} ", q.code_ref.cite()))
         .style(Style::new().bg(t.panel).fg(t.fg));
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
@@ -372,31 +468,20 @@ fn push_barred(
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent};
-    use std::time::Instant;
-
-    use crate::app::Msg;
-    use crate::llm::{FakeLlm, run_job};
-    use crate::quiz::tests::{CODE_GAP, answer_free, asking};
+    use crate::quiz::tests::{CODE_GAP, RIGHT, answered, asking};
     use crate::ui::tests::render;
 
-    fn key(c: char) -> Msg {
-        Msg::Key(KeyEvent::from(KeyCode::Char(c)), Instant::now())
-    }
-
     #[test]
-    fn quiz_choice() {
+    fn quiz_question() {
         let a = asking();
-        insta::assert_snapshot!(render(&a, 90, 16));
+        insta::assert_snapshot!(render(&a, 90, 24));
     }
 
     #[test]
-    fn quiz_free() {
+    fn quiz_verdict() {
         let mut a = asking();
-        a.update(key('3'));
-        let job = answer_free(&mut a, "so a client at zero doesn't go negative");
-        let fake = FakeLlm::new(vec![Ok(CODE_GAP.into())]);
-        a.update(Msg::Llm(run_job(&fake, job)));
-        insta::assert_snapshot!(render(&a, 90, 22));
+        answered(&mut a, RIGHT);
+        answered(&mut a, CODE_GAP);
+        insta::assert_snapshot!(render(&a, 90, 24));
     }
 }

@@ -1,5 +1,6 @@
 //! Review board card state and its keys. Pure: no I/O.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -61,6 +62,9 @@ pub struct ReviewCard {
     pub view: DiffView,
     pub show_full_branch: bool,
     pub cursor: Cursor,
+    /// Files marked done with `d`: left out of moving around and shown
+    /// ticked in the file list.
+    pub done: BTreeSet<PathBuf>,
 }
 
 /// What the last sent round of a checkout left behind, saved across restarts.
@@ -131,12 +135,45 @@ impl ReviewCard {
         show_full_branch: bool,
     ) {
         let path = self.file().map(|f| file_path(f).to_path_buf());
+        // A done file stays done only while its diff is the one looked at.
+        let old = std::mem::take(&mut self.files);
+        self.done.retain(|p| {
+            let diff = |fs: &[FileDiff]| fs.iter().find(|f| file_path(f) == p).cloned();
+            diff(&old).is_some() && diff(&old) == diff(&files)
+        });
         self.from_tree = from_tree;
         self.to_tree = to_tree;
         self.files = files;
         self.show_full_branch = show_full_branch;
         let same = path.and_then(|p| self.files.iter().position(|f| file_path(f) == p));
         self.set_file(same.unwrap_or(0));
+        if self.is_done(self.cursor.file) {
+            self.next_file(true);
+        }
+    }
+
+    /// File `i` is marked done.
+    pub fn is_done(&self, i: usize) -> bool {
+        self.files
+            .get(i)
+            .is_some_and(|f| self.done.contains(file_path(f)))
+    }
+
+    /// Every file is marked done.
+    pub fn all_done(&self) -> bool {
+        !self.files.is_empty() && (0..self.files.len()).all(|i| self.is_done(i))
+    }
+
+    /// `d`: marks the file done and moves to the next one not done; on a
+    /// done file (once all are), unmarks it.
+    fn toggle_done(&mut self) {
+        let Some(path) = self.file().map(|f| file_path(f).to_path_buf()) else {
+            return;
+        };
+        if !self.done.remove(&path) {
+            self.done.insert(path);
+            self.next_file(true);
+        }
     }
 
     /// Comments of this round, the ones that get sent.
@@ -250,7 +287,7 @@ impl ReviewCard {
         } else {
             (0..file).rev().collect()
         };
-        for i in others {
+        for i in others.into_iter().filter(|&i| !self.is_done(i)) {
             let starts = change_starts(&self.files[i]);
             let s = if forward {
                 starts.first()
@@ -266,17 +303,43 @@ impl ReviewCard {
         }
     }
 
+    /// gg and G: the first or last line of the file.
+    fn go_to_end(&mut self, end: bool) {
+        let Some(f) = self.file() else { return };
+        self.cursor.line = match self.view {
+            DiffView::Unified if end => lines(f).count().saturating_sub(1),
+            DiffView::Unified => 0,
+            DiffView::Split => {
+                let rows: Vec<Pair> = split_rows(f).into_iter().flatten().collect();
+                let Some(&p) = (if end { rows.last() } else { rows.first() }) else {
+                    return;
+                };
+                primary(p)
+            }
+        };
+    }
+
     fn next_file(&mut self, forward: bool) {
         let n = self.files.len();
         if n == 0 {
             return;
         }
         let file = self.cursor.file;
-        self.set_file(if forward {
-            (file + 1) % n
-        } else {
-            (file + n - 1) % n
-        });
+        // The nearest file not done, wrapping; none left keeps the cursor.
+        let next = (1..=n)
+            .map(|k| {
+                if forward {
+                    (file + k) % n
+                } else {
+                    (file + n * k - k) % n
+                }
+            })
+            .find(|&i| !self.is_done(i));
+        if let Some(i) = next
+            && i != file
+        {
+            self.set_file(i);
+        }
     }
 
     /// Removes a comment of this round on the selected lines. Returns false if there is none.
@@ -301,14 +364,29 @@ impl ReviewCard {
 
 /// Handles a review key. Keys outside the review board's set do nothing.
 pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
-    if let Some(first) = card.cursor.pending.take()
-        && key.code == KeyCode::Char('c')
-    {
-        card.next_change(first == ']');
-        return Action::None;
+    // ]c [c change, ]] [[ file, gg top; anything else is read as a key of its own.
+    if let Some(first) = card.cursor.pending.take() {
+        match (first, key.code) {
+            (']' | '[', KeyCode::Char('c')) => {
+                card.next_change(first == ']');
+                return Action::None;
+            }
+            (']', KeyCode::Char(']')) | ('[', KeyCode::Char('[')) => {
+                card.next_file(first == ']');
+                return Action::None;
+            }
+            ('g', KeyCode::Char('g')) => {
+                card.go_to_end(false);
+                return Action::None;
+            }
+            _ => {}
+        }
     }
     match key.code {
-        KeyCode::Char(c @ (']' | '[')) => card.cursor.pending = Some(c),
+        KeyCode::Char(c @ (']' | '[' | 'g')) => card.cursor.pending = Some(c),
+        KeyCode::Char('G') => card.go_to_end(true),
+        KeyCode::Char('}') => card.next_change(true),
+        KeyCode::Char('{') => card.next_change(false),
         KeyCode::Char('v') => {
             card.view = match card.view {
                 DiffView::Split => DiffView::Unified,
@@ -317,8 +395,8 @@ pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
         }
         KeyCode::Char('j') | KeyCode::Down => card.move_line(true),
         KeyCode::Char('k') | KeyCode::Up => card.move_line(false),
-        KeyCode::Tab => card.next_file(true),
-        KeyCode::BackTab => card.next_file(false),
+        KeyCode::Tab | KeyCode::Char('L') => card.next_file(true),
+        KeyCode::BackTab | KeyCode::Char('H') => card.next_file(false),
         KeyCode::Char('V') => {
             card.cursor.anchor = match card.cursor.anchor {
                 Some(_) => None,
@@ -340,6 +418,8 @@ pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
         }
         KeyCode::Char('S') => return Action::Send,
         KeyCode::Char('A') => return Action::Approve,
+        KeyCode::Char('d') => card.toggle_done(),
+        KeyCode::Char('D') => card.done.clear(),
         KeyCode::Char('R') => return Action::ToggleFullBranch,
         _ => {}
     }
@@ -693,6 +773,72 @@ diff --git a/src/http.rs b/src/http.rs
         assert_eq!((card.cursor.file, card.cursor.line), (1, 2));
         press(&mut card, "\t");
         assert_eq!(card.cursor.file, 0, "tab wraps");
+    }
+
+    #[test]
+    fn d_marks_a_file_done_and_moving_skips_it() {
+        let mut card = fixture_card(1);
+        assert_eq!(card.cursor.file, 0);
+        press(&mut card, "d");
+        assert!(card.is_done(0));
+        assert_eq!(card.cursor.file, 1, "on to the next file");
+        for keys in ["L", "H", "]]", "[[", "}", "{"] {
+            press(&mut card, keys);
+            assert_eq!(card.cursor.file, 1, "{keys} skips the done file");
+        }
+        assert!(!card.all_done());
+        press(&mut card, "d");
+        assert!(card.all_done());
+        press(&mut card, "d");
+        assert!(!card.all_done(), "d on a done file unmarks it");
+        press(&mut card, "D");
+        assert!(card.done.is_empty());
+        press(&mut card, "L");
+        assert_eq!(card.cursor.file, 0);
+    }
+
+    #[test]
+    fn a_done_file_comes_back_when_its_diff_changes() {
+        let mut card = fixture_card(1);
+        press(&mut card, "dd");
+        assert!(card.all_done());
+        let (from, to) = (card.from_tree.clone(), card.to_tree.clone());
+        card.replace_diff(from.clone(), to.clone(), card.files.clone(), false);
+        assert!(card.all_done(), "the same diff stays done");
+        let mut files = card.files.clone();
+        files[1].hunks[0].lines.push(DiffLine::Add {
+            new: 99,
+            text: "more".into(),
+        });
+        card.replace_diff(from, to, files, false);
+        assert!(card.is_done(0) && !card.is_done(1));
+        assert_eq!(card.cursor.file, 1, "the changed file is shown");
+    }
+
+    #[test]
+    fn vim_keys_jump_through_the_diff() {
+        let mut card = fixture_card(1);
+        press(&mut card, "}");
+        assert_eq!((card.cursor.file, card.cursor.line), (1, 2), "}} is ]c");
+        press(&mut card, "{");
+        assert_eq!((card.cursor.file, card.cursor.line), (0, 2), "{{ is [c");
+        press(&mut card, "]]");
+        assert_eq!(card.cursor.file, 1);
+        press(&mut card, "[[");
+        assert_eq!(card.cursor.file, 0);
+        press(&mut card, "L");
+        assert_eq!(card.cursor.file, 1);
+        press(&mut card, "H");
+        assert_eq!(card.cursor.file, 0);
+        press(&mut card, "G");
+        let last = card.cursor.line;
+        press(&mut card, "j");
+        assert_eq!(card.cursor.line, last, "G is the last line");
+        press(&mut card, "gg");
+        let first = card.cursor.line;
+        press(&mut card, "k");
+        assert_eq!(card.cursor.line, first, "gg is the first line");
+        assert!(first < last);
     }
 
     #[test]

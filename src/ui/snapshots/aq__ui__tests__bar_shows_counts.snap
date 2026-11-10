@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: "render(&a, 90, 10)"
 ---
-" aq  permission api · api                                 1 permission  1 step  2 review  "
+" aq  permission api · api                         1 permission  1 step  2 review  F1 help "
 "                                                                                          "
 " Permission: Bash                                                                         "
 " api  window api                                                                          "

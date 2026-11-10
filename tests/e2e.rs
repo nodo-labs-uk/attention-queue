@@ -218,8 +218,8 @@ impl World {
             socket,
             agent_pane: agent_pane.to_string(),
         };
-        // Up, listening, and has seen the agent working.
-        world.tmux.wait_screen(AQ_WINDOW, "working");
+        // Up, listening, and has seen the agent working (a hollow dot on its tab).
+        world.tmux.wait_screen(AQ_WINDOW, "○");
         wait_for("aq's socket", || {
             if world.socket.exists() {
                 Ok(())

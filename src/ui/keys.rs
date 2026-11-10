@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{App, Overlay};
 use crate::model::{Card, CardKind};
-use crate::quiz::{QuestionKind, QuizCard, QuizState, Verdict};
+use crate::quiz::{QuizCard, QuizState, Verdict};
 
 /// Bottom row: the keys that work right now, and the latest status message.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -19,6 +19,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("j/k", "scroll".into()),
             ("PgUp/PgDn", "page".into()),
             ("?", "ask again".into()),
+            ("W", "where are we".into()),
             ("r", "retry".into()),
             ("q", "close".into()),
         ],
@@ -27,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "new line".into()),
             ("Esc", "cancel".into()),
         ],
-        (Some(Overlay::StepReason(_) | Overlay::Deny(_)), _) => {
+        (Some(Overlay::StepReason(_) | Overlay::Deny(_) | Overlay::Prompt(_)), _) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }
         (Some(Overlay::QuizAnswer(_)), _) => vec![
@@ -36,6 +37,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Esc", "cancel".into()),
         ],
         (Some(Overlay::QuizCode { .. }), _) => vec![("Esc", "close".into())],
+        (Some(Overlay::CloseAgent(_)), _) => {
+            vec![("y", "close it".into()), ("n", "keep it".into())]
+        }
+        (Some(Overlay::Help { .. }), _) => vec![
+            ("j/k", "scroll".into()),
+            ("PgUp/PgDn", "page".into()),
+            ("q", "close".into()),
+        ],
         (Some(Overlay::Search(_)), _) => vec![
             ("j/k", "move".into()),
             ("Enter", "show".into()),
@@ -51,7 +60,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("y", "allow".into()),
             ("n", "reject".into()),
             ("e", "change".into()),
-            ("tab", "next".into()),
+            ("H/L", "change".into()),
             ("za", "fold".into()),
             ("zR", "unfold all".into()),
             (
@@ -75,7 +84,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("A", "approve".into()),
             ("v", "view".into()),
             ("]c", "change".into()),
-            ("tab", "file".into()),
+            ("H/L", "file".into()),
+            ("d", "done".into()),
             ("V", "range".into()),
             ("x", "delete".into()),
             (
@@ -115,7 +125,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("u", "undo".into()),
             ("v", "view".into()),
             ("]c", "change".into()),
-            ("tab", "file".into()),
+            ("H/L", "file".into()),
             ("j/k", "line".into()),
             ("s", "skip".into()),
         ],
@@ -127,9 +137,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             }),
         ) => quiz_keys(qc),
         (None, None) if app.picked_agent().is_some() => vec![
-            ("j/k", "pick".into()),
-            ("Enter", "go to window".into()),
+            ("h/l", "pick".into()),
+            ("Enter", "message".into()),
+            ("g", "go to window".into()),
             ("P", "open PR".into()),
+            ("x", "close".into()),
+            ("M", "mode".into()),
+            ("W", "where are we".into()),
             ("T", "theme".into()),
             ("Q", "quit".into()),
         ],
@@ -176,18 +190,13 @@ fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
             ("c", "fix it".into()),
             ("m", "show the code".into()),
         ],
-        QuizState::Asking(i) => match (qc.answers.get(*i), qc.questions[*i].kind) {
-            (Some(a), _) if matches!(a.verdict, Verdict::JudgeFailed(_)) => vec![
+        QuizState::Asking(i) => match qc.answers.get(*i) {
+            Some(a) if matches!(a.verdict, Verdict::JudgeFailed(_)) => vec![
                 ("r", "judge again".into()),
                 ("Enter", "skip question".into()),
             ],
-            (Some(_), _) => vec![("m", "show code".into())],
-            (None, QuestionKind::Choice) => {
-                vec![("1-4", "pick".into()), ("m", "show code".into())]
-            }
-            (None, QuestionKind::Free) => {
-                vec![("i", "type an answer".into()), ("m", "show code".into())]
-            }
+            Some(_) => vec![("m", "whole file".into())],
+            None => vec![("Enter", "answer".into()), ("m", "whole file".into())],
         },
     };
     keys.extend([("s", "skip".into()), ("M", "mode".into())]);

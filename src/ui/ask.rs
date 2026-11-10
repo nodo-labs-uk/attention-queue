@@ -16,7 +16,11 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(t.line))
-        .title(" Ask about this card ")
+        .title(if ask.card == crate::ask::NO_CARD {
+            " Ask this session "
+        } else {
+            " Ask about this card "
+        })
         .style(Style::new().bg(t.panel).fg(t.fg));
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
@@ -44,7 +48,7 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
     if let Some(i) = &ask.input {
         let h = panel.height.min(3);
         let bottom = Rect::new(panel.x, panel.bottom() - h, panel.width, h);
-        input::render(frame, bottom, i, "Ask about this card", t);
+        input::render(frame, bottom, i, "Your question", t);
     }
 }
 

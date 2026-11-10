@@ -8,28 +8,22 @@
       "items": {
         "type": "object",
         "properties": {
-          "kind": { "type": "string", "enum": ["choice", "free"] },
+          "scope": { "type": "string", "enum": ["code", "change"] },
           "question": { "type": "string" },
-          "choices": {
-            "type": "array",
-            "minItems": 2,
-            "maxItems": 4,
-            "items": { "type": "string" }
-          },
-          "answer_index": { "type": "integer", "minimum": 0, "maximum": 3 },
           "explanation": { "type": "string" },
           "must_cover": { "type": "array", "items": { "type": "string" } },
           "code_ref": {
             "type": "object",
             "properties": {
               "path": { "type": "string" },
-              "line": { "type": "integer", "minimum": 1 }
+              "line": { "type": "integer", "minimum": 1 },
+              "end_line": { "type": "integer", "minimum": 1 }
             },
-            "required": ["path", "line"],
+            "required": ["path", "line", "end_line"],
             "additionalProperties": false
           }
         },
-        "required": ["kind", "question", "explanation", "code_ref"],
+        "required": ["scope", "question", "explanation", "must_cover", "code_ref"],
         "additionalProperties": false
       }
     }

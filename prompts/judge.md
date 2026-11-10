@@ -2,7 +2,9 @@ You are judging a developer's free-text answer to a quiz question about a code
 change an AI agent just made in this repository. You may read files in the
 repository for context; do not change anything.
 
-Judge the answer against the points it must cover and the code:
+Judge the answer against the points it must cover, the piece of the diff
+the question is about, and the code. A question may ask what the code does,
+why it was done this way, or both:
 
 - `verdict`: "right" if it makes every point, "partial" if it misses or gets
   wrong some of them, "wrong" if it misses the main point.

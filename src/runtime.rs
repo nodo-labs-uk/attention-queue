@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
 use tokio::net::UnixListener;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc::{UnboundedSender, channel, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -57,7 +58,10 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
 
     // Installs a panic hook that leaves raw mode and the alternate screen.
     let mut terminal = ratatui::try_init().context("starting the terminal")?;
+    // For the wheel. Selecting text then takes Shift, as in most TUIs.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let (result, background) = event_loop(&mut terminal, &mut app, &paths, conn, listener).await;
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     let _ = std::fs::remove_file(&paths.socket);
     if let Some(e) = background.finish(QUIT_WAIT) {
@@ -192,8 +196,14 @@ async fn serve(
     let mut hl_theme = app.theme().name.clone();
     let mut dirty = true;
     let mut next_frame = Instant::now();
+    // Closing aq's window sends SIGHUP: quit as if Q was pressed, so state
+    // is saved and the tmux flag aq set is cleared.
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut terminate = signal(SignalKind::terminate())?;
     while !app.quit {
         tokio::select! {
+            _ = hangup.recv() => break,
+            _ = terminate.recv() => break,
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
                 sync_size(terminal, app, workers, waiting)?;
@@ -255,16 +265,16 @@ fn on_ipc(
             tool_name,
             tool_input,
         } => {
-            // A tool that already ran never waits for an answer.
+            // A tool that already ran never waits for an answer. Every one
+            // is read: the checkouts a session works in get their cards
+            // when its turn ends, whatever its own checkout.
             let _ = reply.send(HookReply::NoDecision);
-            if may_be_step(&app.config, &cwd, &tool_input) {
-                workers.load(Load::Post(PostToolReq {
-                    session_id,
-                    cwd,
-                    tool_name,
-                    tool_input,
-                }))?;
-            }
+            workers.load(Load::Post(PostToolReq {
+                session_id,
+                cwd,
+                tool_name,
+                tool_input,
+            }))?;
             Ok(())
         }
         HookRequest::PreTool {
@@ -415,6 +425,9 @@ fn apply(
             Effect::Snapshot(req) => Job::Snapshot(req),
             Effect::GoToWindow { pane } => Job::GoTo(pane),
             Effect::CapturePane { pane } => Job::Capture(pane),
+            Effect::ReadConversation { session_id } => Job::Conversation(session_id),
+            Effect::ClosePane { pane } => Job::Close(pane),
+            Effect::Interrupt { pane } => Job::Interrupt(pane),
             Effect::ComputeQuiz {
                 checkout,
                 agent,
@@ -545,6 +558,10 @@ enum Job {
     Snapshot(SnapshotRequest),
     GoTo(String),
     Capture(String),
+    /// A session's conversation, by session id.
+    Conversation(String),
+    Close(String),
+    Interrupt(String),
     Quiz {
         checkout: Checkout,
         agent: AgentId,
@@ -659,6 +676,21 @@ fn spawn_effect_worker(
                 Job::GoTo(pane) => crate::permission::go_to_window(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not go to {pane}: {e:#}"))),
+                Job::Close(pane) => crate::agents::tmux::kill_pane(&pane, &[])
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not close {pane}: {e:#}"))),
+                Job::Interrupt(pane) => crate::agents::tmux::press_escape(&pane, &[])
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not stop {pane}: {e:#}"))),
+                Job::Conversation(session_id) => Some(Msg::Conversation {
+                    said: crate::transcript::find(&session_id)
+                        .ok_or_else(|| "No transcript found for this session".to_string())
+                        .and_then(|p| {
+                            crate::transcript::conversation(&p)
+                                .map_err(|e| format!("Could not read {}: {e}", p.display()))
+                        }),
+                    session_id,
+                }),
                 Job::Capture(pane) => Some(Msg::PaneCaptured {
                     text: crate::agents::tmux::capture_pane(&pane, &[])
                         .map_err(|e| format!("Could not read {pane}: {e:#}")),
@@ -737,7 +769,7 @@ fn read_code(req: CodeRequest) -> Msg {
         .unwrap_or(&req.path)
         .to_path_buf();
     let result = match git::file_at(&req.checkout, &req.tree, &path) {
-        Ok(Some(text)) => Ok(snippet(&path, &text, req.line)),
+        Ok(Some(text)) => Ok(snippet(&path, &text, req.line, req.end)),
         Ok(None) => Err(format!("{} is not in the change", path.display())),
         Err(e) => Err(format!("Could not read {}: {e:#}", path.display())),
     };
@@ -830,9 +862,14 @@ fn unreadable(preview: crate::edit::EditPreview, why: &str) -> crate::edit::Edit
 }
 
 /// Finds the checkout a finished tool worked in: its file's for an edit,
-/// else the cwd's (Bash has no file).
+/// for Bash the directory a leading `cd` goes to, else the cwd's.
 fn load_post(req: PostToolReq) -> Msg {
     let cwd = Path::new(&req.cwd);
+    let moved_to = req
+        .tool_input
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|c| leading_cd(cwd, c));
     let file = edited_file(&req.tool_input).map(|f| cwd.join(f));
     // The file with every link resolved; a file not there yet is its
     // resolved parent plus its name.
@@ -844,6 +881,7 @@ fn load_post(req: PostToolReq) -> Msg {
     let checkout = file
         .and_then(|f| file_dir(&f))
         .and_then(|d| agents::checkout_of(&d))
+        .or_else(|| moved_to.and_then(|d| agents::checkout_of(&d)))
         .or_else(|| agents::checkout_of(cwd));
     Msg::PostTool {
         session_id: req.session_id,
@@ -852,6 +890,21 @@ fn load_post(req: PostToolReq) -> Msg {
         tool_input: req.tool_input,
         edited,
     }
+}
+
+/// The directory `command` starts by changing to (`cd dir && ...`), from
+/// `cwd`; `~` is the home directory.
+fn leading_cd(cwd: &Path, command: &str) -> Option<PathBuf> {
+    let rest = command.trim_start().strip_prefix("cd ")?.trim_start();
+    let dir = match rest.chars().next()? {
+        q @ ('"' | '\'') => rest[1..].split(q).next()?,
+        _ => rest.split([' ', ';', '&', '|', '\n']).next()?,
+    };
+    let dir = match dir.strip_prefix('~') {
+        Some(tail) => PathBuf::from(std::env::var_os("HOME")?).join(tail.trim_start_matches('/')),
+        None => PathBuf::from(dir),
+    };
+    (!dir.as_os_str().is_empty()).then(|| cwd.join(dir))
 }
 
 /// A fresh snapshot of the checkout, and its diff from `req.from`.
@@ -931,6 +984,11 @@ fn spawn_key_reader(tx: UnboundedSender<Msg>) {
         while let Ok(ev) = event::read() {
             let msg = match ev {
                 Event::Key(key) => Msg::Key(key, std::time::Instant::now()),
+                Event::Mouse(m) => match m.kind {
+                    event::MouseEventKind::ScrollUp => Msg::Wheel { up: true },
+                    event::MouseEventKind::ScrollDown => Msg::Wheel { up: false },
+                    _ => continue,
+                },
                 // A tick redraws, which picks up the new size.
                 Event::Resize(..) => Msg::Tick(std::time::Instant::now()),
                 _ => continue,
@@ -1180,6 +1238,23 @@ mod tests {
             seen.of_at(dir.path(), later),
             Some(Checkout::new(dir.path()))
         );
+    }
+
+    #[test]
+    fn leading_cd_finds_where_a_command_works() {
+        let cwd = Path::new("/w/here");
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let cases = [
+            ("cd /w/aq && cargo test", Some(PathBuf::from("/w/aq"))),
+            ("  cd sub; ls", Some(PathBuf::from("/w/here/sub"))),
+            ("cd '/w/a b' && ls", Some(PathBuf::from("/w/a b"))),
+            ("cd ~/nodo/aq && ls", Some(home.join("nodo/aq"))),
+            ("ls && cd /w/aq", None),
+            ("cargo test", None),
+        ];
+        for (command, want) in cases {
+            assert_eq!(leading_cd(cwd, command), want, "{command}");
+        }
     }
 
     #[test]

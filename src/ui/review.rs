@@ -36,7 +36,27 @@ pub fn render(
     let [tree_area, diff_area] =
         Layout::horizontal([Constraint::Length(tree_w), Constraint::Fill(1)]).areas(body);
     tree::render(frame, tree_area, rc, t);
-    diffview::render(frame, diff_area, rc, t, hl);
+    if rc.all_done() {
+        let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
+        let dim = Style::new().fg(t.dim);
+        let note = vec![
+            Line::styled(
+                "Every file is marked done.",
+                Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
+            ),
+            Line::from(vec![
+                Span::styled("A", key),
+                Span::styled(" approves, ", dim),
+                Span::styled("S", key),
+                Span::styled(" sends the comments, ", dim),
+                Span::styled("D", key),
+                Span::styled(" shows the files again.", dim),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(note), diff_area.inner(Margin::new(2, 1)));
+    } else {
+        diffview::render(frame, diff_area, rc, t, hl);
+    }
 }
 
 /// "3 files · +12 −4 · 1 comment", and which changes are shown.
@@ -65,6 +85,10 @@ fn stats(rc: &ReviewCard, t: &Theme) -> Line<'static> {
         Span::styled(" · ", dim),
         Span::styled(plural(rc.current_comments().count(), "comment"), dim),
     ];
+    let done = (0..rc.files.len()).filter(|&i| rc.is_done(i)).count();
+    if done > 0 {
+        spans.push(Span::styled(format!(" · {done} done"), dim));
+    }
     if rc.round > 1 {
         let scope = if rc.show_full_branch {
             "whole branch".to_string()

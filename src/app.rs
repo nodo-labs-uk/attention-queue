@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::agents::{Agent, AgentStatus};
+use crate::agents::{Agent, AgentStatus, InputBox};
 use crate::config::Config;
 use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
@@ -17,6 +17,7 @@ use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Targe
 use crate::shell::{Shell, Snapshot, SnapshotRequest};
 use crate::step::{PendingEdit, ReasonDraft, SearchList, Steps};
 use crate::theme::Theme;
+use crate::transcript::Said;
 use crate::ui::input::{InputEvent, TextInput};
 
 #[derive(Debug)]
@@ -25,6 +26,15 @@ pub enum Msg {
     Key(KeyEvent, Instant),
     /// Time passes; `now` comes from the runtime so `update` stays pure.
     Tick(Instant),
+    /// The mouse wheel turned one notch.
+    Wheel {
+        up: bool,
+    },
+    /// The conversation a `ReadConversation` asked for.
+    Conversation {
+        session_id: String,
+        said: Result<Vec<Said>, String>,
+    },
     Agents(Vec<Agent>),
     /// Listing agents failed; the last known list stays.
     AgentsFailed(String),
@@ -177,6 +187,19 @@ pub enum Effect {
     CapturePane {
         pane: String,
     },
+    /// Read a session's conversation from its transcript, for scrolling
+    /// back in the live view.
+    ReadConversation {
+        session_id: String,
+    },
+    /// Close a pane, ending the agent in it.
+    ClosePane {
+        pane: String,
+    },
+    /// Press Escape in a pane, stopping the agent's turn.
+    Interrupt {
+        pane: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +218,18 @@ pub enum Overlay {
     QuizAnswer(AnswerDraft),
     /// `m` on a quiz card: the code behind a question.
     QuizCode { card: u64, question: usize },
+    /// F1: the help page, scrolled down by `scroll` lines.
+    Help { scroll: u16 },
+    /// `i` on the empty screen: a message being typed to an agent.
+    Prompt(PromptDraft),
+    /// `x` on the empty screen: asking before closing an agent's pane.
+    CloseAgent(AgentId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptDraft {
+    pub agent: AgentId,
+    pub input: TextInput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +264,9 @@ pub struct App {
     /// The card on screen, and when and how it got there.
     pub(crate) shown: Option<Shown>,
     pub(crate) next_card_id: u64,
+    /// When Esc was last pressed on the empty screen; a second one soon
+    /// after stops the picked agent.
+    esc_at: Option<Instant>,
     /// Saved drafts and quizzes waiting for their card to come back.
     pub(crate) unclaimed: crate::persist::Unclaimed,
     /// The state as last handed out to be written; `None` after a failed
@@ -240,6 +278,19 @@ pub struct App {
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
     pub(crate) capturing: bool,
+    /// Messages typed on the empty screen, waiting for their agent to be at
+    /// its prompt.
+    pub(crate) prompts: BTreeMap<AgentId, String>,
+    /// Checkouts each session (by id) worked in this turn, its own or not,
+    /// from its tool hooks. Each gets its card when the turn ends.
+    pub(crate) touched: BTreeMap<String, BTreeSet<Checkout>>,
+    /// 0: the live view shows the picked agent's screen. More: it shows
+    /// its conversation, scrolled up this many rows less one from the end.
+    pub live_scroll: usize,
+    /// The conversation last read, and whose.
+    pub conversation: Option<(String, Result<Vec<Said>, String>)>,
+    /// A `ReadConversation` is on its way.
+    pub(crate) reading_conversation: bool,
 }
 
 /// A pane's screen as last read, or why it could not be.
@@ -302,11 +353,17 @@ impl App {
             now: None,
             shown: None,
             next_card_id: 0,
+            esc_at: None,
             unclaimed: Default::default(),
             saved: Some(Default::default()),
             picked: None,
             preview: None,
             capturing: false,
+            prompts: BTreeMap::new(),
+            touched: BTreeMap::new(),
+            live_scroll: 0,
+            conversation: None,
+            reading_conversation: false,
         }
     }
 
@@ -346,50 +403,291 @@ impl App {
         agents
     }
 
-    /// Agents waiting at their prompt, in window order: the ones the empty
-    /// screen lets you pick.
-    fn idle_agents(&self) -> Vec<&Agent> {
-        self.agents_in_order()
-            .into_iter()
-            .filter(|a| a.waiting)
-            .collect()
-    }
-
-    /// The idle agent picked on the empty screen, or the first one when the
-    /// pick is no longer idle.
+    /// The agent picked on the empty screen. Until one is picked, or once the
+    /// pick is gone, the first waiting agent, else the first agent.
     pub fn picked_agent(&self) -> Option<&Agent> {
-        let idle = self.idle_agents();
-        idle.iter()
+        let agents = self.agents_in_order();
+        agents
+            .iter()
             .find(|a| Some(&a.id) == self.picked.as_ref())
-            .or(idle.first())
+            .or(agents.iter().find(|a| a.waiting))
+            .or(agents.first())
             .copied()
     }
 
-    /// j/k pick an idle agent on the empty screen; Enter or g go to its
-    /// window; P asks it to open a pull request.
+    /// h/l or j/k pick an agent on the empty screen; Enter or i write it a message;
+    /// g goes to its window; P asks it to open a pull request.
     fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let ids: Vec<AgentId> = self.idle_agents().iter().map(|a| a.id.clone()).collect();
+        let ids: Vec<AgentId> = self
+            .agents_in_order()
+            .iter()
+            .map(|a| a.id.clone())
+            .collect();
         let Some(current) = self.picked_agent().map(|a| a.id.clone()) else {
             return Vec::new();
         };
         let i = ids.iter().position(|id| *id == current).unwrap_or(0);
         let n = ids.len();
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('j' | 'l') | KeyCode::Down | KeyCode::Right => {
                 self.picked = Some(ids[(i + 1) % n].clone());
+                self.live_scroll = 0;
                 return self.capture_picked();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('k' | 'h') | KeyCode::Up | KeyCode::Left => {
                 self.picked = Some(ids[(i + n - 1) % n].clone());
+                self.live_scroll = 0;
                 return self.capture_picked();
             }
-            KeyCode::Enter | KeyCode::Char('g') => {
+            KeyCode::PageUp => return self.scroll_live(true, self.live_page()),
+            KeyCode::PageDown => return self.scroll_live(false, self.live_page()),
+            KeyCode::Home => return self.scroll_live(true, usize::MAX),
+            KeyCode::Char('G') | KeyCode::End => self.live_scroll = 0,
+            KeyCode::Char('g') => {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
             KeyCode::Char('P') => return self.ask_for_pr(current),
+            KeyCode::Esc => return self.on_empty_esc(current),
+            KeyCode::Char('x') => self.overlay = Some(Overlay::CloseAgent(current)),
+            KeyCode::Enter | KeyCode::Char('i') => {
+                self.overlay = Some(Overlay::Prompt(PromptDraft {
+                    agent: current,
+                    input: TextInput::single_line(),
+                }));
+            }
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Esc twice within `DOUBLE_ESC` stops the agent: its turn is
+    /// interrupted and a message queued for it is dropped. One Esc only says
+    /// so, since stopping by accident costs the turn's work.
+    fn on_empty_esc(&mut self, agent: AgentId) -> Vec<Effect> {
+        const DOUBLE_ESC: Duration = Duration::from_millis(800);
+        let now = self.now.unwrap_or_else(Instant::now);
+        let name = self
+            .agent(&agent)
+            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let second = self
+            .esc_at
+            .take()
+            .is_some_and(|t| now.duration_since(t) <= DOUBLE_ESC);
+        if !second {
+            self.esc_at = Some(now);
+            self.set_status(format!("Esc again to stop {name}"));
+            return Vec::new();
+        }
+        let dropped = self.prompts.remove(&agent).is_some();
+        let working = self.agent(&agent).is_some_and(|a| !a.waiting);
+        let what = match (working, dropped) {
+            (true, true) => "Stopped {name} and dropped its queued message",
+            (true, false) => "Stopped {name}",
+            (false, true) => "Dropped the message queued for {name}",
+            (false, false) => "{name} is not working on anything",
+        };
+        self.set_status(what.replace("{name}", &name));
+        if working {
+            vec![Effect::Interrupt { pane: agent.pane }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// y or Enter closes the agent's pane; n, q or Esc keeps it.
+    fn on_close_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(Overlay::CloseAgent(agent)) = &self.overlay else {
+            return Vec::new();
+        };
+        let agent = agent.clone();
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                self.overlay = None;
+                let name = self
+                    .agent(&agent)
+                    .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+                self.set_status(format!("Closed {name}"));
+                vec![Effect::ClosePane { pane: agent.pane }]
+            }
+            KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                self.overlay = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn on_prompt_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(Overlay::Prompt(draft)) = &mut self.overlay else {
+            return Vec::new();
+        };
+        let text = match draft.input.handle_key(key) {
+            InputEvent::Editing => return Vec::new(),
+            InputEvent::Cancel => None,
+            InputEvent::Submit(text) => Some(text),
+        };
+        let Some(Overlay::Prompt(draft)) = self.overlay.take() else {
+            return Vec::new();
+        };
+        match text.filter(|t| !t.trim().is_empty()) {
+            Some(text) => self.send_prompt(draft.agent, text.trim().to_string()),
+            None => Vec::new(),
+        }
+    }
+
+    /// Sends a message typed on the empty screen now if the agent is at its
+    /// prompt, or once it is. A second message for the same agent joins the
+    /// one waiting, so both arrive as one.
+    fn send_prompt(&mut self, agent: AgentId, text: String) -> Vec<Effect> {
+        let name = self
+            .agent(&agent)
+            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        if let Some(waiting) = self.prompts.get_mut(&agent) {
+            waiting.push_str("\n\n");
+            waiting.push_str(&text);
+            self.set_status(format!("Added to the message waiting for {name}"));
+            return Vec::new();
+        }
+        if self.at_prompt(&agent) {
+            self.set_status(format!("Sent to {name}"));
+            return vec![Effect::Send {
+                agent,
+                text,
+                card: None,
+            }];
+        }
+        self.prompts.insert(agent, text);
+        self.set_status(format!("Queued: will send to {name} when it is idle"));
+        Vec::new()
+    }
+
+    /// Whether a message typed on the empty screen waits for this agent.
+    pub fn prompt_waiting(&self, agent: &AgentId) -> bool {
+        self.prompts.contains_key(agent)
+    }
+
+    /// Ctrl-d/u half a page and Ctrl-f/b a whole page down or up, as that
+    /// many j or k, on a card or the help page. `None` for any other key.
+    fn on_page_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
+        let KeyCode::Char(c @ ('d' | 'u' | 'f' | 'b')) = key.code else {
+            return None;
+        };
+        if self.overlay.is_none()
+            && self.queue.current().is_none()
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            let page = self.live_page();
+            let n = if matches!(c, 'd' | 'u') {
+                page / 2
+            } else {
+                page
+            };
+            return Some(self.scroll_live(matches!(c, 'u' | 'b'), n));
+        }
+        let on_page = match &self.overlay {
+            None => self.queue.current().is_some(),
+            Some(o) => matches!(o, Overlay::Help { .. }),
+        };
+        if !key.modifiers.contains(KeyModifiers::CONTROL) || !on_page {
+            return None;
+        }
+        let rows = self
+            .screen
+            .map_or(20, |s| crate::permission::body_size(s).1)
+            .max(2);
+        let n = if matches!(c, 'd' | 'u') {
+            rows / 2
+        } else {
+            rows
+        };
+        let step = KeyEvent::from(KeyCode::Char(if matches!(c, 'd' | 'f') {
+            'j'
+        } else {
+            'k'
+        }));
+        Some((0..n).flat_map(|_| self.on_key(step)).collect())
+    }
+
+    /// Rows the live view moves for a page: most of its height.
+    fn live_page(&self) -> usize {
+        self.screen.map_or(20, |(_, h)| h as usize / 2).max(2)
+    }
+
+    /// Scrolls the live view `n` rows. Up from the screen goes into the
+    /// conversation, read from the transcript; down past its end goes back
+    /// to the screen.
+    fn scroll_live(&mut self, up: bool, n: usize) -> Vec<Effect> {
+        if !up {
+            self.live_scroll = self.live_scroll.saturating_sub(n);
+            return Vec::new();
+        }
+        if self.live_scroll == 0 {
+            // The first step up shows the conversation's latest rows.
+            self.live_scroll = 1;
+            if n < usize::MAX {
+                return self.read_conversation();
+            }
+        }
+        let width = self.screen.map_or(80, |(w, _)| w as usize);
+        let rows = match self.picked_conversation() {
+            Some(Ok(said)) => crate::ui::empty::conversation_rows(said, width).len(),
+            _ => 0,
+        };
+        self.live_scroll = self.live_scroll.saturating_add(n).min(rows.max(1));
+        self.read_conversation()
+    }
+
+    /// Asks for the picked agent's conversation, one read at a time.
+    fn read_conversation(&mut self) -> Vec<Effect> {
+        if self.reading_conversation {
+            return Vec::new();
+        }
+        let Some(session_id) = self.picked_agent().map(|a| a.session_id.clone()) else {
+            return Vec::new();
+        };
+        self.reading_conversation = true;
+        vec![Effect::ReadConversation { session_id }]
+    }
+
+    /// The picked agent's conversation, once read.
+    pub fn picked_conversation(&self) -> Option<&Result<Vec<Said>, String>> {
+        let id = &self.picked_agent()?.session_id;
+        self.conversation
+            .as_ref()
+            .filter(|(s, _)| s == id)
+            .map(|(_, said)| said)
+    }
+
+    /// The wheel scrolls what is under it: the live view, the help page,
+    /// or the card. Boxes being typed in ignore it.
+    fn on_wheel(&mut self, up: bool) -> Vec<Effect> {
+        const NOTCH: usize = 3;
+        let step = KeyEvent::from(KeyCode::Char(if up { 'k' } else { 'j' }));
+        match &self.overlay {
+            None if self.queue.current().is_none() => self.scroll_live(up, NOTCH),
+            None | Some(Overlay::Help { .. }) => {
+                (0..NOTCH).flat_map(|_| self.on_key(step)).collect()
+            }
+            Some(_) => Vec::new(),
+        }
+    }
+
+    /// Scrolls the help page, or closes it with q, Esc or F1.
+    fn on_help_key(&mut self, key: KeyEvent) {
+        let Some(Overlay::Help { scroll }) = &mut self.overlay else {
+            return;
+        };
+        let last = crate::ui::help::TEXT.lines().count().saturating_sub(1) as u16;
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(1) => self.overlay = None,
+            KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::Char('G') | KeyCode::End => *scroll = last,
+            KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+            KeyCode::PageDown => *scroll = (*scroll + 10).min(last),
+            KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+            _ => {}
+        }
     }
 
     /// Asks for the picked agent's screen while the empty screen shows, one
@@ -483,9 +781,20 @@ impl App {
             Msg::Key(key, _) => self.on_key(key),
             Msg::Tick(now) => {
                 self.expire_status(now);
-                self.capture_picked()
+                let mut effects = self.capture_picked();
+                if self.live_scroll > 0 {
+                    // New messages keep coming while scrolled back.
+                    effects.extend(self.read_conversation());
+                }
+                effects
+            }
+            Msg::Conversation { session_id, said } => {
+                self.reading_conversation = false;
+                self.conversation = Some((session_id, said));
+                Vec::new()
             }
             Msg::Agents(agents) => self.on_agents(agents),
+            Msg::Wheel { up } => self.on_wheel(up),
             Msg::PaneCaptured { pane, text } => {
                 self.capturing = false;
                 self.preview = Some(Preview { pane, text });
@@ -541,13 +850,21 @@ impl App {
                 tool_name,
                 tool_input,
                 edited,
-            } => self.on_post_tool(
-                &session_id,
-                checkout,
-                &tool_name,
-                &tool_input,
-                edited.as_deref(),
-            ),
+            } => {
+                if let Some(c) = &checkout {
+                    self.touched
+                        .entry(session_id.clone())
+                        .or_default()
+                        .insert(c.clone());
+                }
+                self.on_post_tool(
+                    &session_id,
+                    checkout,
+                    &tool_name,
+                    &tool_input,
+                    edited.as_deref(),
+                )
+            }
             Msg::Snapshot { req, result, at } => self.on_snapshot(req, result, at),
             Msg::Resize { width, height } => {
                 // What was seen is counted in rows at the old width.
@@ -606,7 +923,21 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
+        // Not over another overlay: it may hold something being typed.
+        if key.code == KeyCode::F(1) && self.overlay.is_none() {
+            self.overlay = Some(Overlay::Help { scroll: 0 });
+            return Vec::new();
+        }
+        if let Some(effects) = self.on_page_key(key) {
+            return effects;
+        }
         match &self.overlay {
+            Some(Overlay::Help { .. }) => {
+                self.on_help_key(key);
+                return Vec::new();
+            }
+            Some(Overlay::Prompt(_)) => return self.on_prompt_key(key),
+            Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
             Some(Overlay::Comment(_)) => {
                 self.on_comment_key(key);
@@ -644,6 +975,7 @@ impl App {
                 self.open_ask();
                 Vec::new()
             }
+            KeyCode::Char('W') => self.ask_where_are_we(),
             KeyCode::Char('T') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             KeyCode::Char('s') => {
@@ -669,15 +1001,23 @@ impl App {
         vec![Effect::SaveConfig]
     }
 
+    /// The next mode for the current card's project, or with no card the
+    /// picked session's, so a project in vibe mode (which makes no cards)
+    /// can be switched back.
     fn cycle_mode(&mut self) -> Vec<Effect> {
-        let Some(checkout) = self.queue.current().map(|c| c.checkout.clone()) else {
-            self.set_status("No card, so no project to set a mode for");
+        let checkout = match self.queue.current() {
+            Some(c) => Some(c.checkout.clone()),
+            None => self.picked_agent().and_then(|a| a.checkout.clone()),
+        };
+        let Some(checkout) = checkout else {
+            self.set_status("No project to set a mode for");
             return Vec::new();
         };
         let mode = match self.config.mode_for(&checkout) {
             Mode::Review => Mode::Step,
             Mode::Step => Mode::Quiz,
-            Mode::Quiz => Mode::Review,
+            Mode::Quiz => Mode::Vibe,
+            Mode::Vibe => Mode::Review,
         };
         self.config.set_mode(&checkout, mode);
         // A save from the old mode would never be claimed.
@@ -727,11 +1067,24 @@ impl App {
     }
 
     /// An agent just went from working to waiting. Review cards and quiz
-    /// cards are created here, by the mode of its checkout.
+    /// cards are created here, for its checkout and every other one it
+    /// worked in this turn, each by its own mode.
     fn on_agent_waiting(&mut self, agent: &Agent) -> Vec<Effect> {
-        let Some(checkout) = &agent.checkout else {
-            return Vec::new();
-        };
+        let mut checkouts: Vec<Checkout> = agent.checkout.iter().cloned().collect();
+        let others = self.touched.remove(&agent.session_id).unwrap_or_default();
+        checkouts.extend(
+            others
+                .into_iter()
+                .filter(|c| Some(c) != agent.checkout.as_ref()),
+        );
+        checkouts
+            .iter()
+            .flat_map(|c| self.on_turn_end_in(c, agent))
+            .collect()
+    }
+
+    /// What `agent`'s finished turn asks for in `checkout`, by its mode.
+    fn on_turn_end_in(&mut self, checkout: &Checkout, agent: &Agent) -> Vec<Effect> {
         let from_tree = self.rounds.get(&checkout.0).map(|r| r.tree.clone());
         match self.config.mode_for(checkout) {
             Mode::Review => vec![Effect::ComputeReview(ReviewRequest {
@@ -747,6 +1100,7 @@ impl App {
                 from_tree,
             }],
             Mode::Step => self.on_step_turn_end(checkout, agent),
+            Mode::Vibe => Vec::new(),
         }
     }
 
@@ -864,8 +1218,15 @@ impl App {
                 }));
                 Vec::new()
             }
-            review::Action::Send => self.finish_review(false),
-            review::Action::Approve => self.finish_review(true),
+            // Once the card closes, the empty screen shows this agent.
+            review::Action::Send => {
+                self.picked = Some(card.agent.clone());
+                self.finish_review(false)
+            }
+            review::Action::Approve => {
+                self.picked = Some(card.agent.clone());
+                self.finish_review(true)
+            }
             review::Action::ToggleFullBranch => self.toggle_full_branch(),
         }
     }
@@ -969,22 +1330,52 @@ impl App {
         Vec::new()
     }
 
-    /// Whether text pasted into the agent's pane reaches its prompt.
+    /// Whether text pasted into the agent's pane reaches its prompt as the
+    /// whole message. An empty input box on screen is enough, even while
+    /// Claude reports busy with a background job; text left typed in the box
+    /// is never pasted onto. Unread, Claude's own idle is the test.
     fn at_prompt(&self, id: &AgentId) -> bool {
         let menu_open = self
             .queue
             .iter()
             .any(|c| matches!(c.kind, CardKind::Permission(_)) && &c.agent == id);
         !menu_open
-            && self
-                .agent(id)
-                .is_some_and(|a| a.waiting && a.status == AgentStatus::Idle)
+            && self.agent(id).is_some_and(|a| {
+                a.waiting
+                    && match a.input {
+                        InputBox::Empty => true,
+                        InputBox::Holding(_) => false,
+                        InputBox::Unseen => a.status == AgentStatus::Idle,
+                    }
+            })
+    }
+
+    /// Whether the agent's input box holds text typed and not sent.
+    pub fn prompt_has_text(&self, id: &AgentId) -> bool {
+        self.agent(id)
+            .is_some_and(|a| matches!(a.input, InputBox::Holding(_)))
     }
 
     /// Sends the held messages whose agent is at its prompt now. A message
-    /// whose card or agent has gone is dropped, its card kept.
+    /// whose card or agent has gone is dropped, its card kept. Messages typed
+    /// on the empty screen go the same way.
     fn release_held(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
+        let agents: Vec<AgentId> = self.prompts.keys().cloned().collect();
+        for agent in agents {
+            if self.agent(&agent).is_none() {
+                self.prompts.remove(&agent);
+                self.set_status("Could not send the message: agent gone");
+            } else if self.at_prompt(&agent) {
+                let text = self.prompts.remove(&agent).expect("waiting");
+                self.set_status("Sending the queued message");
+                effects.push(Effect::Send {
+                    agent,
+                    text,
+                    card: None,
+                });
+            }
+        }
         let ids: Vec<u64> = self.held.keys().copied().collect();
         for id in ids {
             let agent = &self.held[&id].0;
@@ -1123,6 +1514,7 @@ pub fn mode_label(mode: Mode) -> &'static str {
         Mode::Review => "review board",
         Mode::Step => "step by step",
         Mode::Quiz => "quiz",
+        Mode::Vibe => "vibe: nothing checked",
     }
 }
 
@@ -1160,6 +1552,7 @@ pub(crate) mod tests {
                 AgentStatus::Busy
             },
             waiting,
+            input: InputBox::Unseen,
         }
     }
 
@@ -1305,6 +1698,8 @@ pub(crate) mod tests {
         assert_eq!(a.config.mode_for(&ck), Mode::Step);
         a.update(key('M'));
         assert_eq!(a.config.mode_for(&ck), Mode::Quiz);
+        a.update(key('M'));
+        assert_eq!(a.config.mode_for(&ck), Mode::Vibe);
         a.update(key('M'));
         assert_eq!(a.config.mode_for(&ck), Mode::Review);
     }
@@ -1558,6 +1953,11 @@ pub(crate) mod tests {
                 card: Some(id),
             }]
         );
+        assert_eq!(
+            a.picked.as_ref(),
+            Some(&a.agents[0].id),
+            "its agent shows next"
+        );
         a.update(Msg::SendDone { card: id });
         assert!(a.queue.is_empty());
         // The agent is working again by the time the user approves the next round.
@@ -1699,7 +2099,58 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn empty_screen_picks_an_idle_agent_and_goes_to_it() {
+    fn a_turn_gets_a_card_for_each_checkout_it_worked_in() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.config.set_mode(&Checkout("/c".into()), Mode::Vibe);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        for c in ["/b", "/a", "/c", "/b"] {
+            a.update(Msg::PostTool {
+                session_id: "s1".into(),
+                checkout: Some(Checkout(c.into())),
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({"command": "true"}),
+                edited: None,
+            });
+        }
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        let reviewed: Vec<&std::path::Path> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::ComputeReview(r) => Some(r.checkout.0.as_path()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reviewed,
+            [std::path::Path::new("/a"), std::path::Path::new("/b")],
+            "its own first, each once, none for vibe"
+        );
+        // The next turn starts with nothing touched.
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        assert_eq!(effects.len(), 1, "{effects:?}");
+    }
+
+    #[test]
+    fn vibe_mode_makes_no_card_and_m_without_a_card_leaves_it() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let ck = Checkout("/a".into());
+        a.config.set_mode(&ck, Mode::Vibe);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        assert!(effects.is_empty(), "nothing checked: {effects:?}");
+        assert!(a.queue.is_empty());
+        // No card to press M on: it goes to the picked session's project.
+        assert_eq!(a.update(key('M')), [Effect::SaveConfig]);
+        assert_eq!(a.config.mode_for(&ck), Mode::Review);
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(effects.is_empty());
+        let effects = a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]));
+        assert!(matches!(effects.as_slice(), [Effect::ComputeReview(_)]));
+    }
+
+    #[test]
+    fn empty_screen_picks_any_agent_and_goes_to_it() {
         let mut a = App::new(Config::default(), builtin_themes());
         a.agents = vec![
             agent("%3", 3, "web", "/w/web", true),
@@ -1708,8 +2159,10 @@ pub(crate) mod tests {
         ];
         let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
         let picked = |a: &App| a.picked_agent().unwrap().id.pane.clone();
-        // Window order, skipping the working agent, and wrapping both ways.
+        // The first waiting agent until one is picked; then window order, wrapping.
         assert_eq!(picked(&a), "%1");
+        a.update(key('j'));
+        assert_eq!(picked(&a), "%2", "a working agent can be picked too");
         a.update(key('j'));
         assert_eq!(picked(&a), "%3");
         a.update(key('j'));
@@ -1717,7 +2170,7 @@ pub(crate) mod tests {
         a.update(key('k'));
         assert_eq!(picked(&a), "%3");
         assert_eq!(
-            a.update(enter()),
+            a.update(key('g')),
             vec![Effect::GoToWindow { pane: "%3".into() }]
         );
         assert_eq!(
@@ -1731,17 +2184,206 @@ pub(crate) mod tests {
                 Effect::GoToWindow { pane: "%3".into() },
             ]
         );
-        // Waiting but not idle (the turn has not quite ended): nothing is sent.
-        a.agents[0].status = AgentStatus::Busy;
+        // Not at its prompt: P sends nothing.
+        a.update(key('k'));
+        assert_eq!(picked(&a), "%2");
         assert!(a.update(key('P')).is_empty());
         assert!(a.status_text().unwrap().contains("busy"));
-        // A pick that starts working falls back to the first idle agent.
-        a.agents[0].waiting = false;
+        // A pick that has gone falls back to the first waiting agent.
+        a.agents.remove(2);
         assert_eq!(picked(&a), "%1");
-        // With nobody idle there is nothing to pick or go to.
-        a.agents[1].waiting = false;
+        // With nobody waiting, the first agent; with nobody at all, nothing.
+        a.agents.iter_mut().for_each(|x| x.waiting = false);
+        assert_eq!(picked(&a), "%1");
+        a.agents.clear();
         assert!(a.picked_agent().is_none());
+        assert!(a.update(key('g')).is_empty());
+        assert_eq!(
+            a.overlay, None,
+            "Enter opens no message box without an agent"
+        );
+        a.update(enter());
+        assert_eq!(a.overlay, None);
+    }
+
+    #[test]
+    fn i_messages_the_picked_agent_now_or_once_it_is_idle() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", false),
+        ];
+        let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        let send = |pane: &str, n: u32, text: &str| Effect::Send {
+            agent: AgentId {
+                pane: pane.into(),
+                claude_pid: n * 100,
+            },
+            text: text.into(),
+            card: None,
+        };
+        a.update(enter());
+        typed(&mut a, "hello");
+        assert_eq!(a.update(enter()), [send("%1", 1, "hello")]);
+        assert_eq!(a.overlay, None);
+        // Esc drops the message.
+        a.update(key('i'));
+        typed(&mut a, "never");
+        assert!(
+            a.update(Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now()))
+                .is_empty()
+        );
+        assert_eq!(a.overlay, None);
+        // A working agent gets it when it is next at its prompt, both messages as one.
+        a.update(key('j'));
+        a.update(key('i'));
+        typed(&mut a, "next");
         assert!(a.update(enter()).is_empty());
+        a.update(key('i'));
+        typed(&mut a, "more");
+        assert!(a.update(enter()).is_empty());
+        assert!(a.prompt_waiting(&a.agents[1].id));
+        let effects = a.update(Msg::Agents(vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", true),
+        ]));
+        assert!(
+            effects.contains(&send("%2", 2, "next\n\nmore")),
+            "{effects:?}"
+        );
+        assert!(!a.prompt_waiting(&a.agents[1].id));
+    }
+
+    #[test]
+    fn f1_opens_help_that_pages_like_vim_but_never_over_typing() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let press =
+            |code: KeyCode, mods: KeyModifiers| Msg::Key(KeyEvent::new(code, mods), Instant::now());
+        let help = |a: &App| match a.overlay {
+            Some(Overlay::Help { scroll }) => scroll,
+            _ => panic!("help is not open: {:?}", a.overlay),
+        };
+        a.screen = Some((80, 30));
+        let half = (crate::permission::body_size((80, 30)).1 / 2) as u16;
+        a.update(press(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(help(&a), 0);
+        a.update(press(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(help(&a), half, "Ctrl-d is half a page");
+        a.update(key('k'));
+        a.update(press(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(help(&a), 0);
+        a.update(key('G'));
+        assert!(help(&a) > half);
+        a.update(key('g'));
+        assert_eq!(help(&a), 0);
+        a.update(key('q'));
+        assert_eq!(a.overlay, None);
+        // Over a reason being typed, F1 does nothing.
+        a.overlay = Some(Overlay::Deny(DenyDraft {
+            card: 1,
+            input: TextInput::single_line(),
+        }));
+        a.update(press(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(matches!(a.overlay, Some(Overlay::Deny(_))));
+    }
+
+    #[test]
+    fn ctrl_d_on_the_empty_screen_does_not_cycle_the_pick() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", true),
+        ];
+        a.update(Msg::Key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Instant::now(),
+        ));
+        assert_eq!(a.picked_agent().unwrap().id.pane, "%1");
+    }
+
+    #[test]
+    fn a_message_goes_to_an_empty_box_even_when_busy_but_never_onto_typed_text() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut busy = agent("%1", 1, "api", "/w/api", true);
+        // Turn over, a background job still running: Claude says busy.
+        busy.status = AgentStatus::Busy;
+        busy.input = InputBox::Holding("half typed".into());
+        a.agents = vec![busy.clone()];
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
+        typed(&mut a, "next");
+        let enter = Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        assert!(a.update(enter).is_empty(), "never pasted onto typed text");
+        assert!(a.prompt_waiting(&busy.id) && a.prompt_has_text(&busy.id));
+        // Unread screen and busy: still waits.
+        busy.input = InputBox::Unseen;
+        assert!(a.update(Msg::Agents(vec![busy.clone()])).is_empty());
+        // The box is cleared: sent, though Claude still says busy.
+        busy.input = InputBox::Empty;
+        assert_eq!(
+            a.update(Msg::Agents(vec![busy.clone()])),
+            [Effect::Send {
+                agent: busy.id.clone(),
+                text: "next".into(),
+                card: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn double_esc_stops_the_picked_agent() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut busy = agent("%1", 1, "api", "/w/api", false);
+        busy.waiting = false;
+        a.agents = vec![busy];
+        let t0 = Instant::now();
+        let esc = |t| Msg::Key(KeyEvent::from(KeyCode::Esc), t);
+        // One Esc only hints; a second too late hints again.
+        assert!(a.update(esc(t0)).is_empty());
+        assert_eq!(a.status_text(), Some("Esc again to stop api"));
+        assert!(a.update(esc(t0 + Duration::from_secs(2))).is_empty());
+        // Two close together interrupt it and drop a queued message.
+        a.prompts.insert(a.agents[0].id.clone(), "later".into());
+        let t1 = t0 + Duration::from_secs(5);
+        a.update(esc(t1));
+        assert_eq!(
+            a.update(esc(t1 + Duration::from_millis(300))),
+            [Effect::Interrupt { pane: "%1".into() }]
+        );
+        assert!(a.prompts.is_empty());
+        assert_eq!(
+            a.status_text(),
+            Some("Stopped api and dropped its queued message")
+        );
+        // An idle agent gets no Escape: Claude Code would open its rewind menu.
+        a.agents[0].waiting = true;
+        let t2 = t1 + Duration::from_secs(5);
+        a.update(esc(t2));
+        assert!(a.update(esc(t2)).is_empty());
+        assert_eq!(a.status_text(), Some("api is not working on anything"));
+    }
+
+    #[test]
+    fn x_closes_the_picked_agent_only_after_yes() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        let esc = || Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now());
+        a.update(key('x'));
+        assert_eq!(a.overlay, Some(Overlay::CloseAgent(a.agents[0].id.clone())));
+        assert!(
+            a.update(key('j')).is_empty(),
+            "other keys do nothing while asking"
+        );
+        assert!(a.update(esc()).is_empty());
+        assert_eq!(a.overlay, None);
+        a.update(key('x'));
+        assert!(a.update(key('n')).is_empty());
+        a.update(key('x'));
+        assert_eq!(
+            a.update(key('y')),
+            [Effect::ClosePane { pane: "%1".into() }]
+        );
+        assert_eq!(a.overlay, None);
+        assert_eq!(a.status_text(), Some("Closed api"));
     }
 
     #[test]

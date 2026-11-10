@@ -224,6 +224,15 @@ impl StepCard {
         }
     }
 
+    /// gg and G: the first or last line.
+    fn go_to_end(&mut self, end: bool) {
+        let segs = self.segments();
+        if let Some(s) = if end { segs.last() } else { segs.first() } {
+            self.view.cursor = s.first();
+            self.view.word = 0;
+        }
+    }
+
     fn toggle_fold(&mut self) -> Action {
         let cur = self.view.cursor;
         let Some(f) = self.folds.iter().find(|f| f.contains(&cur)) else {
@@ -403,6 +412,10 @@ pub fn on_key(card: &mut StepCard, key: KeyEvent) -> Action {
                 card.view.open = card.folds.iter().map(|f| f.start).collect();
                 Action::None
             }
+            ('g', KeyCode::Char('g')) => {
+                card.go_to_end(false);
+                Action::None
+            }
             ('g', KeyCode::Char('d')) => match card.word() {
                 Some(w) => Action::Search(w.to_string()),
                 None => Action::Status("No identifier on this line".into()),
@@ -416,8 +429,9 @@ pub fn on_key(card: &mut StepCard, key: KeyEvent) -> Action {
         KeyCode::Char('n') => return Action::Reject,
         KeyCode::Char('e') => return Action::Change,
         KeyCode::Char('m') => card.view.raw = !card.view.raw,
-        KeyCode::Tab => card.next_change(true),
-        KeyCode::BackTab => card.next_change(false),
+        KeyCode::Tab | KeyCode::Char('L' | '}') => card.next_change(true),
+        KeyCode::BackTab | KeyCode::Char('H' | '{') => card.next_change(false),
+        KeyCode::Char('G') => card.go_to_end(true),
         KeyCode::Char('j') | KeyCode::Down => card.move_cursor(true),
         KeyCode::Char('k') | KeyCode::Up => card.move_cursor(false),
         KeyCode::Char('w') => card.view.word += 1,
@@ -1103,6 +1117,24 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(a.queue.len(), 2);
+    }
+
+    #[test]
+    fn vim_keys_jump_to_the_ends_and_changes() {
+        let mut a = step_app();
+        pre_tool(&mut a, 1, pending("s1", "/a", input()));
+        a.update(key('G'));
+        let last = step(&a).view.cursor;
+        a.update(key('j'));
+        assert_eq!(step(&a).view.cursor, last, "G is the last line");
+        a.update(key('g'));
+        a.update(key('g'));
+        assert_eq!(step(&a).view.cursor, 0, "gg is the first line");
+        a.update(key('}'));
+        assert_eq!(
+            step(&a).rows[step(&a).view.cursor].text,
+            "        3 => 429,"
+        );
     }
 
     #[test]

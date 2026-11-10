@@ -1,13 +1,127 @@
 //! Reading Claude Code session transcripts (one JSON object per line; each
 //! assistant content block on a line of its own).
 
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 /// The longest description kept, in characters.
 const DESCRIPTION_MAX: usize = 300;
+/// How much of the end of a transcript the conversation view reads.
+const CONVERSATION_TAIL: u64 = 2 * 1024 * 1024;
+/// A tool call's summary is cut to this many characters.
+const TOOL_SUMMARY_MAX: usize = 120;
+
+/// One step of a conversation, as the live view shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Said {
+    User(String),
+    Claude(String),
+    /// A tool call: its name and what it was called on.
+    Tool(String),
+}
+
+/// The transcript of session `session_id`, in whichever project folder
+/// Claude Code keeps it under `~/.claude/projects`.
+pub fn find(session_id: &str) -> Option<PathBuf> {
+    let projects = PathBuf::from(std::env::var_os("HOME")?).join(".claude/projects");
+    let name = format!("{session_id}.jsonl");
+    std::fs::read_dir(projects)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join(&name))
+        .find(|p| p.is_file())
+}
+
+/// The prompts, replies and tool calls in the last `CONVERSATION_TAIL`
+/// bytes of `transcript`, oldest first. Thinking, tool results and
+/// Claude Code's own notes are left out.
+pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
+    let mut file = std::fs::File::open(transcript)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(CONVERSATION_TAIL);
+    file.seek(SeekFrom::Start(start))?;
+    let mut text = String::new();
+    BufReader::new(file).read_to_string(&mut text)?;
+    // Cut mid-line: the first line is only a part.
+    let lines = text.lines().skip(usize::from(start > 0));
+    let mut out = Vec::new();
+    for line in lines {
+        if !line.starts_with(r#"{"#)
+            || !(line.contains(r#""type":"user""#) || line.contains(r#""type":"assistant""#))
+        {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v["isMeta"] == true || v["isSidechain"] == true {
+            continue;
+        }
+        let content = &v["message"]["content"];
+        match v["type"].as_str() {
+            Some("user") => {
+                let text = match content {
+                    Value::String(s) => Some(s.as_str()),
+                    Value::Array(blocks) => blocks
+                        .iter()
+                        .find(|b| b["type"] == "text")
+                        .and_then(|b| b["text"].as_str()),
+                    _ => None,
+                };
+                // Commands and their output come wrapped in tags.
+                if let Some(t) = text
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty() && !t.starts_with('<'))
+                {
+                    out.push(Said::User(t.to_string()));
+                }
+            }
+            Some("assistant") => {
+                for b in content.as_array().into_iter().flatten() {
+                    match b["type"].as_str() {
+                        Some("text") => {
+                            if let Some(t) =
+                                b["text"].as_str().map(str::trim).filter(|t| !t.is_empty())
+                            {
+                                out.push(Said::Claude(t.to_string()));
+                            }
+                        }
+                        Some("tool_use") => out.push(Said::Tool(tool_summary(b))),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// `Name(what)`: the command's first line, or the file or pattern.
+fn tool_summary(block: &Value) -> String {
+    let name = block["name"].as_str().unwrap_or("tool");
+    let input = &block["input"];
+    let what = [
+        "command",
+        "file_path",
+        "pattern",
+        "url",
+        "description",
+        "prompt",
+    ]
+    .iter()
+    .find_map(|k| input[*k].as_str())
+    .and_then(|s| s.lines().next())
+    .unwrap_or("");
+    let what: String = what.chars().take(TOOL_SUMMARY_MAX).collect();
+    if what.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}({what})")
+    }
+}
 
 /// The last assistant text block before the `tool_use` with id
 /// `tool_use_id`, cut to 300 characters. If that `tool_use` is not in the
@@ -53,6 +167,33 @@ mod tests {
 
     fn fixture() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcript.jsonl")
+    }
+
+    #[test]
+    fn conversation_keeps_prompts_replies_and_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let lines = [
+            r#"{"type":"user","message":{"content":"add a rate limit"}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"content":"Caveat: meta"}}"#,
+            r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hm"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I will read it."}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test\nmore"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/a/x.rs"}}]}}"#,
+            r#"{"type":"system","content":"x"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        assert_eq!(
+            conversation(&path).unwrap(),
+            [
+                Said::User("add a rate limit".into()),
+                Said::Claude("I will read it.".into()),
+                Said::Tool("Bash(cargo test)".into()),
+                Said::Tool("Edit(/a/x.rs)".into()),
+            ]
+        );
     }
 
     #[test]

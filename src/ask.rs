@@ -23,6 +23,12 @@ pub const CONTEXT_CAP: usize = 30 * 1024;
 const AROUND: usize = 30;
 /// Lines moved by PgUp and PgDn when the screen size is not known.
 const PAGE: usize = 10;
+/// The card id of a question asked from the session list, with no card open.
+/// Real cards count from 1.
+pub const NO_CARD: u64 = 0;
+/// What `W` asks.
+pub const WHERE_ARE_WE: &str = "Where are we with this? In a few short lines: what is done, \
+what is still left to do, and anything that needs me.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -272,8 +278,13 @@ pub fn context_for(card: &Card) -> String {
                 && let Some(q) = qc.questions.get(i)
             {
                 s.push_str(&format!("\nThe question on screen:\n{}\n", q.question));
-                for (n, c) in q.choices.iter().enumerate() {
-                    s.push_str(&format!("  {}. {c}\n", n + 1));
+                let piece: String = qc
+                    .excerpt(i)
+                    .iter()
+                    .map(|l| crate::quiz::diff_line(l) + "\n")
+                    .collect();
+                if !piece.is_empty() {
+                    s.push_str(&format!("\nThe piece of the diff it is about:\n{piece}"));
                 }
             }
             s.push_str("\nThe change:\n\n");
@@ -285,9 +296,11 @@ pub fn context_for(card: &Card) -> String {
 }
 
 impl App {
-    /// `?`: open the overlay for the current card.
+    /// `?`: open the overlay for the current card, or with no card for the
+    /// session picked on the session list.
     pub(crate) fn open_ask(&mut self) {
         let Some(card) = self.queue.current() else {
+            self.open_ask_picked();
             return;
         };
         let from_card = match &card.kind {
@@ -309,6 +322,51 @@ impl App {
             input: Some(TextInput::single_line()),
             scroll: 0,
         })));
+    }
+
+    fn open_ask_picked(&mut self) {
+        let Some(agent) = self.picked_agent() else {
+            return;
+        };
+        let checkout = agent
+            .checkout
+            .clone()
+            .unwrap_or_else(|| Checkout(agent.cwd.clone()));
+        let session_id = Some(agent.session_id.clone()).filter(|s| valid_session_id(s));
+        self.overlay = Some(Overlay::Ask(Box::new(AskState {
+            card: NO_CARD,
+            checkout,
+            session_id,
+            context: "No card is open: the developer is looking at this session in the \
+session list."
+                .into(),
+            entries: Vec::new(),
+            input: Some(TextInput::single_line()),
+            scroll: 0,
+        })));
+    }
+
+    /// `W`: ask where the work stands, as `?` with that question already sent.
+    pub(crate) fn ask_where_are_we(&mut self) -> Vec<Effect> {
+        if !matches!(self.overlay, Some(Overlay::Ask(_))) {
+            self.open_ask();
+        }
+        let Some(Overlay::Ask(ask)) = &mut self.overlay else {
+            return Vec::new();
+        };
+        ask.input = None;
+        ask.entries.push(Entry {
+            question: WHERE_ARE_WE.into(),
+            answer: Answer::Pending,
+            fallback: false,
+        });
+        let index = ask.entries.len() - 1;
+        let width = self.screen_text_size().0;
+        let Some(Overlay::Ask(ask)) = &mut self.overlay else {
+            return Vec::new();
+        };
+        ask.scroll = ask.lines(width).1[index];
+        vec![Effect::Llm(ask.job(index))]
     }
 
     fn screen_text_size(&self) -> (usize, usize) {
@@ -353,6 +411,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.overlay = None,
             KeyCode::Char('?') => ask.input = Some(TextInput::single_line()),
+            KeyCode::Char('W') => return self.ask_where_are_we(),
             KeyCode::Char('j') | KeyCode::Down => ask.scroll = (ask.scroll + 1).min(max),
             KeyCode::Char('k') | KeyCode::Up => ask.scroll = ask.scroll.min(max).saturating_sub(1),
             KeyCode::PageDown => ask.scroll = (ask.scroll + page).min(max),
@@ -573,6 +632,42 @@ mod tests {
             "{all:?}"
         );
         assert!(all.contains("^[") && all.contains("\\u{202e}"), "{all:?}");
+    }
+
+    #[test]
+    fn w_asks_where_we_are_on_a_card_and_on_the_session_list() {
+        let mut a = app();
+        a.agents = vec![agent("%1", 1, "api", "/a", true)];
+        // The session list: the picked session is forked, with no card.
+        let e = press(&mut a, KeyCode::Char('W'));
+        assert!(matches!(&e[..], [Effect::Llm(j)] if j.card == NO_CARD
+            && j.prompt.contains(WHERE_ARE_WE)
+            && matches!(&j.kind, JobKind::Ask { index: 0, session_id: Some(s) } if s == "s1")));
+        assert!(ask_state(&a).input.is_none());
+        a.update(Msg::Llm(LlmEvent {
+            card: NO_CARD,
+            kind: JobKind::Ask {
+                index: 0,
+                session_id: None,
+            },
+            result: Ok("half done".into()),
+        }));
+        assert_eq!(
+            ask_state(&a).entries[0].answer,
+            Answer::Done("half done".into())
+        );
+        // W again in the panel asks again below.
+        let e = press(&mut a, KeyCode::Char('W'));
+        assert!(
+            matches!(&e[..], [Effect::Llm(j)] if matches!(j.kind, JobKind::Ask { index: 1, .. }))
+        );
+        press(&mut a, KeyCode::Char('q'));
+        // On a card: the card's own context goes with it.
+        let mut c = review_with_cursor();
+        c.agent = a.agents[0].id.clone();
+        a.queue.push(c);
+        let e = press(&mut a, KeyCode::Char('W'));
+        assert!(matches!(&e[..], [Effect::Llm(j)] if j.card == 1 && j.prompt.contains("Diff")));
     }
 
     #[test]

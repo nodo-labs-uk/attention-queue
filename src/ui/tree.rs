@@ -1,5 +1,5 @@
 //! The review board's file list: files grouped by folder, with this round's
-//! comment count per file.
+//! comment count per file. Files marked done are dim and ticked.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -70,9 +70,15 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
                     buf.set_style(Rect::new(area.x, y, area.width, 1), Style::new().bg(t.sel));
                 }
                 let colour = match f.status {
+                    _ if rc.is_done(*i) => t.dim,
                     FileStatus::Added | FileStatus::Untracked => t.add,
                     FileStatus::Deleted => t.del,
                     FileStatus::Modified | FileStatus::Renamed => t.fg,
+                };
+                let name = if rc.is_done(*i) {
+                    format!("✓ {name}")
+                } else {
+                    name
                 };
                 let style = if k == cur {
                     Style::new().fg(colour).add_modifier(Modifier::BOLD)

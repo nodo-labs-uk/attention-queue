@@ -2,7 +2,7 @@
 source: src/ui/review.rs
 expression: "render(&a, 80, 30)"
 ---
-" aq  review api · api                                                 1 review  "
+" aq  review api · api                                         1 review  F1 help "
 " review  api  window api  review board  round 2                                 "
 " 2 files · +5 −3 · 1 comment · changes since round 1                            "
 " src/                src/limit.rs                                               "
@@ -31,4 +31,4 @@ expression: "render(&a, 80, 30)"
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" c comment   S send 1   A approve   v view   ]c change   tab file   V range   x "
+" c comment   S send 1   A approve   v view   ]c change   H/L file   d done   V r"

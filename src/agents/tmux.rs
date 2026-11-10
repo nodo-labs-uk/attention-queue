@@ -119,6 +119,16 @@ impl TmuxConn {
         Ok(())
     }
 
+    /// `pane`'s screen with its colours, on this connection's server.
+    fn capture_styled(&self, pane: &str) -> Result<String> {
+        let mut cmd = self.cmd();
+        cmd.args(["capture-pane", "-p", "-e", "-t", pane]);
+        let (status, out, err) =
+            super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux capture-pane")?;
+        anyhow::ensure!(status.success(), "{}", err.trim());
+        Ok(out)
+    }
+
     /// The claude processes, from the last list while the panes look the same.
     fn procs(&self, panes: &[Pane]) -> Result<Vec<ClaudeProc>> {
         let keys = pane_keys(panes);
@@ -165,6 +175,7 @@ fn join(
             session_id: p.session_id.clone(),
             status: p.status,
             waiting: pane.waiting,
+            input: super::InputBox::Unseen,
         });
     }
     agents
@@ -184,7 +195,14 @@ impl AgentConn for TmuxConn {
     fn list(&self) -> Result<Vec<Agent>> {
         let panes = self.list_panes()?;
         let procs = self.procs(&panes)?;
-        Ok(join(&panes, &procs, is_ancestor))
+        let mut agents = join(&panes, &procs, is_ancestor);
+        // Only a waiting agent can take a message, so only its screen is read.
+        for a in agents.iter_mut().filter(|a| a.waiting) {
+            if let Ok(screen) = self.capture_styled(&a.id.pane) {
+                a.input = super::read_input_box(&screen);
+            }
+        }
+        Ok(agents)
     }
 
     fn send_text(&self, agent: &AgentId, text: &str) -> Result<()> {
@@ -200,6 +218,42 @@ impl AgentConn for TmuxConn {
                 .list_panes()
                 .is_ok_and(|ps| ps.iter().any(|p| p.pane_id == agent.pane))
     }
+}
+
+/// The tmux option aq sets while it runs, so the status line can stop
+/// marking waiting windows that aq already lists.
+pub const OPEN_FLAG: &str = "@aq_open";
+
+/// Sets or clears `OPEN_FLAG` on the default tmux server. Without a server
+/// there is nothing to mark, so failures are ignored.
+pub fn mark_open(open: bool) {
+    let mut cmd = Command::new("tmux");
+    if open {
+        cmd.args(["set-option", "-g", OPEN_FLAG, "1"]);
+    } else {
+        cmd.args(["set-option", "-gu", OPEN_FLAG]);
+    }
+    let _ = super::run_for(cmd, "", TMUX_TIMEOUT);
+}
+
+/// Closes `pane`, ending what runs in it. `server` as for `capture_pane`.
+pub fn kill_pane(pane: &str, server: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(server).args(["kill-pane", "-t", pane]);
+    let (status, _, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux kill-pane")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
+/// Presses Escape in `pane`, which stops a Claude Code turn.
+pub fn press_escape(pane: &str, server: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(server).args(["send-keys", "-t", pane, "Escape"]);
+    let (status, _, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux send-keys")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
 }
 
 /// The text on `pane`'s screen, one line per screen row. `server` are the
