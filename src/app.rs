@@ -339,6 +339,8 @@ pub struct App {
     pub config: Config,
     pub themes: Vec<Theme>,
     pub theme_idx: usize,
+    /// `f` hid the file list on review and shell change cards.
+    pub files_hidden: bool,
     pub overlay: Option<Overlay>,
     pub status_msg: Option<Status>,
     pub quit: bool,
@@ -371,6 +373,8 @@ pub struct App {
     pub(crate) saved: Option<crate::persist::SavedState>,
     /// The idle agent picked on the empty screen, to go to with Enter.
     pub(crate) picked: Option<AgentId>,
+    /// The session shown before the picked one, for Tab to go back to.
+    pub(crate) last_picked: Option<AgentId>,
     /// The last screen read from a pane, for the empty screen's live view.
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
@@ -457,6 +461,7 @@ impl App {
             config,
             themes,
             theme_idx,
+            files_hidden: false,
             overlay: None,
             status_msg: None,
             quit: false,
@@ -474,6 +479,7 @@ impl App {
             unclaimed: Default::default(),
             saved: Some(Default::default()),
             picked: None,
+            last_picked: None,
             preview: None,
             capturing: false,
             prompts: BTreeMap::new(),
@@ -544,7 +550,18 @@ impl App {
             .copied()
     }
 
-    /// h/l or j/k pick an agent on the empty screen; Enter or i write it a message;
+    /// Shows `id` on the empty screen, remembering the session shown
+    /// before it for Tab.
+    fn pick(&mut self, id: AgentId) {
+        let shown = self.picked_agent().map(|a| a.id.clone());
+        if shown.as_ref() != Some(&id) {
+            self.last_picked = shown;
+        }
+        self.picked = Some(id);
+    }
+
+    /// h/l or j/k pick an agent on the empty screen; Tab goes back to the
+    /// one shown before; Enter or i write it a message;
     /// g goes to its window; p asks it to open a pull request; m picks its model.
     fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ids: Vec<AgentId> = self
@@ -559,12 +576,21 @@ impl App {
         let n = ids.len();
         match key.code {
             KeyCode::Char('j' | 'l') | KeyCode::Down | KeyCode::Right => {
-                self.picked = Some(ids[(i + 1) % n].clone());
+                self.pick(ids[(i + 1) % n].clone());
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
             KeyCode::Char('k' | 'h') | KeyCode::Up | KeyCode::Left => {
-                self.picked = Some(ids[(i + n - 1) % n].clone());
+                self.pick(ids[(i + n - 1) % n].clone());
+                self.live_scroll = 0;
+                return self.capture_picked();
+            }
+            KeyCode::Tab => {
+                let Some(last) = self.last_picked.clone().filter(|id| ids.contains(id)) else {
+                    self.set_status("No other session shown yet: h/l picks one");
+                    return Vec::new();
+                };
+                self.pick(last);
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
@@ -1277,6 +1303,16 @@ impl App {
             }
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
+            KeyCode::Char('f')
+                if self.overlay.is_none()
+                    && matches!(
+                        self.queue.current().map(|c| &c.kind),
+                        Some(CardKind::Review(_) | CardKind::ShellChange(_))
+                    ) =>
+            {
+                self.files_hidden = !self.files_hidden;
+                Vec::new()
+            }
             _ if self.overlay.is_none() && self.on_stale() => self.on_stale_key(key),
             // Space, since s sends on the review board. Where several
             // options can be ticked, Space ticks one.
@@ -1627,11 +1663,13 @@ impl App {
             }
             // Once the card closes, the empty screen shows this agent.
             review::Action::Send => {
-                self.picked = Some(card.agent.clone());
+                let agent = card.agent.clone();
+                self.pick(agent);
                 self.finish_review(false)
             }
             review::Action::Approve => {
-                self.picked = Some(card.agent.clone());
+                let agent = card.agent.clone();
+                self.pick(agent);
                 self.finish_review(true)
             }
             review::Action::ToggleFullBranch => self.toggle_full_branch(),
@@ -2585,6 +2623,32 @@ pub(crate) mod tests {
         assert!(effects.is_empty());
         let effects = turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert!(matches!(effects.as_slice(), [Effect::ComputeReview(_)]));
+    }
+
+    #[test]
+    fn tab_goes_back_and_forth_between_the_last_two_sessions() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "docs", "/w/docs", false),
+            agent("%3", 3, "web", "/w/web", true),
+        ];
+        let tab = || Msg::Key(KeyEvent::from(KeyCode::Tab), Instant::now());
+        let picked = |a: &App| a.picked_agent().unwrap().id.pane.clone();
+        a.update(tab());
+        assert_eq!(picked(&a), "%1", "nothing shown before yet");
+        assert!(a.status_text().unwrap().contains("h/l"));
+        a.update(key('l'));
+        a.update(key('l'));
+        assert_eq!(picked(&a), "%3");
+        a.update(tab());
+        assert_eq!(picked(&a), "%2");
+        a.update(tab());
+        assert_eq!(picked(&a), "%3");
+        // A session that has gone is not gone back to.
+        a.agents.remove(1);
+        a.update(tab());
+        assert_eq!(picked(&a), "%3");
     }
 
     #[test]

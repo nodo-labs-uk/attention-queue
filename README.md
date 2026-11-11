@@ -37,7 +37,7 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 Each project has a mode, and `M` switches it.
 
-**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. This is the video above.
+**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. This is the video above.
 
 **Step**: every edit waits for approval before it's applied. `y` lets it through, `n` sends it back with a reason.
 
@@ -85,10 +85,12 @@ The ones worth knowing from day one:
 | `Space` | card | skip it for now |
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
+| `f` | review | hide or show the file list, for a wider diff |
 | `y` `n` | step, permission | allow, or refuse with a reason |
 | `a` `Enter` | question | approve, or reply in your own words |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
 | `h` `l` | sessions | pick a session |
+| `Tab` | sessions | back to the session shown before; again to return |
 | `Enter` | sessions | message it |
 | `m` | sessions | switch its model: fable, opus, sonnet or haiku |
 | `Esc Esc` | sessions | stop it |

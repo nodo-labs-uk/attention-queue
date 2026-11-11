@@ -2,7 +2,7 @@
 //! comment count per file. Files marked done are dim and ticked.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
 use super::diffview::scroll_top;
@@ -13,6 +13,18 @@ use crate::theme::Theme;
 enum Row {
     Dir(String),
     File(usize),
+}
+
+/// `body` cut into the file list, narrow at the left, and the diff. With
+/// the list hidden (`f`), the diff takes it all.
+pub fn split(body: Rect, hidden: bool) -> (Option<Rect>, Rect) {
+    if hidden {
+        return (None, body);
+    }
+    let width = (body.width / 6).clamp(14, 22);
+    let [tree, diff] =
+        Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(body);
+    (Some(tree), diff)
 }
 
 pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
