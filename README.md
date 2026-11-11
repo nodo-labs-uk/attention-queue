@@ -1,8 +1,12 @@
 <h1 align="center"><img src="docs/media/banner.svg" width="640" alt="aq: an attention queue for Claude Code"></h1>
 
+<p align="center"><b>Every Claude Code session that needs you, in one queue in your terminal.</b><br>
+Diffs to review, edits to allow, permission prompts and questions, one card at a time.<br>
+<sub>Linux · tmux · Rust · MIT</sub></p>
+
 I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt, a question) in one queue, shown one card at a time. A card that comes in while I'm on another waits its turn; it never takes the screen. If I answer the card on screen in its own window instead, it stays, marked "answered elsewhere", until I press a key.
 
-![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
+![Three sessions at work: a permission prompt is allowed, a finished turn is reviewed and the comment sent back, and a question is answered, all from aq](docs/media/hero.svg)
 
 > [!TIP]
 > **Quickest install: paste this into Claude Code and let it do the setup.**
@@ -25,19 +29,25 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 > Don't change anything else.
 > ```
 
-## Why
+**Contents:** [Design principles](#design-principles) · [Modes](#modes) · [Sessions](#sessions) · [Keys](#keys) · [Compared with other tools](#compared-with-other-tools) · [Install](#install) · [Files](#files) · [Development](#development) · [Licence](#licence)
 
-- The agents aren't the slow part, I am. There is little point running five sessions if I spend my time flicking through windows to find the one that's stuck.
-- When a turn ends I want to see the diff, not scroll through the chat. Comments go back as one message, like a PR review.
-- Not every project needs the same level of checking. A script can just run, while a payments service should wait for me on every edit, so each checkout has its own mode.
-- Skimming a diff and approving it isn't really reviewing it. Quiz mode asks me to explain parts of the change first.
-- It shouldn't get in the way. It talks to Claude through hooks, and if aq isn't running (or fails) the hooks do nothing and Claude carries on as normal.
+## Design principles
+
+- **Your attention is the bottleneck.** Instead of cycling through sessions to find the one waiting on you, aq uses Claude Code's hooks to push the work to one queue: let the work come to you, not the other way round. Permission prompts, questions and option menus are answered from there too, and a new card never takes the screen from the one you're on.
+- **An easy change, review and comment loop.** Code review inspired by [tuicr](https://tuicr.dev/): comment on a line or a range, and send the comments to the agent as one message, like a PR review.
+- **Checking to suit the project.** Each project has its own mode: vibe (nothing checked), review, step (every edit waits for a yes) or quiz. A script can just run while a payments service waits on every edit.
+- **Quiz mode.** Answer design questions about the code to check and reinforce your understanding of the change.
+- **Unobtrusive.** It runs alongside your tmux sessions and connects to Claude Code through hooks, with no complex dependencies. If aq isn't running, the hooks do nothing and Claude carries on as normal.
+- **Your sessions from one screen.** When nothing is waiting you see every session live, and can message one, ask where it's up to, switch its model or permission mode, or start a new one.
+- **Keyboard first,** with vim keybindings.
 
 ## Modes
 
 Each project has a mode, and `M` switches it.
 
-**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. `e` opens the file at the cursor's line in your editor, for a change you'd rather make yourself. This is the video above.
+**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. `e` opens the file at the cursor's line in your editor, for a change you'd rather make yourself.
+
+![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
 
 **Step**: every edit waits for approval before it's applied. `y` lets it through, `n` sends it back with a reason.
 
