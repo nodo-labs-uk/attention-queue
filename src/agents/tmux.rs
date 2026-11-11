@@ -469,6 +469,77 @@ pub fn confirm_model_switch(pane: &str, before: &str, server: &[&str]) -> Result
     Ok(())
 }
 
+/// Claude Code's permission modes in the order Shift+Tab cycles them, each
+/// with what its footer shows while it is on, mark included. Bypass permissions is
+/// left out: it is only in the cycle when Claude was started with it.
+pub const PERMISSION_MODES: [(&str, &str); 4] = [
+    ("auto", "⏵⏵ auto mode on"),
+    ("manual", "⏸ manual mode on"),
+    ("accept edits", "⏵⏵ accept edits on"),
+    ("plan", "⏸ plan mode on"),
+];
+
+/// How many of a screen's last non-blank rows are its footer.
+const FOOTER_ROWS: usize = 3;
+
+/// The permission mode `screen`'s footer shows, if it shows one. Only the
+/// last rows are read, lowest first, so the same words higher up in the
+/// conversation do not count.
+pub fn permission_mode_on(screen: &str) -> Option<&'static str> {
+    screen
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(FOOTER_ROWS)
+        .find_map(|l| {
+            PERMISSION_MODES
+                .iter()
+                .find(|(_, shown)| l.contains(shown))
+                .map(|(mode, _)| *mode)
+        })
+}
+
+/// How long to wait for the footer to change after Shift+Tab.
+const MODE_CHANGE_WAIT: Duration = Duration::from_millis(1500);
+
+/// Presses Shift+Tab in `pane` until its footer shows `mode`: at most once
+/// round the cycle, each press waiting for the footer to change.
+pub fn set_permission_mode(pane: &str, mode: &str, server: &[&str]) -> Result<()> {
+    cycle_to(
+        mode,
+        || capture_pane(pane, server),
+        || press(pane, "BTab", server),
+        MODE_CHANGE_WAIT,
+    )
+}
+
+fn cycle_to(
+    mode: &str,
+    mut read: impl FnMut() -> Result<String>,
+    mut shift_tab: impl FnMut() -> Result<()>,
+    wait: Duration,
+) -> Result<()> {
+    let mut now = permission_mode_on(&read()?).context(
+        "its footer shows no permission mode; a menu may be open, or this Claude Code is too old",
+    )?;
+    for _ in 0..=PERMISSION_MODES.len() {
+        if now == mode {
+            return Ok(());
+        }
+        shift_tab()?;
+        let until = Instant::now() + wait;
+        let before = now;
+        while now == before && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+            if let Some(m) = permission_mode_on(&read()?) {
+                now = m;
+            }
+        }
+        anyhow::ensure!(now != before, "Shift+Tab did not change its mode");
+    }
+    anyhow::bail!("{mode} mode is not in its Shift+Tab cycle")
+}
+
 /// The text on `pane`'s screen, one line per screen row. `server` are the
 /// tmux arguments that pick the server; empty means the default one.
 pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
@@ -498,6 +569,49 @@ mod tests {
             "claude 'fix it' --worktree"
         );
         assert_eq!(claude_command(None, true), "claude --worktree");
+    }
+
+    #[test]
+    fn the_permission_mode_is_read_from_the_footer_only() {
+        let footer = |f: &str| {
+            format!(
+                "● talk about ⏵⏵ auto mode on\n\n────\n> \n────\n  repo Opus\n  -- INSERT -- {f}\n\n"
+            )
+        };
+        assert_eq!(
+            permission_mode_on(&footer("⏵⏵ accept edits on (shift+tab to cycle)")),
+            Some("accept edits")
+        );
+        assert_eq!(
+            permission_mode_on(&footer("⏸ manual mode on")),
+            Some("manual")
+        );
+        assert_eq!(permission_mode_on(&footer("? for shortcuts")), None);
+    }
+
+    #[test]
+    fn shift_tab_is_pressed_until_the_mode_shows() {
+        use std::cell::Cell;
+        let at = Cell::new(0);
+        let screen = || {
+            Ok(format!(
+                "  {} (shift+tab to cycle)",
+                PERMISSION_MODES[at.get() % 4].1
+            ))
+        };
+        let press = || {
+            at.set(at.get() + 1);
+            Ok(())
+        };
+        cycle_to("plan", screen, press, Duration::from_millis(50)).unwrap();
+        assert_eq!(at.get(), 3, "auto, manual, accept edits, plan");
+        // Already there: no press.
+        cycle_to("plan", screen, press, Duration::from_millis(50)).unwrap();
+        assert_eq!(at.get(), 3);
+        // A footer that never changes gives up after one press.
+        let stuck = || Ok("  ⏵⏵ auto mode on".to_string());
+        let err = cycle_to("plan", stuck, || Ok(()), Duration::from_millis(50)).unwrap_err();
+        assert!(err.to_string().contains("did not change"));
     }
 
     #[test]
