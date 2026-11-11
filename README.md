@@ -90,6 +90,7 @@ The ones worth knowing from day one:
 | `a` `Enter` | question | approve, or reply in your own words |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
 | `h` `l` | sessions | pick a session |
+| `Tab` | sessions | back to the session shown before; again to return |
 | `Enter` | sessions | message it |
 | `m` | sessions | switch its model: fable, opus, sonnet or haiku |
 | `Esc Esc` | sessions | stop it |

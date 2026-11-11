@@ -98,6 +98,7 @@ A tab per session along the top (● waiting, ○ working); the picked
 one's screen fills the rest. After you send or approve a review, that
 session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
+  Tab    back to the session shown before, and Tab again to return
   Enter  message it: sent now, or once it is idle (Esc cancels)
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
