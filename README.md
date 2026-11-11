@@ -29,15 +29,17 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 > Don't change anything else.
 > ```
 
-**Contents:** [Why](#why) · [Modes](#modes) · [Sessions](#sessions) · [Keys](#keys) · [Compared with other tools](#compared-with-other-tools) · [Install](#install) · [Files](#files) · [Development](#development) · [Licence](#licence)
+**Contents:** [Design principles](#design-principles) · [Modes](#modes) · [Sessions](#sessions) · [Keys](#keys) · [Compared with other tools](#compared-with-other-tools) · [Install](#install) · [Files](#files) · [Development](#development) · [Licence](#licence)
 
-## Why
+## Design principles
 
-- The agents aren't the slow part, I am. There is little point running five sessions if I spend my time flicking through windows to find the one that's stuck.
-- When a turn ends I want to see the diff, not scroll through the chat. Comments go back as one message, like a PR review.
-- Not every project needs the same level of checking. A script can just run, while a payments service should wait for me on every edit, so each checkout has its own mode.
-- Skimming a diff and approving it isn't really reviewing it. Quiz mode asks me to explain parts of the change first.
-- It shouldn't get in the way. It talks to Claude through hooks, and if aq isn't running (or fails) the hooks do nothing and Claude carries on as normal.
+- **Your attention is the bottleneck.** Instead of cycling through sessions to find the one waiting on you, aq uses Claude Code's hooks to push the work to one queue: let the work come to you, not the other way round. Permission prompts, questions and option menus are answered from there too, and a new card never takes the screen from the one you're on.
+- **An easy change, review and comment loop.** Code review inspired by [tuicr](https://tuicr.dev/): comment on a line or a range, and send the comments to the agent as one message, like a PR review.
+- **Checking to suit the project.** Each project has its own mode: vibe (nothing checked), review, step (every edit waits for a yes) or quiz. A script can just run while a payments service waits on every edit.
+- **Quiz mode.** Answer design questions about the code to check and reinforce your understanding of the change.
+- **Unobtrusive.** It runs alongside your tmux sessions and connects to Claude Code through hooks, with no complex dependencies. If aq isn't running, the hooks do nothing and Claude carries on as normal.
+- **Your sessions from one screen.** When nothing is waiting you see every session live, and can message one, ask where it's up to, switch its model or permission mode, or start a new one.
+- **Keyboard first,** with vim keybindings.
 
 ## Modes
 
