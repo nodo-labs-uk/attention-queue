@@ -1506,7 +1506,16 @@ impl App {
         effects
     }
 
-    fn on_agents(&mut self, agents: Vec<Agent>) -> Vec<Effect> {
+    fn on_agents(&mut self, mut agents: Vec<Agent>) -> Vec<Effect> {
+        // A menu or dialog can hide the footer for a moment: the mode last
+        // seen still holds.
+        for a in agents.iter_mut().filter(|a| a.permission_mode.is_none()) {
+            a.permission_mode = self
+                .agents
+                .iter()
+                .find(|p| p.id == a.id)
+                .and_then(|p| p.permission_mode);
+        }
         let mut started: Vec<Agent> = became_waiting(&self.agents, &agents)
             .into_iter()
             .cloned()
@@ -2073,6 +2082,7 @@ pub(crate) mod tests {
                 AgentStatus::Busy
             },
             waiting,
+            permission_mode: None,
             input: InputBox::Unseen,
         }
     }
@@ -3127,6 +3137,25 @@ pub(crate) mod tests {
         );
         assert_eq!(a.overlay, None);
         assert_eq!(a.status_text(), Some("Switching api to plan mode"));
+    }
+
+    #[test]
+    fn each_tab_shows_its_sessions_permission_mode_and_keeps_it_while_hidden() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let with = |mode| {
+            let mut x = agent("%1", 1, "api", "/w/api", true);
+            x.permission_mode = mode;
+            let mut y = agent("%2", 2, "web", "/w/web", false);
+            y.permission_mode = Some("auto");
+            vec![x, y]
+        };
+        a.update(Msg::Agents(with(Some("plan"))));
+        let screen = crate::ui::tests::render(&a, 100, 12);
+        assert!(screen.contains("1 api ⏸ plan"), "{screen}");
+        assert!(screen.contains("2 web ⏵⏵ auto"), "{screen}");
+        // A menu hides the footer: the mode last seen stays.
+        a.update(Msg::Agents(with(None)));
+        assert_eq!(a.agents[0].permission_mode, Some("plan"));
     }
 
     #[test]

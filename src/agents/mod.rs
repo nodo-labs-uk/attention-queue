@@ -34,6 +34,8 @@ pub struct Agent {
     pub waiting: bool,
     /// Claude Code's input box, read from the screen of a waiting agent.
     pub input: InputBox,
+    /// The permission mode its footer shows ("auto", "plan"...), if seen.
+    pub permission_mode: Option<&'static str>,
 }
 
 /// Claude Code's input box as last read from the agent's screen.

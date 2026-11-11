@@ -83,6 +83,14 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
                 _ => " · vibe",
             });
         }
+        // Claude Code's permission mode, with the mark its footer uses.
+        label.push_str(match a.permission_mode {
+            Some("auto") => " ⏵⏵ auto",
+            Some("accept edits") => " ⏵⏵ edits",
+            Some("plan") => " ⏸ plan",
+            Some("manual") => " ⏸ manual",
+            _ => "",
+        });
         if app.prompt_waiting(&a.id) {
             // Typed text in its box holds the message back: say so.
             label.push_str(if app.prompt_has_text(&a.id) {
