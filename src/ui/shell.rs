@@ -48,7 +48,7 @@ pub fn render(
     let [head_area, body] =
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(head), head_area.inner(Margin::new(1, 0)));
-    let (tree_area, diff_area) = tree::split(body, app.files_hidden);
+    let (tree_area, diff_area) = tree::split(body, app.config.hide_files);
     if let Some(tree_area) = tree_area {
         tree::render(frame, tree_area, &sc.diff, t);
     }

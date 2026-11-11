@@ -13,7 +13,7 @@ use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, valid_session_id};
 use crate::model::{Card, CardKind, Checkout};
 use crate::quiz::{QuizState, diff_text, fenced};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::visible::{visible_lines, wrap};
+use crate::visible::{visible_lines, wrap_words};
 
 pub const ASK_PROMPT: &str = include_str!("../prompts/ask.md");
 
@@ -160,10 +160,10 @@ fn visible_text(text: &str) -> String {
     visible_lines(text).join("\n")
 }
 
-/// `text` wrapped to `width` columns.
+/// `text` wrapped to `width` columns at spaces.
 fn wrap_into(out: &mut Vec<(LineKind, String)>, kind: LineKind, text: &str, w: usize) {
     for line in text.split('\n') {
-        wrap(line, w, &mut |row| out.push((kind, row)));
+        wrap_words(line, w, &mut |row| out.push((kind, row)));
     }
 }
 

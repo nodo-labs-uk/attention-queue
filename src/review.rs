@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crossterm::event::{KeyCode, KeyEvent};
 use serde::{Deserialize, Serialize};
 
-use crate::git::{DiffLine, FileDiff};
+use crate::git::{DiffLine, FileDiff, FileStatus};
 
 /// Sent by `a` when the agent is waiting.
 pub const APPROVE_MESSAGE: &str = "Approved, carry on.";
@@ -95,6 +95,8 @@ pub enum Action {
     Send,
     Approve,
     ToggleFullBranch,
+    /// Open the file in your editor at this line.
+    Edit(Target),
     Status(&'static str),
 }
 
@@ -424,6 +426,15 @@ pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
         KeyCode::Char('d') => card.toggle_done(),
         KeyCode::Char('u') => card.done.clear(),
         KeyCode::Char('r') => return Action::ToggleFullBranch,
+        KeyCode::Char('e') => {
+            return match card.target() {
+                _ if card.file().is_some_and(|f| f.status == FileStatus::Deleted) => {
+                    Action::Status("This file was deleted: nothing to open")
+                }
+                Some(t) => Action::Edit(t),
+                None => Action::Status("Nothing to open here"),
+            };
+        }
         _ => {}
     }
     Action::None

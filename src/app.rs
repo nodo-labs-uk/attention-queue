@@ -279,6 +279,12 @@ pub enum Effect {
     /// Copy the screen's text under a selection (row by row, as a terminal
     /// selects) to the tmux buffer, and so the clipboard.
     Copy(Selection),
+    /// Open `path` at `line` in $VISUAL or $EDITOR, in a tmux popup over aq.
+    Edit {
+        dir: PathBuf,
+        path: PathBuf,
+        line: u32,
+    },
     /// Open a shell in a tmux popup over aq, gone when the shell exits.
     Shell {
         dir: PathBuf,
@@ -339,8 +345,6 @@ pub struct App {
     pub config: Config,
     pub themes: Vec<Theme>,
     pub theme_idx: usize,
-    /// `f` hid the file list on review and shell change cards.
-    pub files_hidden: bool,
     pub overlay: Option<Overlay>,
     pub status_msg: Option<Status>,
     pub quit: bool,
@@ -461,7 +465,6 @@ impl App {
             config,
             themes,
             theme_idx,
-            files_hidden: false,
             overlay: None,
             status_msg: None,
             quit: false,
@@ -1310,8 +1313,8 @@ impl App {
                         Some(CardKind::Review(_) | CardKind::ShellChange(_))
                     ) =>
             {
-                self.files_hidden = !self.files_hidden;
-                Vec::new()
+                self.config.hide_files = !self.config.hide_files;
+                vec![Effect::SaveConfig]
             }
             _ if self.overlay.is_none() && self.on_stale() => self.on_stale_key(key),
             // Space, since s sends on the review board. Where several
@@ -1673,6 +1676,11 @@ impl App {
                 self.finish_review(true)
             }
             review::Action::ToggleFullBranch => self.toggle_full_branch(),
+            review::Action::Edit(target) => vec![Effect::Edit {
+                dir: card.checkout.0.clone(),
+                path: target.path,
+                line: target.line,
+            }],
         }
     }
 

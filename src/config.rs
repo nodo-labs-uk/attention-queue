@@ -14,6 +14,8 @@ pub struct Config {
     /// The tour has been finished or skipped once, so it no longer opens
     /// by itself.
     pub tutorial_done: bool,
+    /// `f` hid the file list on review and shell change cards.
+    pub hide_files: bool,
 }
 
 impl Default for Config {
@@ -22,6 +24,7 @@ impl Default for Config {
             theme: "tokyo-night".to_string(),
             modes: BTreeMap::new(),
             tutorial_done: false,
+            hide_files: false,
         }
     }
 }

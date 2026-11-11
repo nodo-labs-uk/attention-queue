@@ -475,6 +475,7 @@ fn apply(
                 title,
                 session_id,
             } => Job::Shell(dir, title, session_id),
+            Effect::Edit { dir, path, line } => Job::Edit(dir, path, line),
             Effect::ComputeQuiz {
                 checkout,
                 agent,
@@ -613,6 +614,7 @@ enum Job {
     Interrupt(String),
     SwitchModel(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>),
+    Edit(PathBuf, PathBuf, u32),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
     ListDirs(String, PathBuf),
@@ -769,6 +771,17 @@ fn spawn_effect_worker(
                         if let Err(e) = r {
                             let _ = tx
                                 .send(Msg::EffectFailed(format!("Could not open a shell: {e:#}")));
+                        }
+                    });
+                    None
+                }
+                Job::Edit(dir, path, line) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = crate::agents::tmux::popup_editor(&dir, &path, line) {
+                            let _ = tx.send(Msg::EffectFailed(format!(
+                                "Could not open an editor: {e:#}"
+                            )));
                         }
                     });
                     None

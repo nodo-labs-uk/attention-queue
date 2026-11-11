@@ -277,7 +277,31 @@ pub fn popup_shell(dir: &Path, title: &str, typed: Option<&str>, zsh_dir: &Path)
             title.push_str("· Claude's last ! command is copied ");
         }
     }
-    let title = format_literal(&title);
+    popup(dir, &title, command.as_deref())
+}
+
+/// `path` (under `dir`) opened at `line` in $VISUAL or $EDITOR, else vi,
+/// in a popup over aq that closes with the editor.
+pub fn popup_editor(dir: &Path, path: &Path, line: u32) -> Result<()> {
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .find(|e| !e.trim().is_empty())
+        .unwrap_or_else(|| "vi".into());
+    let shown = path.display().to_string();
+    // The editor setting may carry its own flags ("code --wait"), so it is
+    // left for the shell to split; the path is quoted.
+    let command = format!("{editor} +{line} {}", shell_quote(&shown));
+    let title = format!(
+        " {} · quit the editor to go back ",
+        crate::visible::visible_code(&shown)
+    );
+    popup(dir, &title, Some(&command))
+}
+
+/// A tmux popup over aq in `dir`, running `command` or else the shell.
+fn popup(dir: &Path, title: &str, command: Option<&str>) -> Result<()> {
+    let title = format_literal(title);
     let mut cmd = Command::new("tmux");
     cmd.args([
         "display-popup",
@@ -297,7 +321,7 @@ pub fn popup_shell(dir: &Path, title: &str, typed: Option<&str>, zsh_dir: &Path)
         cmd.args(["-t", &pane]);
     }
     if let Some(c) = command {
-        cmd.arg(format_literal(&c));
+        cmd.arg(format_literal(c));
     }
     let out = cmd.output().context("running tmux display-popup")?;
     anyhow::ensure!(

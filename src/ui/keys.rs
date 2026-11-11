@@ -128,6 +128,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("d", "done".into()),
             ("V", "range".into()),
             ("x", "delete".into()),
+            ("e", "edit".into()),
+            ("f", "files".into()),
             (
                 "r",
                 if rc.show_full_branch {

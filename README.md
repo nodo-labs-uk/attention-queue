@@ -37,7 +37,7 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 Each project has a mode, and `M` switches it.
 
-**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. This is the video above.
+**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. `e` opens the file at the cursor's line in your editor, for a change you'd rather make yourself. This is the video above.
 
 **Step**: every edit waits for approval before it's applied. `y` lets it through, `n` sends it back with a reason.
 
@@ -86,6 +86,7 @@ The ones worth knowing from day one:
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
 | `f` | review | hide or show the file list, for a wider diff |
+| `e` | review | open the file at this line in `$VISUAL` or `$EDITOR` |
 | `y` `n` | step, permission | allow, or refuse with a reason |
 | `a` `Enter` | question | approve, or reply in your own words |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
@@ -130,7 +131,7 @@ Run `aq` in a tmux window.
 
 ## Files
 
-- `~/.config/aq/config.toml`: the theme, each checkout's mode, and whether the tour has been seen (`t` cycles themes).
+- `~/.config/aq/config.toml`: the theme, each checkout's mode, whether the file list is hidden, and whether the tour has been seen (`t` cycles themes).
 - `~/.local/state/aq/state.json`: review rounds, unsent comments and quiz progress, so a restart loses nothing.
 - Socket: `$XDG_RUNTIME_DIR/aq.sock`, or `/tmp/aq-$UID/aq.sock`. `AQ_SOCKET` overrides it.
 
