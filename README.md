@@ -85,6 +85,7 @@ The ones worth knowing from day one:
 | `Space` | card | skip it for now |
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
+| `f` | review | hide or show the file list, for a wider diff |
 | `y` `n` | step, permission | allow, or refuse with a reason |
 | `a` `Enter` | question | approve, or reply in your own words |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |

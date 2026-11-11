@@ -55,6 +55,7 @@ finished turn; the card on screen stays as it is.
   j/k line   V range   ]c/[c change   H/L or tab file
   v  split or unified view           r  whole branch or this round
   m  Markdown as written, or as read (the default)
+  f  hide or show the file list
 
 # Step card
   y  allow   n  reject with a reason   e  ask for a different change
@@ -63,7 +64,7 @@ finished turn; the card on screen stays as it is.
 
 # Shell change card
   y  keep the change   u  ask Claude to undo it
-  j/k line   ]c/[c change   H/L or tab file   v view
+  j/k line   ]c/[c change   H/L or tab file   v view   f file list
 
 # Permission card
   y  allow (once you have scrolled to the end)   n  deny with a reason

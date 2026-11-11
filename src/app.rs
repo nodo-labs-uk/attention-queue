@@ -339,6 +339,8 @@ pub struct App {
     pub config: Config,
     pub themes: Vec<Theme>,
     pub theme_idx: usize,
+    /// `f` hid the file list on review and shell change cards.
+    pub files_hidden: bool,
     pub overlay: Option<Overlay>,
     pub status_msg: Option<Status>,
     pub quit: bool,
@@ -457,6 +459,7 @@ impl App {
             config,
             themes,
             theme_idx,
+            files_hidden: false,
             overlay: None,
             status_msg: None,
             quit: false,
@@ -1277,6 +1280,16 @@ impl App {
             }
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
+            KeyCode::Char('f')
+                if self.overlay.is_none()
+                    && matches!(
+                        self.queue.current().map(|c| &c.kind),
+                        Some(CardKind::Review(_) | CardKind::ShellChange(_))
+                    ) =>
+            {
+                self.files_hidden = !self.files_hidden;
+                Vec::new()
+            }
             _ if self.overlay.is_none() && self.on_stale() => self.on_stale_key(key),
             // Space, since s sends on the review board. Where several
             // options can be ticked, Space ticks one.

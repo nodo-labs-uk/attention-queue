@@ -32,10 +32,10 @@ pub fn render(
     let [head_area, body] =
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(head), head_area.inner(Margin::new(1, 0)));
-    let tree_w = (body.width / 4).clamp(12, 30);
-    let [tree_area, diff_area] =
-        Layout::horizontal([Constraint::Length(tree_w), Constraint::Fill(1)]).areas(body);
-    tree::render(frame, tree_area, rc, t);
+    let (tree_area, diff_area) = tree::split(body, app.files_hidden);
+    if let Some(tree_area) = tree_area {
+        tree::render(frame, tree_area, rc, t);
+    }
     if rc.all_done() {
         let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
         let dim = Style::new().fg(t.dim);
@@ -107,8 +107,8 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::app::App;
     use crate::app::tests::agent;
+    use crate::app::{App, Msg};
     use crate::git::{DiffLine, FileDiff, FileStatus, Hunk};
     use crate::highlight::Highlighter;
     use crate::model::CardKind;
@@ -171,6 +171,24 @@ mod tests {
     fn unified_view() {
         let a = review_app(fixture_with_comments(DiffView::Unified));
         insta::assert_snapshot!(render(&a, 80, 30));
+    }
+
+    #[test]
+    fn f_hides_the_file_list_and_brings_it_back() {
+        let mut a = review_app(fixture_card(2));
+        assert!(render(&a, 100, 20).contains("http.rs"));
+        let f = || {
+            Msg::Key(
+                crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('f')),
+                std::time::Instant::now(),
+            )
+        };
+        a.update(f());
+        let screen = render(&a, 100, 20);
+        assert!(!screen.contains("http.rs"), "{screen}");
+        assert!(screen.contains("src/limit.rs · before"), "{screen}");
+        a.update(f());
+        assert!(render(&a, 100, 20).contains("http.rs"));
     }
 
     /// A Markdown file is shown as read: no heading hashes, bold marks or
