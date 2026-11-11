@@ -290,8 +290,15 @@ pub fn popup_editor(dir: &Path, path: &Path, line: u32) -> Result<()> {
         .unwrap_or_else(|| "vi".into());
     let shown = path.display().to_string();
     // The editor setting may carry its own flags ("code --wait"), so it is
-    // left for the shell to split; the path is quoted.
-    let command = format!("{editor} +{line} {}", shell_quote(&shown));
+    // left for the shell to split; the path is quoted. A relative path
+    // starts with ./ so a file named "+:!cmd" or "-c ..." is never read as
+    // an option or an editor command.
+    let arg = if path.is_absolute() {
+        shown.clone()
+    } else {
+        format!("./{shown}")
+    };
+    let command = format!("{editor} +{line} {}", shell_quote(&arg));
     let title = format!(
         " {} · quit the editor to go back ",
         crate::visible::visible_code(&shown)
