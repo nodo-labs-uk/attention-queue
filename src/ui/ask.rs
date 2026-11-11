@@ -2,10 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::input;
-use crate::ask::{AskState, LineKind, panel};
+use crate::ask::{AskState, INSET, LineKind, panel};
 use crate::theme::Theme;
 
 /// The questions and answers in a panel over the card, with the question
@@ -14,9 +14,12 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
     let most = panel(area);
     // As tall as what was asked and answered, and no shorter than a few
     // rows, so a short answer does not sit in an empty screen-high box.
-    let text_rows = ask.lines(usize::from(most.width.saturating_sub(2))).0.len();
+    let text_rows = ask
+        .lines(usize::from(most.width.saturating_sub(INSET)))
+        .0
+        .len();
     let input_rows = if ask.input.is_some() { 2 } else { 0 };
-    let want = u16::try_from(text_rows + input_rows + 2).unwrap_or(u16::MAX);
+    let want = u16::try_from(text_rows + input_rows + usize::from(INSET)).unwrap_or(u16::MAX);
     let panel = Rect {
         height: want.clamp(most.height.min(8), most.height),
         ..most
@@ -30,6 +33,7 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
         } else {
             " Ask about this card "
         })
+        .padding(Padding::uniform(1))
         .style(Style::new().bg(t.panel).fg(t.fg));
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
@@ -98,7 +102,7 @@ mod tests {
         ];
         let screen = render(&a, 80, 24);
         for want in [
-            "? why?",
+            "why?",
             "Asking…",
             "took too long",
             "r to retry",

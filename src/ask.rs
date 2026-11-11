@@ -87,14 +87,18 @@ pub fn panel(area: Rect) -> Rect {
     )
 }
 
+/// How much narrower and shorter the text is than the panel: a border and
+/// a blank cell of padding on each side.
+pub const INSET: u16 = 4;
+
 /// Width and height of the text inside the overlay, for a screen of this
 /// size.
 pub fn text_size(screen: (u16, u16)) -> (usize, usize) {
     let body = Rect::new(0, 0, screen.0, screen.1.saturating_sub(2));
     let p = panel(body);
     (
-        usize::from(p.width.saturating_sub(2)).max(1),
-        usize::from(p.height.saturating_sub(2)).max(1),
+        usize::from(p.width.saturating_sub(INSET)).max(1),
+        usize::from(p.height.saturating_sub(INSET)).max(1),
     )
 }
 
@@ -109,20 +113,19 @@ impl AskState {
             wrap_into(
                 &mut out,
                 LineKind::Question,
-                "? ",
                 &visible_text(shown_question(&e.question)),
                 width,
             );
             match &e.answer {
                 Answer::Pending => out.push((LineKind::Pending, "Asking…".into())),
                 Answer::Done(a) => {
-                    wrap_into(&mut out, LineKind::Answer, "", &visible_text(a), width);
+                    wrap_into(&mut out, LineKind::Answer, &visible_text(a), width);
                     if e.fallback {
                         out.push((LineKind::Pending, FALLBACK_NOTE.trim_start().into()));
                     }
                 }
                 Answer::Failed(why) => {
-                    wrap_into(&mut out, LineKind::Error, "", &visible_text(why), width);
+                    wrap_into(&mut out, LineKind::Error, &visible_text(why), width);
                     out.push((LineKind::Error, "r to retry".into()));
                 }
             }
@@ -157,13 +160,10 @@ fn visible_text(text: &str) -> String {
     visible_lines(text).join("\n")
 }
 
-/// `text` wrapped to `width` columns, the first row after `mark`.
-fn wrap_into(out: &mut Vec<(LineKind, String)>, kind: LineKind, mark: &str, text: &str, w: usize) {
-    for (i, line) in text.split('\n').enumerate() {
-        let mark = if i == 0 { mark } else { "" };
-        wrap(&format!("{mark}{line}"), w, &mut |row| {
-            out.push((kind, row))
-        });
+/// `text` wrapped to `width` columns.
+fn wrap_into(out: &mut Vec<(LineKind, String)>, kind: LineKind, text: &str, w: usize) {
+    for line in text.split('\n') {
+        wrap(line, w, &mut |row| out.push((kind, row)));
     }
 }
 

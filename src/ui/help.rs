@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 
 use crate::theme::Theme;
 
@@ -136,7 +136,8 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16, t: &Theme) {
         .title(Span::styled(
             " Help ",
             Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
-        ));
+        ))
+        .padding(Padding::horizontal(1));
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(lines)
