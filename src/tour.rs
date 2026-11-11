@@ -428,6 +428,7 @@ fn practice_agents() -> Vec<Agent> {
                 },
                 waiting,
                 input: InputBox::Unseen,
+                permission_mode: None,
             }
         })
         .collect()

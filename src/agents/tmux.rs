@@ -176,6 +176,7 @@ fn join(
             status: p.status,
             waiting: pane.waiting,
             input: super::InputBox::Unseen,
+            permission_mode: None,
         });
     }
     agents
@@ -196,6 +197,17 @@ impl AgentConn for TmuxConn {
         let panes = self.list_panes()?;
         let procs = self.procs(&panes)?;
         let mut agents = join(&panes, &procs, is_ancestor);
+        let server: Vec<&str> = self
+            .socket
+            .as_deref()
+            .map(|s| vec!["-L", s])
+            .unwrap_or_default();
+        // Every session's footer, for the permission mode on its tab.
+        for a in &mut agents {
+            if let Ok(screen) = capture_pane(&a.id.pane, &server) {
+                a.permission_mode = permission_mode_on(&screen);
+            }
+        }
         // Only an agent at its prompt can take a message, so only its screen
         // is read: one whose turn ended, or an idle one, which is how a
         // session that has not had a turn yet shows.
