@@ -455,6 +455,7 @@ fn apply(
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
             Effect::SwitchModel { agent, model } => Job::SwitchModel(agent, model),
+            Effect::SetPermissionMode { agent, mode } => Job::SetPermissionMode(agent, mode),
             Effect::NewSession {
                 dir,
                 prompt,
@@ -613,6 +614,7 @@ enum Job {
     Close(String),
     Interrupt(String),
     SwitchModel(AgentId, &'static str),
+    SetPermissionMode(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>),
     Edit(PathBuf, PathBuf, u32),
     Copy(String),
@@ -811,6 +813,16 @@ fn spawn_effect_worker(
                         .map(|e| {
                             Msg::EffectFailed(format!(
                                 "Could not switch {} to {model}: {e:#}",
+                                agent.pane
+                            ))
+                        })
+                }
+                Job::SetPermissionMode(agent, mode) => {
+                    crate::agents::tmux::set_permission_mode(&agent.pane, mode, &[])
+                        .err()
+                        .map(|e| {
+                            Msg::EffectFailed(format!(
+                                "Could not switch {} to {mode} mode: {e:#}",
                                 agent.pane
                             ))
                         })

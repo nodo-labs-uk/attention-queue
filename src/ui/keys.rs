@@ -67,7 +67,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
-        (Some(Overlay::Model(_)), _) => vec![("Esc", "cancel".into())],
+        (Some(Overlay::Model(_) | Overlay::PermissionMode(_)), _) => {
+            vec![("Esc", "cancel".into())]
+        }
         (Some(Overlay::Tour { page }), _) => vec![
             (
                 "→",
@@ -223,6 +225,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("p", "open PR".into()),
             ("x", "close".into()),
             ("M", "mode".into()),
+            ("P", "permissions".into()),
             ("W", "where are we".into()),
             ("t", "theme".into()),
             ("Q", "quit".into()),

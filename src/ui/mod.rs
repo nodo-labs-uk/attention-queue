@@ -209,6 +209,32 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 t,
             );
         }
+        Some(Overlay::PermissionMode(id)) => {
+            let name = app
+                .agent(id)
+                .map_or_else(|| id.pane.clone(), |a| a.window_name.clone());
+            let keys: Vec<String> = crate::app::PERMISSION_KEYS
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect();
+            let hints: Vec<(&str, &str)> = keys
+                .iter()
+                .zip(crate::app::PERMISSION_KEYS)
+                .map(|(k, (_, mode))| (k.as_str(), mode))
+                .collect();
+            confirm::render(
+                frame,
+                body,
+                &format!("Permission mode for {name}"),
+                &[
+                    "Presses Shift+Tab in the session until its footer shows".into(),
+                    "the mode, as you would. Bypass permissions is left out.".into(),
+                    "Esc changes nothing.".into(),
+                ],
+                &hints,
+                t,
+            );
+        }
         Some(Overlay::Prompt(d)) => {
             let name = app
                 .agent(&d.agent)

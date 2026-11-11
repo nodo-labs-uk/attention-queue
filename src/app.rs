@@ -258,6 +258,11 @@ pub enum Effect {
         agent: AgentId,
         model: &'static str,
     },
+    /// Press Shift+Tab in a session until its footer shows `mode`.
+    SetPermissionMode {
+        agent: AgentId,
+        mode: &'static str,
+    },
     /// Press Escape in a pane, stopping the agent's turn.
     Interrupt {
         pane: String,
@@ -324,6 +329,8 @@ pub enum Overlay {
     NewSession(NewSessionDraft),
     /// `m` on the empty screen: choosing a model for an agent.
     Model(AgentId),
+    /// Picking a session's permission mode.
+    PermissionMode(AgentId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,6 +446,15 @@ pub const MODELS: [(char, &str); 4] = [
     ('o', "opus"),
     ('s', "sonnet"),
     ('h', "haiku"),
+];
+
+/// The keys that pick a permission mode, with the mode's name as
+/// `PERMISSION_MODES` has it.
+pub const PERMISSION_KEYS: [(char, &str); 4] = [
+    ('a', "auto"),
+    ('m', "manual"),
+    ('e', "accept edits"),
+    ('p', "plan"),
 ];
 
 /// How long a status message stays on screen.
@@ -606,6 +622,7 @@ impl App {
             }
             KeyCode::Char('p') => return self.ask_for_pr(current),
             KeyCode::Char('m') => self.open_model(current),
+            KeyCode::Char('P') => self.overlay = Some(Overlay::PermissionMode(current)),
             KeyCode::Esc => return self.on_empty_esc(current),
             KeyCode::Char('x') => self.overlay = Some(Overlay::CloseAgent(current)),
             KeyCode::Enter | KeyCode::Char('i') => {
@@ -960,6 +977,32 @@ impl App {
         vec![Effect::SwitchModel { agent, model }]
     }
 
+    /// A mode's key presses Shift+Tab in the session until it is on; q or
+    /// Esc changes nothing.
+    fn on_permission_mode_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(Overlay::PermissionMode(agent)) = &self.overlay else {
+            return Vec::new();
+        };
+        let agent = agent.clone();
+        let picked = match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => None,
+            KeyCode::Char(c) => match PERMISSION_KEYS.iter().find(|(k, _)| *k == c) {
+                Some((_, mode)) => Some(*mode),
+                None => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        self.overlay = None;
+        let Some(mode) = picked else {
+            return Vec::new();
+        };
+        let name = self
+            .agent(&agent)
+            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        self.set_status(format!("Switching {name} to {mode} mode"));
+        vec![Effect::SetPermissionMode { agent, mode }]
+    }
+
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
         // The user's own doing: a key, or the send a key started landing.
         let by_user = matches!(msg, Msg::Key(..) | Msg::SendDone { .. });
@@ -1258,6 +1301,7 @@ impl App {
             Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
             Some(Overlay::Model(_)) => return self.on_model_key(key),
+            Some(Overlay::PermissionMode(_)) => return self.on_permission_mode_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
             Some(Overlay::Comment(_)) => {
                 self.on_comment_key(key);
@@ -3058,6 +3102,42 @@ pub(crate) mod tests {
         let esc = Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now());
         assert!(a.update(esc).is_empty());
         assert_eq!(a.overlay, None);
+    }
+
+    #[test]
+    fn shift_p_switches_the_picked_sessions_permission_mode() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", false)];
+        a.update(key('P'));
+        assert_eq!(
+            a.overlay,
+            Some(Overlay::PermissionMode(a.agents[0].id.clone()))
+        );
+        let screen = crate::ui::tests::render(&a, 90, 12);
+        assert!(screen.contains("Permission mode for api"), "{screen}");
+        assert!(screen.contains("e accept edits"), "{screen}");
+        assert!(a.update(key('j')).is_empty(), "other keys do nothing");
+        // Even mid-turn: Shift+Tab needs no prompt to type at.
+        assert_eq!(
+            a.update(key('p')),
+            [Effect::SetPermissionMode {
+                agent: a.agents[0].id.clone(),
+                mode: "plan",
+            }]
+        );
+        assert_eq!(a.overlay, None);
+        assert_eq!(a.status_text(), Some("Switching api to plan mode"));
+    }
+
+    #[test]
+    fn every_permission_key_names_a_mode_aq_can_read() {
+        for (_, mode) in PERMISSION_KEYS {
+            assert!(
+                crate::agents::tmux::PERMISSION_MODES
+                    .iter()
+                    .any(|(m, _)| *m == mode)
+            );
+        }
     }
 
     #[test]

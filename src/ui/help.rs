@@ -104,6 +104,8 @@ session is the one picked.
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
          (/model, which also makes it the default for new sessions)
+  P      switch its permission mode: a auto, m manual, e accept edits,
+         p plan (presses Shift+Tab in the session until it shows)
   ?  W  ask it a side question, or where it is up to; a copy of the
          session answers, so the session itself never sees it
   x      close the session's pane, after a yes (claude --resume reopens it)
