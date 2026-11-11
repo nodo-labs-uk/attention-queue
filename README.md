@@ -1,8 +1,12 @@
 <h1 align="center"><img src="docs/media/banner.svg" width="640" alt="aq: an attention queue for Claude Code"></h1>
 
+<p align="center"><b>Every Claude Code session that needs you, in one queue in your terminal.</b><br>
+Diffs to review, edits to allow, permission prompts and questions, one card at a time.<br>
+<sub>Linux · tmux · Rust · MIT</sub></p>
+
 I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me (a diff to review, an edit to allow, a permission prompt, a question) in one queue, shown one card at a time. A card that comes in while I'm on another waits its turn; it never takes the screen. If I answer the card on screen in its own window instead, it stays, marked "answered elsewhere", until I press a key.
 
-![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
+![Three sessions at work: a permission prompt is allowed, a finished turn is reviewed and the comment sent back, and a question is answered, all from aq](docs/media/hero.svg)
 
 > [!TIP]
 > **Quickest install: paste this into Claude Code and let it do the setup.**
@@ -25,6 +29,8 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 > Don't change anything else.
 > ```
 
+**Contents:** [Why](#why) · [Modes](#modes) · [Sessions](#sessions) · [Keys](#keys) · [Compared with other tools](#compared-with-other-tools) · [Install](#install) · [Files](#files) · [Development](#development) · [Licence](#licence)
+
 ## Why
 
 - The agents aren't the slow part, I am. There is little point running five sessions if I spend my time flicking through windows to find the one that's stuck.
@@ -37,7 +43,9 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 Each project has a mode, and `M` switches it.
 
-**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. `e` opens the file at the cursor's line in your editor, for a change you'd rather make yourself. This is the video above.
+**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. `e` opens the file at the cursor's line in your editor, for a change you'd rather make yourself.
+
+![A finished turn becomes a review card, and the comment goes back to the session](docs/media/review.svg)
 
 **Step**: every edit waits for approval before it's applied. `y` lets it through, `n` sends it back with a reason.
 

@@ -235,6 +235,8 @@ class World:
             self.wait_for("a client", lambda: self.tmux("list-clients").strip())
         # A pane laid over aq's frames where tmux draws a popup: (pane, title).
         self.overlay = None
+        # A line of text under the terminal saying what is going on.
+        self.caption = None
 
     def tmux(self, *args):
         env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
@@ -306,8 +308,9 @@ class Recorder:
                 pane, title = self.world.overlay
                 popup = self.world.tmux("capture-pane", "-p", "-e", "-t", pane)
                 s = composite(s, popup, title)
-            if not self.frames or self.frames[-1][1] != s:
-                self.frames.append((time.time() - start, s))
+            caption = self.world.caption
+            if not self.frames or self.frames[-1][1:] != (s, caption):
+                self.frames.append((time.time() - start, s, caption))
             time.sleep(0.1)
         self.end = time.time() - start
 
@@ -463,17 +466,22 @@ def row_svg(line):
     return "".join(parts)
 
 
+CAPTION_FS, CAPTION_H = 17, 44
+
+
 def to_svg(frames, total, hold=4.0, max_idle=2.5):
     # Long waits are cut short; the last frame stays up a while before looping.
     times, t, prev = [], 0.0, 0.0
-    for at, _ in frames:
+    for at, *_ in frames:
         t += min(at - prev, max_idle)
         prev = at
         times.append(t)
     duration = times[-1] + hold
-    w, h = COLS * CW + 2 * PAD, ROWS * LH + 2 * PAD
+    captioned = any(c for *_, c in frames)
+    w = COLS * CW + 2 * PAD
+    h = ROWS * LH + 2 * PAD + (CAPTION_H if captioned else 0)
     rows, defs, uses = {}, [], []
-    for i, (_, screen) in enumerate(frames):
+    for i, (_, screen, caption) in enumerate(frames):
         lines = screen.split("\n")[:ROWS]
         frame = []
         for r, line in enumerate(lines):
@@ -483,6 +491,9 @@ def to_svg(frames, total, hold=4.0, max_idle=2.5):
                 rows[line] = f"r{len(rows)}"
                 defs.append(f'<g id="{rows[line]}">{row_svg(line)}</g>')
             frame.append(f'<use href="#{rows[line]}" y="{r * LH}"/>')
+        if caption:
+            frame.append(f'<text class="cap" x="0" y="{ROWS * LH + PAD + 27}">'
+                         f'{html.escape(caption, quote=False)}</text>')
         uses.append(f'<g transform="translate(0 {i * h})">{"".join(frame)}</g>')
     keys = []
     for i, t in enumerate(times):
@@ -491,12 +502,14 @@ def to_svg(frames, total, hold=4.0, max_idle=2.5):
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" viewBox="0 0 {w:.0f} {h:.0f}">
 <style>
 text{{font-family:"JetBrains Mono","DejaVu Sans Mono",Menlo,Consolas,monospace;font-size:{FS}px;white-space:pre}}
+.cap{{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-size:{CAPTION_FS}px;fill:#e6e6e6}}
 .film{{animation:play {duration:.2f}s step-end infinite}}
 @keyframes play{{{"".join(keys)}}}
 </style>
 <defs>{"".join(defs)}</defs>
 <rect width="100%" height="100%" rx="8" fill="{BG}"/>
-<svg x="{PAD}" y="{PAD}" width="{COLS * CW:.0f}" height="{ROWS * LH}">
+{f'<rect y="{ROWS * LH + 2 * PAD}" width="100%" height="{CAPTION_H}" fill="#1d2026"/>' if captioned else ''}
+<svg x="{PAD}" y="{PAD}" width="{COLS * CW:.0f}" height="{h - 2 * PAD}">
 <g class="film">{"".join(uses)}</g>
 </svg>
 </svg>
@@ -857,6 +870,94 @@ def scene_questions():
     return w, rec
 
 
+WEB_WORKING = """\033[1m❯ the signup form loses its state on a validation error\033[0m
+
+● Reading src/signup/Form.tsx…
+
+● The form keeps its state now. The fix needs the new column from the
+  last migration, so I'll run it against the dev database.
+"""
+
+DOCS_WORKING = """\033[1m❯ add a page on the new export format\033[0m
+
+● Reading src/export/format.ts…
+"""
+
+
+def scene_hero():
+    """The README's first video: what aq is for, start to end, captioned."""
+    w = World([
+        api_agent(replies=["Good catch. I'll drop buckets that have been full for an hour, "
+                           "in a sweep every 1,000 calls, and add a test for it."]),
+        dict(name="web", talk=WEB_WORKING),
+        dict(name="docs", talk=DOCS_WORKING),
+    ])
+    session = {name: SESSION_ID if i == 0 else f"{SESSION_ID[:-1]}{i}"
+               for i, name in enumerate(["api", "web", "docs"])}
+    w.see("○")
+    with Recorder(w) as rec:
+        w.caption = "Three Claude Code sessions are at work in tmux. aq watches all of them."
+        time.sleep(3)
+        w.keys("l", gap=1.6)
+        w.keys("l", gap=1.6)
+        w.keys("l", gap=1.6)
+        w.caption = "Nothing needs you yet, so aq shows each session live. Then web needs a yes."
+        time.sleep(2.5)
+        permission = w.hook("permission", {
+            "session_id": session["web"], "transcript_path": "", "cwd": str(w.repos["web"]),
+            "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": {"command": "npm run db:migrate -- --env dev",
+                           "description": "Apply the pending migration to the dev database"},
+            "permission_suggestions": []})
+        w.see("db:migrate")
+        w.caption = "web asks to run a command. It comes to you as a card, wherever web's window is."
+        time.sleep(3.5)
+        # The api session finishes while the card is up: its review waits behind it.
+        w.wait("api", True)
+        w.caption = "Meanwhile api finishes its turn. Its review waits its turn: the bar counts it."
+        time.sleep(4.5)
+        w.caption = "y allows the command, and the next card comes up."
+        time.sleep(1.5)
+        w.keys("y")
+        permission.wait(timeout=10)
+        w.see("limiter.py")
+        w.caption = "api's finished turn, as a diff to review."
+        time.sleep(3)
+        w.keys("v", gap=1)
+        w.keys(*["j"] * 13, gap=0.2)
+        w.caption = "c comments on a line, as in a pull request review."
+        time.sleep(1)
+        w.keys("c")
+        w.type("Buckets are never removed, so one per key ever seen stays in memory forever.",
+               delay=0.025)
+        time.sleep(0.6)
+        w.keys("C-s")
+        w.caption = "s sends every comment back to api as one message."
+        time.sleep(2.5)
+        w.keys("s")
+        time.sleep(2)
+        w.wait("api", False)
+        question = w.hook("pre-tool", {
+            "session_id": session["docs"], "transcript_path": "", "cwd": str(w.repos["docs"]),
+            "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_use_id": "t1",
+            "tool_input": {"questions": [
+                {"question": "Where should the export page go?",
+                 "header": "Page", "multiSelect": False, "options": [
+                     {"label": "Under Guides", "description": "Next to the import page"},
+                     {"label": "Under Reference", "description": "With the file format specs"},
+                     {"label": "Its own section", "description": "Linked from the front page"}]}]}})
+        w.see("Where should the export page go")
+        w.caption = "docs asks a question with options. A number key answers it from here."
+        time.sleep(4)
+        w.keys("2")
+        question.wait(timeout=10)
+        w.caption = "The queue is empty: back to the sessions, with api already on your comment."
+        time.sleep(4)
+        w.caption = "Each project picks how closely it is checked: review, step, quiz or vibe."
+        time.sleep(4)
+    return w, rec
+
+
 def scene_new():
     w = World([
         dict(name="api", talk=API_TALK, waiting=True),
@@ -885,7 +986,7 @@ def scene_new():
     return w, rec
 
 
-SCENES = {"review": scene_review, "questions": scene_questions, "new": scene_new, "step": scene_step, "quiz": scene_quiz, "shell": scene_shell,
+SCENES = {"hero": scene_hero, "review": scene_review, "questions": scene_questions, "new": scene_new, "step": scene_step, "quiz": scene_quiz, "shell": scene_shell,
           "tour": scene_tour,
           "sessions": scene_sessions}
 
@@ -897,13 +998,14 @@ def main():
     for name in names:
         try:
             w, rec = SCENES[name]()
-            svg = to_svg(rec.frames, rec.end)
+            # The hero's captions need time to be read.
+            svg = to_svg(rec.frames, rec.end, max_idle=6 if name == "hero" else 2.5)
         finally:
             for w in list(WORLDS):
                 w.close()
         (OUT / f"{name}.svg").write_text(svg)
         if dump := os.environ.get("DEMO_DUMP"):
-            plain = [run("sed", "s/\x1b\\[[0-9;]*m//g", inp=f) for _, f in rec.frames]
+            plain = [run("sed", "s/\x1b\\[[0-9;]*m//g", inp=f) for _, f, _ in rec.frames]
             Path(dump, f"{name}.txt").write_text("\n=====\n".join(plain))
         print(f"{name}: {len(rec.frames)} frames, {len(svg) // 1024} KB")
 
