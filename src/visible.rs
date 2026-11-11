@@ -28,6 +28,43 @@ pub fn wrap(line: &str, width: usize, push: &mut impl FnMut(String)) {
     push(row);
 }
 
+/// `line` cut into rows of at most `width` columns at spaces, each given to
+/// `push`. The space a row breaks at is dropped. A word wider than a row is
+/// cut where the row ends.
+pub fn wrap_words(line: &str, width: usize, push: &mut impl FnMut(String)) {
+    let width = width.max(1);
+    let (mut row, mut used) = (String::new(), 0);
+    for (i, word) in line.split(' ').enumerate() {
+        let w: usize = word.chars().map(cols).sum();
+        // Every word but the first had a space before it, which keeps an
+        // indent and doubled spaces.
+        let gap = usize::from(i > 0);
+        if used + gap + w <= width {
+            if gap == 1 {
+                row.push(' ');
+            }
+            row.push_str(word);
+            used += gap + w;
+            continue;
+        }
+        if used > 0 {
+            push(std::mem::take(&mut row));
+            used = 0;
+        }
+        // Alone on its row, and cut if it is still too wide.
+        for c in word.chars() {
+            let cw = cols(c);
+            if used + cw > width && used > 0 {
+                push(std::mem::take(&mut row));
+                used = 0;
+            }
+            row.push(c);
+            used += cw;
+        }
+    }
+    push(row);
+}
+
 /// Characters that read as nothing or as something else: format (bidi,
 /// zero-width, BOM, tags), line and paragraph separators, and every space but
 /// U+0020, by Unicode general category; plus the default-ignorable ones the
@@ -133,5 +170,18 @@ mod tests {
         let mut rows = Vec::new();
         wrap("漢字漢字ab", 5, &mut |r| rows.push(r));
         assert_eq!(rows, ["漢字", "漢字a", "b"]);
+    }
+
+    #[test]
+    fn wrap_words_breaks_at_spaces_and_cuts_only_a_word_too_wide() {
+        let mut rows = Vec::new();
+        wrap_words("the README is updated", 12, &mut |r| rows.push(r));
+        assert_eq!(rows, ["the README", "is updated"]);
+        rows.clear();
+        wrap_words("  - item one", 8, &mut |r| rows.push(r));
+        assert_eq!(rows, ["  - item", "one"], "the indent stays");
+        rows.clear();
+        wrap_words("a abcdefghij", 4, &mut |r| rows.push(r));
+        assert_eq!(rows, ["a", "abcd", "efgh", "ij"]);
     }
 }

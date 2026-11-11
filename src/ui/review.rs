@@ -32,7 +32,7 @@ pub fn render(
     let [head_area, body] =
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(head), head_area.inner(Margin::new(1, 0)));
-    let (tree_area, diff_area) = tree::split(body, app.files_hidden);
+    let (tree_area, diff_area) = tree::split(body, app.config.hide_files);
     if let Some(tree_area) = tree_area {
         tree::render(frame, tree_area, rc, t);
     }
@@ -183,12 +183,29 @@ mod tests {
                 std::time::Instant::now(),
             )
         };
-        a.update(f());
+        assert_eq!(a.update(f()), vec![crate::app::Effect::SaveConfig]);
+        assert!(a.config.hide_files, "kept in the config across restarts");
         let screen = render(&a, 100, 20);
         assert!(!screen.contains("http.rs"), "{screen}");
         assert!(screen.contains("src/limit.rs · before"), "{screen}");
         a.update(f());
         assert!(render(&a, 100, 20).contains("http.rs"));
+    }
+
+    #[test]
+    fn e_opens_the_file_at_the_cursor_in_an_editor() {
+        let mut a = review_app(fixture_card(2));
+        let e = Msg::Key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('e')),
+            std::time::Instant::now(),
+        );
+        // The cursor starts on the first change, new line 40.
+        let effects = a.update(e);
+        assert!(
+            matches!(&effects[..], [crate::app::Effect::Edit { path, line: 40, .. }]
+                if path == std::path::Path::new("src/limit.rs")),
+            "{effects:?}"
+        );
     }
 
     /// A Markdown file is shown as read: no heading hashes, bold marks or
