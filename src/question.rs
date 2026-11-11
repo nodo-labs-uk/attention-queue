@@ -89,28 +89,14 @@ impl QuestionCard {
                 rows.extend(chars.chunks(width).map(pieces));
                 continue;
             }
-            if trimmed.is_empty() {
+            let Some((indent, mark, body, kind)) = shape(&line) else {
+                rows.push(vec![(Kind::Mark, "─".repeat(width.min(40)))]);
+                continue;
+            };
+            if body.is_empty() && mark.is_empty() {
                 rows.push(Row::new());
                 continue;
             }
-            let indent = line.len() - trimmed.len();
-            let hashes = trimmed.chars().take_while(|&c| c == '#').count();
-            let rule = trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '*');
-            let (mark, body, kind) = if rule {
-                rows.push(vec![(Kind::Mark, "─".repeat(width.min(40)))]);
-                continue;
-            } else if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
-                ("", trimmed[hashes..].trim(), Kind::Heading)
-            } else if let Some(rest) = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-            {
-                ("• ", rest, Kind::Plain)
-            } else if let Some(rest) = trimmed.strip_prefix("> ") {
-                ("│ ", rest, Kind::Plain)
-            } else {
-                ("", trimmed, Kind::Plain)
-            };
             // Later rows of a bullet line up under its text.
             let first: Vec<(Kind, char)> = " "
                 .repeat(indent)
@@ -123,6 +109,53 @@ impl QuestionCard {
         }
         rows
     }
+}
+
+/// A line's Markdown shape: its indent, the mark drawn in front (a bullet
+/// or a quote bar), the text after the line's own marks, and how that text
+/// is drawn. `None` for a rule.
+fn shape(line: &str) -> Option<(usize, &'static str, &str, Kind)> {
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+    let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+    if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '*') {
+        None
+    } else if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
+        Some((indent, "", trimmed[hashes..].trim(), Kind::Heading))
+    } else if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        Some((indent, "• ", rest, Kind::Plain))
+    } else if let Some(rest) = trimmed.strip_prefix("> ") {
+        Some((indent, "│ ", rest, Kind::Plain))
+    } else {
+        Some((indent, "", trimmed, Kind::Plain))
+    }
+}
+
+/// One line of a Markdown file as it reads, for the diff view: the same
+/// marks as a question card, but not flowed, so each line keeps its place
+/// for comments. A fence line shows as written; `in_code` says the line is
+/// inside a fenced block.
+pub fn markdown_line(line: &str, in_code: bool) -> Row {
+    if line.trim_start().starts_with("```") {
+        return vec![(Kind::Mark, line.to_string())];
+    }
+    if in_code {
+        return vec![(Kind::Code, line.to_string())];
+    }
+    let Some((indent, mark, body, kind)) = shape(line) else {
+        return vec![(Kind::Mark, "─".repeat(line.trim().chars().count().max(3)))];
+    };
+    let first: Vec<(Kind, char)> = " "
+        .repeat(indent)
+        .chars()
+        .map(|c| (Kind::Plain, c))
+        .chain(mark.chars().map(|c| (Kind::Mark, c)))
+        .chain(inline(body, kind))
+        .collect();
+    pieces(&first)
 }
 
 /// `text` with its inline marks read: `**bold**` and `` `code` ``, each

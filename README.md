@@ -37,7 +37,7 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 Each project has a mode, and `M` switches it.
 
-**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. This is the video above.
+**Review** (the default): when a session finishes, its diff becomes a card. You can comment on a line or a range, `s` sends all the comments, `a` approves, and `d` marks a file as done so it's out of the way. Markdown files (plans, specs, READMEs) show as read, with headings, bold, code and bullets styled and their marks hidden; `m` shows them as written. This is the video above.
 
 **Step**: every edit waits for approval before it's applied. `y` lets it through, `n` sends it back with a reason.
 

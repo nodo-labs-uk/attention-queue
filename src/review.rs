@@ -60,6 +60,8 @@ pub struct ReviewCard {
     /// This round's comments and, marked by their round, earlier rounds' ones.
     pub comments: Vec<Comment>,
     pub view: DiffView,
+    /// Markdown files shown as written, marks and all, instead of read.
+    pub markdown_source: bool,
     pub show_full_branch: bool,
     pub cursor: Cursor,
     /// Files marked done with `d`: left out of moving around and shown
@@ -393,6 +395,7 @@ pub fn on_key(card: &mut ReviewCard, key: KeyEvent) -> Action {
                 DiffView::Unified => DiffView::Split,
             };
         }
+        KeyCode::Char('m') => card.markdown_source = !card.markdown_source,
         KeyCode::Char('j') | KeyCode::Down => card.move_line(true),
         KeyCode::Char('k') | KeyCode::Up => card.move_line(false),
         KeyCode::Tab | KeyCode::Char('L') => card.next_file(true),

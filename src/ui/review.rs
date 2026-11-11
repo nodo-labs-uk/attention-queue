@@ -173,6 +173,60 @@ mod tests {
         insta::assert_snapshot!(render(&a, 80, 30));
     }
 
+    /// A Markdown file is shown as read: no heading hashes, bold marks or
+    /// code ticks, and lines inside a code fence left alone. `m` shows it as
+    /// written.
+    #[test]
+    fn markdown_reads_rendered_and_m_shows_the_source() {
+        let text = [
+            "# Plan",
+            "Keep **one** bucket per `key`.",
+            "- first",
+            "```sh",
+            "# not a heading",
+            "```",
+        ];
+        let lines = text
+            .iter()
+            .enumerate()
+            .map(|(i, t)| DiffLine::Add {
+                new: i as u32 + 1,
+                text: (*t).into(),
+            })
+            .collect();
+        let file = FileDiff {
+            old_path: None,
+            new_path: Some("docs/plan.md".into()),
+            status: FileStatus::Added,
+            binary: false,
+            hunks: vec![Hunk {
+                old_start: 0,
+                old_len: 0,
+                new_start: 1,
+                new_len: text.len() as u32,
+                lines,
+            }],
+        };
+        let mut rc = ReviewCard::new(1, "a".into(), "b".into(), vec![file], Vec::new(), false);
+        rc.view = DiffView::Unified;
+        let screen = render(&review_app(rc.clone()), 100, 20);
+        for want in [
+            "+Plan",
+            "Keep one bucket per key.",
+            "• first",
+            "# not a heading",
+        ] {
+            assert!(screen.contains(want), "{want} in\n{screen}");
+        }
+        assert!(!screen.contains("# Plan"), "{screen}");
+        rc.markdown_source = true;
+        let screen = render(&review_app(rc), 100, 20);
+        assert!(
+            screen.contains("Keep **one** bucket per `key`."),
+            "{screen}"
+        );
+    }
+
     /// One file of 5,000 diff lines: runs of context, deletions and additions.
     fn big_card() -> ReviewCard {
         let mut lines = Vec::new();

@@ -54,6 +54,7 @@ finished turn; the card on screen stays as it is.
   d  mark the file done: it is ticked and skipped   u  show done files again
   j/k line   V range   ]c/[c change   H/L or tab file
   v  split or unified view           r  whole branch or this round
+  m  Markdown as written, or as read (the default)
 
 # Step card
   y  allow   n  reject with a reason   e  ask for a different change

@@ -13,6 +13,7 @@ use ratatui::text::Span;
 
 use crate::git::{DiffLine, FileDiff, FileStatus};
 use crate::highlight::Highlighter;
+use crate::question::{Kind, markdown_line};
 use crate::review::{
     DiffView, Pair, ReviewCard, Side, comment_anchors, file_path, line_text, lines, split_rows,
 };
@@ -91,6 +92,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mu
     let selected = anchor_row.min(cursor_row)..=anchor_row.max(cursor_row);
     let ctx = Ctx {
         t,
+        in_code: (is_markdown(new_path) && !rc.markdown_source).then(|| in_code(f)),
         gutter: gutter_width(f),
         new_key: new_path.to_path_buf(),
         // The two sides keep separate highlighter state.
@@ -144,7 +146,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mu
                         (&ctx.new_key, *new)
                     }
                 };
-                ctx.line(buf, hl, line, Some((l, key, no)), true, mark);
+                ctx.line(buf, hl, line, Some((i, l, key, no)), true, mark);
             }
             Row::Split((li, ri)) => {
                 let [lr, div, rr] = columns(line);
@@ -154,7 +156,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mu
                         DiffLine::Del { old, .. } | DiffLine::Context { old, .. } => *old,
                         DiffLine::Add { new, .. } => *new,
                     };
-                    (l, &ctx.old_key, no)
+                    (i, l, &ctx.old_key, no)
                 });
                 let right = ri.map(|i| {
                     let l = all[i];
@@ -162,7 +164,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mu
                         DiffLine::Add { new, .. } | DiffLine::Context { new, .. } => *new,
                         DiffLine::Del { old, .. } => *old,
                     };
-                    (l, &ctx.new_key, no)
+                    (i, l, &ctx.new_key, no)
                 });
                 ctx.line(buf, hl, lr, left, false, mark);
                 divider(buf, div, t);
@@ -308,6 +310,42 @@ fn build_rows(rc: &ReviewCard, f: &FileDiff) -> Vec<Row> {
     rows
 }
 
+fn is_markdown(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("md" | "markdown")
+    )
+}
+
+/// For each line of `f`, whether it sits inside a fenced code block. Each
+/// side keeps its own count, from the start of each hunk, since what is
+/// above a hunk is not in the diff.
+fn in_code(f: &FileDiff) -> Vec<bool> {
+    let mut out = Vec::new();
+    for hunk in &f.hunks {
+        let (mut old, mut new) = (false, false);
+        for l in &hunk.lines {
+            let fence = line_text(l).trim_start().starts_with("```");
+            match l {
+                DiffLine::Del { .. } => {
+                    out.push(old);
+                    old ^= fence;
+                }
+                DiffLine::Add { .. } => {
+                    out.push(new);
+                    new ^= fence;
+                }
+                DiffLine::Context { .. } => {
+                    out.push(new);
+                    old ^= fence;
+                    new ^= fence;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Digits of the largest line number, plus a space.
 fn gutter_width(f: &FileDiff) -> u16 {
     let max = f
@@ -338,22 +376,36 @@ struct Mark {
 
 struct Ctx<'a> {
     t: &'a Theme,
+    /// Set when Markdown is shown as read: whether each line is code.
+    in_code: Option<Vec<bool>>,
     gutter: u16,
     new_key: PathBuf,
     old_key: PathBuf,
 }
 
 impl Ctx<'_> {
+    /// Line `i`'s text as drawn: read as Markdown when it is shown so.
+    fn shown(&self, all: &[&DiffLine], i: usize) -> String {
+        let text = line_text(all[i]);
+        match &self.in_code {
+            Some(in_code) => markdown_line(text, in_code[i])
+                .into_iter()
+                .map(|(_, piece)| piece)
+                .collect(),
+            None => text.to_string(),
+        }
+    }
+
     /// Screen lines `row` takes in a body `width` wide.
     fn height(&self, row: &Row, rc: &ReviewCard, all: &[&DiffLine], width: u16) -> usize {
         let [left, _, right] = columns(Rect::new(0, 0, width, 1));
         let g = self.gutter;
         match *row {
             Row::Hunk(_) => 1,
-            Row::Unified(i) => rows_for(line_text(all[i]), width.saturating_sub(g + 1)),
+            Row::Unified(i) => rows_for(&self.shown(all, i), width.saturating_sub(g + 1)),
             Row::Split((l, r)) => {
                 let side = |i: Option<usize>, w: u16| {
-                    i.map_or(1, |i| rows_for(line_text(all[i]), w.saturating_sub(g)))
+                    i.map_or(1, |i| rows_for(&self.shown(all, i), w.saturating_sub(g)))
                 };
                 side(l, left.width).max(side(r, right.width))
             }
@@ -378,19 +430,19 @@ impl Ctx<'_> {
         buf: &mut Buffer,
         hl: &mut Highlighter,
         area: Rect,
-        line: Option<(&DiffLine, &PathBuf, u32)>,
+        line: Option<(usize, &DiffLine, &PathBuf, u32)>,
         sign: bool,
         mark: Mark,
     ) {
         let t = self.t;
-        let (bg, fg, sign_char) = match line.map(|(l, ..)| l) {
+        let (bg, fg, sign_char) = match line.map(|(_, l, ..)| l) {
             Some(DiffLine::Add { .. }) => (t.add_bg, t.add, '+'),
             Some(DiffLine::Del { .. }) => (t.del_bg, t.del, '-'),
             Some(DiffLine::Context { .. }) | None => (t.bg, t.fg, ' '),
         };
         let bg = if mark.selected { t.sel } else { bg };
         buf.set_style(area, Style::new().bg(bg));
-        let Some((l, key, no)) = line else { return };
+        let Some((i, l, key, no)) = line else { return };
         let width = area.width as usize;
         let num = if mark.cursor {
             Style::new().fg(t.hi).add_modifier(Modifier::BOLD)
@@ -402,6 +454,22 @@ impl Ctx<'_> {
             buf.set_stringn(area.x, area.y, format!("{no:>w$} ", w = g - 1), width, num);
         if sign {
             (x, _) = buf.set_stringn(x, area.y, sign_char.to_string(), 1, Style::new().fg(fg));
+        }
+        if let Some(in_code) = &self.in_code {
+            let pieces = markdown_line(line_text(l), in_code[i])
+                .into_iter()
+                .map(|(kind, text)| {
+                    let style = match kind {
+                        Kind::Plain => Style::new().fg(fg),
+                        Kind::Bold => Style::new().fg(fg).add_modifier(Modifier::BOLD),
+                        Kind::Code => Style::new().fg(t.key),
+                        Kind::Heading => Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
+                        Kind::Mark => Style::new().fg(t.dim),
+                    };
+                    (style, text)
+                });
+            draw_wrapped(buf, area, x, pieces);
+            return;
         }
         let pieces = hl
             .highlight_line(key, no, line_text(l))
