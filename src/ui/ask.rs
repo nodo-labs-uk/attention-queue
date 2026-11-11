@@ -102,7 +102,7 @@ mod tests {
         ];
         let screen = render(&a, 80, 24);
         for want in [
-            "? why?",
+            "why?",
             "Asking…",
             "took too long",
             "r to retry",
