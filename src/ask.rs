@@ -87,14 +87,18 @@ pub fn panel(area: Rect) -> Rect {
     )
 }
 
+/// How much narrower and shorter the text is than the panel: a border and
+/// a blank cell of padding on each side.
+pub const INSET: u16 = 4;
+
 /// Width and height of the text inside the overlay, for a screen of this
 /// size.
 pub fn text_size(screen: (u16, u16)) -> (usize, usize) {
     let body = Rect::new(0, 0, screen.0, screen.1.saturating_sub(2));
     let p = panel(body);
     (
-        usize::from(p.width.saturating_sub(2)).max(1),
-        usize::from(p.height.saturating_sub(2)).max(1),
+        usize::from(p.width.saturating_sub(INSET)).max(1),
+        usize::from(p.height.saturating_sub(INSET)).max(1),
     )
 }
 

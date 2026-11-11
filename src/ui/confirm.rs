@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 
 use crate::theme::Theme;
 
@@ -38,6 +38,7 @@ pub fn render(
         .border_style(Style::new().fg(t.acc))
         .title(format!(" {title} "))
         .title_bottom(hints.right_aligned())
+        .padding(Padding::horizontal(1))
         .style(Style::new().bg(t.panel).fg(t.fg));
     let text: Vec<Line> = lines.iter().map(|l| Line::raw(l.clone())).collect();
     frame.render_widget(
