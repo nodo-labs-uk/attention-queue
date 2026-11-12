@@ -270,7 +270,23 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 Some(group) => format!("Message every session in {}", empty::visible(group)),
                 None => format!("Message to {name}"),
             };
-            input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
+            let ghost = d.ghost();
+            let more: &[(&str, &str)] = if ghost.is_some() {
+                &[("Tab", "suggestion")]
+            } else {
+                &[]
+            };
+            input::render_with_ghost(
+                frame,
+                body,
+                &d.input,
+                &title,
+                "send",
+                more,
+                ghost,
+                t,
+                (100, 12),
+            );
         }
         Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
         Some(Overlay::Workspace(d)) => workspace::render(frame, body, d, &app.config.workspaces, t),

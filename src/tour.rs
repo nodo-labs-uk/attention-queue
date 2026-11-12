@@ -433,6 +433,7 @@ fn practice_agents() -> Vec<Agent> {
                 waiting,
                 input: InputBox::Unseen,
                 permission_mode: None,
+                suggestion: None,
             }
         })
         .collect()
@@ -738,6 +739,7 @@ impl App {
                     agent: agent.id,
                     input: TextInput::single_line(),
                     group: None,
+                    suggestion: None,
                 }));
             }
             "W" => {

@@ -384,6 +384,7 @@ impl App {
                     agent,
                     input: TextInput::single_line(),
                     group: None,
+                    suggestion: None,
                 }));
             }
             KeyCode::Char('x') => {

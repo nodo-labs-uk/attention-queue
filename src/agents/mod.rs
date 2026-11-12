@@ -36,6 +36,8 @@ pub struct Agent {
     pub input: InputBox,
     /// The permission mode its footer shows ("auto", "plan"...), if seen.
     pub permission_mode: Option<&'static str>,
+    /// What Claude Code suggests sending next, read with `input`.
+    pub suggestion: Option<String>,
 }
 
 /// Claude Code's input box as last read from the agent's screen.
@@ -84,6 +86,26 @@ pub fn read_input_box(screen: &str) -> InputBox {
     } else {
         InputBox::Holding(text)
     }
+}
+
+/// What Claude Code suggests you send next: the dimmed text in an empty
+/// input box. A fresh session's `Try "..."` hint and the note under queued
+/// messages are not suggestions.
+pub fn read_suggestion(screen: &str) -> Option<String> {
+    if read_input_box(screen) != InputBox::Empty {
+        return None;
+    }
+    let plain: Vec<String> = screen.lines().map(strip_sgr).collect();
+    let rows: Vec<&str> = plain.iter().map(String::as_str).collect();
+    let line = rows[input_row(&rows)?];
+    let text = line
+        .split_once('❯')?
+        .1
+        .replace('\u{a0}', " ")
+        .trim()
+        .to_string();
+    let hint = text.starts_with("Try \"") || text.starts_with("Press up to edit");
+    (!text.is_empty() && !hint).then_some(text)
 }
 
 /// `line` without its colour escapes.
@@ -229,6 +251,32 @@ mod input_box_tests {
 
     fn screen(prompt_line: &str) -> String {
         format!("● Done.\n{RULE}\n{prompt_line}\n{RULE}\n  ctx:11% Opus\n")
+    }
+
+    #[test]
+    fn claudes_suggestion_is_read_but_not_its_placeholders() {
+        let suggestion = |line: &str| read_suggestion(&screen(line));
+        assert_eq!(
+            suggestion("\x1b[39m❯\u{a0}\x1b[2mcommit this\x1b[0m"),
+            Some("commit this".into())
+        );
+        assert_eq!(
+            suggestion("\x1b[39m❯\u{a0}\x1b[38;5;246mrun the tests\x1b[39m"),
+            Some("run the tests".into())
+        );
+        // A fresh session's hint, and the note under queued messages.
+        assert_eq!(
+            suggestion("\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\x1b[0m"),
+            None
+        );
+        assert_eq!(
+            suggestion("\x1b[39m❯\u{a0}\x1b[2mPress up to edit queued messages\x1b[0m"),
+            None
+        );
+        // Typed text is yours, not a suggestion; an empty box has none.
+        assert_eq!(suggestion("\x1b[39m❯\u{a0}go ahead"), None);
+        assert_eq!(suggestion("\x1b[39m❯\u{a0}"), None);
+        assert_eq!(read_suggestion("Allow this?\n❯ 1. Yes"), None, "a menu");
     }
 
     #[test]
