@@ -183,6 +183,7 @@ fn join(
             input: super::InputBox::Unseen,
             permission_mode: None,
             suggestion: None,
+            last_prompt: None,
         });
     }
     agents
@@ -275,6 +276,9 @@ impl AgentConn for TmuxConn {
                 a.input = super::read_input_box(&screen);
                 a.suggestion = super::read_suggestion(&screen);
             }
+        }
+        for a in &mut agents {
+            a.last_prompt = crate::transcript::last_prompt_at(&a.session_id);
         }
         Ok(agents)
     }
