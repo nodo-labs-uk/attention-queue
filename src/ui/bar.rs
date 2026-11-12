@@ -9,7 +9,7 @@ use crate::app::{App, project_name};
 use crate::model::{Card, CardKind};
 
 /// Kinds in the order the queue serves them.
-const KIND_ORDER: [fn(&CardKind) -> bool; 7] = [
+const KIND_ORDER: [fn(&CardKind) -> bool; 8] = [
     |k| matches!(k, CardKind::Permission(_)),
     |k| matches!(k, CardKind::Choice(_)),
     |k| matches!(k, CardKind::Step(_)),
@@ -17,6 +17,7 @@ const KIND_ORDER: [fn(&CardKind) -> bool; 7] = [
     |k| matches!(k, CardKind::Review(_)),
     |k| matches!(k, CardKind::Quiz(_)),
     |k| matches!(k, CardKind::Question(_)),
+    |k| matches!(k, CardKind::Tell(_)),
 ];
 
 /// Top row: the current card on the left, counts of everything queued and

@@ -10,6 +10,7 @@ pub use crate::quiz::QuizCard;
 pub use crate::review::ReviewCard;
 pub use crate::shell::ShellCard;
 pub use crate::step::StepCard;
+pub use crate::tell::TellCard;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,6 +53,8 @@ pub enum CardKind {
     Question(QuestionCard),
     /// Claude's option menu, waiting on its hook for an answer.
     Choice(ChoiceCard),
+    /// `aq tell`: a session's message to another, for you to approve.
+    Tell(TellCard),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

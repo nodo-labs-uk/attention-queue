@@ -274,6 +274,8 @@ pub enum Effect {
     OpenWorkspace {
         session: String,
         dirs: Vec<PathBuf>,
+        /// Added to each session's system prompt: how to reach the others.
+        system: String,
     },
     /// Say yes to the trust menu of the new session in `pane`.
     TrustFolder {
@@ -1218,6 +1220,23 @@ impl App {
             } if tool_name == crate::choice::TOOL => {
                 self.on_choice(req_id, at, &session_id, &cwd, checkout, tool_input)
             }
+            Msg::Ipc {
+                req_id,
+                req: HookRequest::Tell { pane, to, text },
+                ..
+            } => {
+                let (decision, mut effects) = self.on_tell(pane.as_deref(), &to, &text);
+                effects.insert(0, Effect::Reply { req_id, decision });
+                effects
+            }
+            Msg::Ipc {
+                req_id,
+                req: HookRequest::Tellable { pane },
+                ..
+            } => vec![Effect::Reply {
+                req_id,
+                decision: self.on_tellable(pane.as_deref()),
+            }],
             // No card for the other kinds; nothing waits.
             Msg::Ipc { req_id, .. } => vec![Effect::Reply {
                 req_id,
@@ -1462,6 +1481,7 @@ impl App {
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
                 Some(CardKind::Question(_)) => self.on_question_key(key),
+                Some(CardKind::Tell(_)) => self.on_tell_key(key),
                 Some(CardKind::Choice(_)) => self.on_choice_key(key),
                 Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
                 Some(CardKind::Review(_)) => self.on_review_key(key),

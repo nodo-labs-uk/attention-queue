@@ -4,6 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use super::question::TELL_KEYS;
 use crate::app::{App, Overlay};
 use crate::model::{Card, CardKind};
 use crate::quiz::{QuizCard, QuizState, Verdict};
@@ -259,6 +260,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("t", "theme".into()),
             ("Q", "quit".into()),
         ],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Tell(_),
+                ..
+            }),
+        ) => TELL_KEYS.iter().map(|(k, l)| (*k, l.to_string())).collect(),
         (None, None) => vec![("t", "theme".into()), ("Q", "quit".into())],
     };
     let mut spans = vec![Span::raw(" ")];

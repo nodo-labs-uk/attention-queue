@@ -407,10 +407,11 @@ pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<St
     Ok(out.trim().to_string())
 }
 
-/// Starts `claude` in `dir` in tmux session `session`, as a new window, or
-/// as the session's first if there is no such session yet. Returns the
-/// pane. `-d` leaves you where you are.
-pub fn new_claude_in(session: &str, dir: &Path) -> Result<String> {
+/// Starts `claude` in `dir` in tmux session `session`, as a new window
+/// named after `dir`, or as the session's first if there is no such
+/// session yet; `system` is added to its system prompt. Returns the pane.
+/// `-d` leaves you where you are.
+pub fn new_claude_in(session: &str, dir: &Path, system: &str) -> Result<String> {
     let exact = format!("={session}");
     let mut has = Command::new("tmux");
     has.args(["has-session", "-t", &exact]);
@@ -422,9 +423,17 @@ pub fn new_claude_in(session: &str, dir: &Path) -> Result<String> {
     } else {
         cmd.args(["new-session", "-d", "-s", session]);
     }
+    // The name is expanded as a format, like the start directory.
+    if let Some(name) = dir.file_name() {
+        cmd.arg("-n").arg(format_literal(&name.to_string_lossy()));
+    }
     cmd.args(["-P", "-F", "#{pane_id}", "-c"])
         .arg(format_literal(&dir.to_string_lossy()))
-        .arg(claude_command(None, false));
+        .arg(format!(
+            "{} --append-system-prompt {}",
+            claude_command(None, false),
+            shell_quote(system)
+        ));
     let (status, out, err) = super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux")?;
     anyhow::ensure!(status.success(), "{}", err.trim());
     Ok(out.trim().to_string())

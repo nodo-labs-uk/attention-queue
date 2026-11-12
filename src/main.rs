@@ -26,6 +26,15 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_DEADLINE_SECS)]
         deadline_secs: u64,
     },
+    /// Ask another Claude session to do something; you approve it in aq
+    /// first. With no arguments, lists the sessions it can tell.
+    Tell {
+        /// The session: its project name, as its tab shows it
+        to: Option<String>,
+        /// What to ask it
+        #[arg(trailing_var_arg = true)]
+        message: Vec<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -51,6 +60,25 @@ fn main() -> anyhow::Result<()> {
         }) => {
             hook(event, Duration::from_secs(deadline_secs));
             Ok(())
+        }
+        Some(Command::Tell { to, message }) => {
+            let pane = aq::hook::tmux_pane();
+            let req = match to {
+                None => aq::ipc::HookRequest::Tellable { pane },
+                Some(to) => aq::ipc::HookRequest::Tell {
+                    pane,
+                    to,
+                    text: message.join(" "),
+                },
+            };
+            let (ok, text) = aq::hook::tell(&aq::config::paths().socket, &req);
+            if ok {
+                println!("{text}");
+                Ok(())
+            } else {
+                eprintln!("aq tell: {text}");
+                std::process::exit(1);
+            }
         }
     }
 }

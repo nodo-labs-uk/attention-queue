@@ -69,6 +69,14 @@ When nothing is waiting, there is a tab per session with the selected one's scre
 
 `O` opens a workspace: several repos at once, for work that spans them. Pick the folder that holds them, and aq finds the git repos inside (up to two levels down) and ticks them all; `Space` unticks one. `Enter` starts a Claude session in each, as windows of one tmux session named after the folder, so they share a row of tabs. aq saves the set in its config, and `O` lists it next time; opening it again starts only the repos that have no session there yet.
 
+Sessions can ask each other for work with `aq tell <name> "<message>"`, where the name is the other session's project, as its tab shows it; `aq tell` alone lists them. Each message becomes a card: `y` sends it, `e` lets you edit it first, `n` drops it, so nothing crosses between repos without you. Sessions opened from a workspace are told how to use it. For a session started some other way, add a line like this to its `CLAUDE.md`:
+
+```
+To ask a Claude session in another repo to do something, run `aq tell <name> "<message>"`; `aq tell` alone lists the sessions.
+```
+
+Claude asks before it runs `aq tell` unless the command is allowed, for example with `Bash(aq tell:*)` in `permissions.allow`.
+
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
 
 ![N starts a session in a worktree of its own, then Ctrl-O starts one in a folder that is made for it](docs/media/new.svg)
@@ -102,6 +110,7 @@ The ones worth knowing from day one:
 | `e` | review | open the file at this line in `$VISUAL` or `$EDITOR` |
 | `y` `n` | step, permission | allow, or refuse with a reason |
 | `a` `Enter` | question | approve, or reply in your own words |
+| `y` `e` `n` | message | send a session's `aq tell` message, edit it first, or drop it |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
 | `h` `l` | sessions | pick a session |
 | `Tab` | sessions | back to the session shown before; again to return |

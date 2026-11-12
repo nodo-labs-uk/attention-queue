@@ -92,6 +92,12 @@ When Claude asks with its own menu of options, the card lists them:
   x  let the menu show in the session's window instead   g  and go there
 This needs AskUserQuestion in the PreToolUse hook's matcher.
 
+# Message card
+A session ran aq tell to ask another session to do something. Nothing
+reaches the other session until you say so (in vibe mode, it goes at once).
+  y  send it, starting 'From the <name> session:'   e  edit it first
+  n  drop it   j/k scroll
+
 # Quiz card
 Each question opens with its piece of the diff and a box for your answer.
   Ctrl-S or Enter on an empty line  submit    Esc  put the box away
