@@ -187,6 +187,56 @@ fn join(
     agents
 }
 
+/// How often, and (times `SENT_CHECKS`) how long, the input box is read
+/// after a send.
+const SENT_POLL: Duration = Duration::from_millis(250);
+const SENT_CHECKS: u32 = 6;
+
+/// Whether the input box on `screen` holds `sent`: as typed, or as the
+/// placeholder Claude Code shows for a long paste.
+fn holds(screen: &str, sent: &str) -> bool {
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    match super::read_input_box(screen) {
+        super::InputBox::Holding(t) => {
+            let (t, sent) = (squash(&t), squash(sent));
+            t.starts_with("[Pasted text")
+                || (!t.is_empty() && sent.starts_with(&t))
+                || t.starts_with(&sent)
+        }
+        _ => false,
+    }
+}
+
+/// After a message was pasted and Enter pressed: if it still sits in the
+/// input box, Enter did not take (it can arrive while Claude Code is
+/// starting a turn of its own), so Enter is pressed once more. A message
+/// still there after that is an error, so you hear of it.
+fn confirm_sent(
+    read: impl Fn() -> Result<String>,
+    enter: impl Fn() -> Result<()>,
+    sent: &str,
+    poll: Duration,
+) -> Result<()> {
+    let still_there = || -> Result<bool> {
+        for _ in 0..SENT_CHECKS {
+            std::thread::sleep(poll);
+            if !holds(&read()?, sent) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    if !still_there()? {
+        return Ok(());
+    }
+    enter()?;
+    anyhow::ensure!(
+        !still_there()?,
+        "the message is still in its input box: press Enter in its window"
+    );
+    Ok(())
+}
+
 /// `text` without control characters other than newline and tab, C1 controls
 /// (U+0080 to U+009F) included. Text pasted into a pane may come from diffs;
 /// an escape sequence such as `ESC [201~` (end of bracketed paste) would
@@ -229,9 +279,16 @@ impl AgentConn for TmuxConn {
 
     fn send_text(&self, agent: &AgentId, text: &str) -> Result<()> {
         let pane = agent.pane.as_str();
-        self.run(&["load-buffer", "-b", "aq", "-"], &strip_controls(text))?;
+        let text = strip_controls(text);
+        self.run(&["load-buffer", "-b", "aq", "-"], &text)?;
         self.run(&["paste-buffer", "-p", "-d", "-b", "aq", "-t", pane], "")?;
-        self.run(&["send-keys", "-t", pane, "Enter"], "")
+        self.run(&["send-keys", "-t", pane, "Enter"], "")?;
+        confirm_sent(
+            || self.capture_styled(pane),
+            || self.run(&["send-keys", "-t", pane, "Enter"], ""),
+            &text,
+            SENT_POLL,
+        )
     }
 
     fn is_alive(&self, agent: &AgentId) -> bool {
@@ -867,6 +924,63 @@ mod tests {
         let agents = join(&fixture_panes(), &procs[..1], |_, _| false);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id.pane, "%56");
+    }
+
+    fn box_holding(text: &str) -> String {
+        format!("● Done.\n─────\n\x1b[39m❯\u{a0}{text}\n─────\n  ctx:5%\n")
+    }
+
+    /// Screens to read in turn (the last repeats), and how many Enters were
+    /// pressed.
+    fn confirm_with(screens: &[String]) -> (Result<()>, usize) {
+        let read = std::cell::Cell::new(0);
+        let pressed = std::cell::Cell::new(0);
+        let result = confirm_sent(
+            || {
+                let i = read.get().min(screens.len() - 1);
+                read.set(read.get() + 1);
+                Ok(screens[i].clone())
+            },
+            || {
+                pressed.set(pressed.get() + 1);
+                Ok(())
+            },
+            "merge them in order",
+            Duration::from_millis(1),
+        );
+        (result, pressed.get())
+    }
+
+    #[test]
+    fn a_message_left_in_the_input_box_gets_enter_again() {
+        // Stuck through every check, then gone after the second Enter.
+        let stuck_then_sent = |text: &str| {
+            let mut screens = vec![box_holding(text); SENT_CHECKS as usize];
+            screens.push(box_holding(""));
+            screens
+        };
+        let (result, pressed) = confirm_with(&stuck_then_sent("merge them in order"));
+        assert!(result.is_ok());
+        assert_eq!(pressed, 1);
+        // Sent at once: nothing more is pressed.
+        let (result, pressed) = confirm_with(&[box_holding("")]);
+        assert!(result.is_ok() && pressed == 0);
+        // A long message shows as a placeholder.
+        let pasted = stuck_then_sent("[Pasted text #1 +12 lines]");
+        assert_eq!(confirm_with(&pasted).1, 1);
+        // A box that clears a moment late needs nothing more.
+        let late = [box_holding("merge them in order"), box_holding("")];
+        assert_eq!(confirm_with(&late).1, 0);
+        // Your own words in the box are not taken for the message.
+        assert_eq!(confirm_with(&[box_holding("something else")]).1, 0);
+    }
+
+    #[test]
+    fn a_message_that_stays_in_the_box_is_reported() {
+        let (result, pressed) = confirm_with(&[box_holding("merge them in order")]);
+        assert_eq!(pressed, 1, "Enter is pressed again once only");
+        let e = result.unwrap_err().to_string();
+        assert!(e.contains("still in its input box"), "{e}");
     }
 
     #[test]
