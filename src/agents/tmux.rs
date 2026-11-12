@@ -148,7 +148,9 @@ impl TmuxConn {
     }
 }
 
-/// Joins each claude process to the pane whose `pane_pid` is itself or an ancestor of it.
+/// Joins each claude process to the pane whose `pane_pid` is itself or an
+/// ancestor of it. A claude started under another (by a hook or a tool,
+/// as `claude -p`) is part of that session, not a session of its own.
 fn join(
     panes: &[Pane],
     procs: &[ClaudeProc],
@@ -156,6 +158,9 @@ fn join(
 ) -> Vec<Agent> {
     let mut agents = Vec::new();
     for p in procs {
+        if procs.iter().any(|q| is_ancestor(q.pid, p.pid)) {
+            continue;
+        }
         let Some(pane) = panes
             .iter()
             .find(|pane| pane.pane_pid == p.pid || is_ancestor(pane.pane_pid, p.pid))
@@ -830,6 +835,25 @@ mod tests {
         let agents = join(&fixture_panes(), &procs[..1], |_, _| false);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id.pane, "%56");
+    }
+
+    #[test]
+    fn a_claude_started_by_another_claude_is_not_a_session_of_its_own() {
+        // A hook of the session at 279801 runs claude -p as 990001.
+        let mut procs = fixture_procs();
+        let mut child = procs[0].clone();
+        child.pid = 990001;
+        child.session_id = "headless".into();
+        procs.push(child);
+        let anc = |a: u32, p: u32| {
+            matches!(
+                (a, p),
+                (2466920 | 279801, 990001) | (2466920, 279801) | (3935219, 280112)
+            )
+        };
+        let agents = join(&fixture_panes(), &procs, anc);
+        let pids: Vec<u32> = agents.iter().map(|a| a.id.claude_pid).collect();
+        assert_eq!(pids, [279801, 280112]);
     }
 
     #[test]
