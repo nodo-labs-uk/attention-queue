@@ -59,7 +59,7 @@ Each project has a mode, and `M` switches it.
 
 **Vibe**: nothing is checked; the agent just codes.
 
-**Questions**, in every mode: when a session ends its turn by asking you something (to approve a draft, to choose between two ways), its message becomes a card. `a` approves when the question asks for a go-ahead, `Enter` replies in your own words, and `x` puts the card away. When Claude asks with its own menu of options, the card lists them and a number key picks one; the answer goes back through the hook, so nothing is typed into the session. A turn that has both a diff and a question shows the question on the review card, and sending from there answers it.
+**Questions**, in every mode: when a session ends its turn by asking you something (to approve a draft, to choose between two ways), its message becomes a card. `a` approves when the question asks for a go-ahead, `Enter` replies in your own words, and `x` stashes the card. When Claude asks with its own menu of options, the card lists them and a number key picks one; the answer goes back through the hook, so nothing is typed into the session. A turn that has both a diff and a question shows the question on the review card, and sending from there answers it.
 
 ![A session asks to approve a PR draft and a approves it; then Claude's option menu is answered from a card](docs/media/questions.svg)
 
@@ -104,7 +104,7 @@ The ones worth knowing from day one:
 | drag | anywhere | select text; letting go copies it |
 | double-click, triple-click | anywhere | copy the word, or the whole line, as in Ghostty |
 | `Space` | card | skip it for now |
-| `B` | card | send it to the back of the queue, behind every other card |
+| `B` | card | move it to the back of the queue, behind every other card |
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
 | `f` | review | hide or show the file list, for a wider diff |

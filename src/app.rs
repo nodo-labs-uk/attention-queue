@@ -1535,7 +1535,7 @@ impl App {
                 } else {
                     self.queue.to_back();
                     self.set_status(format!(
-                        "Sent to the back, behind {} more",
+                        "Moved to the back, behind {} more",
                         self.queue.len() - 1
                     ));
                 }
@@ -2470,7 +2470,7 @@ pub(crate) mod tests {
         assert_eq!(a.queue.current().unwrap().id, 1, "Space keeps it first");
         a.update(key('B'));
         assert_eq!(a.queue.current().unwrap().id, 2);
-        assert_eq!(a.status_text(), Some("Sent to the back, behind 1 more"));
+        assert_eq!(a.status_text(), Some("Moved to the back, behind 1 more"));
         // A question card too.
         a.queue.push(card(
             3,

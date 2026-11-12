@@ -18,7 +18,7 @@ pub const TELL_KEYS: [(&str, &str); 6] = [
     ("y", "send"),
     ("e", "edit first"),
     ("n", "drop"),
-    ("B", "to the back"),
+    ("B", "move to back"),
     ("?", "ask"),
     ("j/k", "scroll"),
 ];
@@ -29,9 +29,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
         .into_iter()
         .chain([
             ("Enter", "reply"),
-            ("x", "put away"),
+            ("x", "stash"),
             ("g", "go to window"),
-            ("B", "to the back"),
+            ("B", "move to back"),
             ("?", "ask"),
         ])
         .collect();
