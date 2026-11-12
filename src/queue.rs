@@ -6,7 +6,8 @@ use crate::model::{Card, CardKind};
 /// session is stopped mid-turn on each, oldest first. Then each
 /// checkout holding a step or shell-change card, one checkout at a time, the
 /// one with the oldest such card first, with all its cards. Then everything
-/// else, oldest first. A skipped card goes behind every card of its group.
+/// else, oldest first. A skipped card goes behind every card of its group;
+/// one sent to the back goes behind every card, whatever its group.
 ///
 /// That order applies only behind the pinned card: once a card is on screen
 /// (`pin`), it stays first until it is removed or skipped, so a new card
@@ -24,6 +25,8 @@ struct Entry {
     card: Card,
     /// 0 until skipped; then the skip count at that moment, so later skips sort later.
     skipped: u64,
+    /// 0 until sent to the back; then the skip count at that moment.
+    back: u64,
 }
 
 impl Queue {
@@ -32,7 +35,11 @@ impl Queue {
     }
 
     pub fn push(&mut self, card: Card) {
-        self.entries.push(Entry { card, skipped: 0 });
+        self.entries.push(Entry {
+            card,
+            skipped: 0,
+            back: 0,
+        });
     }
 
     pub fn len(&self) -> usize {
@@ -81,6 +88,15 @@ impl Queue {
         }
     }
 
+    /// Moves the current card behind every card in the queue.
+    pub fn to_back(&mut self) {
+        if let Some(&i) = self.order().first() {
+            self.skips += 1;
+            self.entries[i].back = self.skips;
+            self.pinned = None;
+        }
+    }
+
     /// Cards in display order.
     pub fn iter(&self) -> impl Iterator<Item = &Card> {
         self.order().into_iter().map(|i| &self.entries[i].card)
@@ -120,6 +136,8 @@ impl Queue {
             rest = others;
         }
         out.extend(rest);
+        // Cards sent to the back, the latest last. A sort keeps the rest in order.
+        out.sort_by_key(|&i| self.entries[i].back);
         if let Some(at) = self
             .pinned
             .and_then(|id| out.iter().position(|&i| card(i).id == id))
@@ -160,6 +178,28 @@ pub(crate) mod tests {
 
     fn ids(q: &Queue) -> Vec<u64> {
         q.iter().map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn to_back_goes_behind_every_group() {
+        let mut q = Queue::new();
+        q.push(card(
+            1,
+            "/a",
+            CardKind::Permission(PermissionCard::default()),
+            10,
+        ));
+        q.push(card(2, "/b", step(), 30));
+        q.push(card(3, "/c", review(), 20));
+        q.pin();
+        assert_eq!(ids(&q), [1, 2, 3]);
+        q.to_back();
+        assert_eq!(ids(&q), [2, 3, 1], "a permission, behind a review");
+        q.to_back();
+        assert_eq!(ids(&q), [3, 1, 2], "the latest sent last");
+        // A new card comes in ahead of those sent back.
+        q.push(card(4, "/d", review(), 0));
+        assert_eq!(ids(&q), [3, 4, 1, 2]);
     }
 
     #[test]

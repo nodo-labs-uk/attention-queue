@@ -29,6 +29,7 @@ finished turn; the card on screen stays as it is.
 
 # Every card
   ?    ask the agent a side question      Space  skip this card
+                                          B      send it to the back of the queue
   W    where are we: a short summary of what is done and what is left
   N    a new Claude session in this project, in a tmux window of its own;
        what you type is its first prompt, and Tab gives it a git worktree

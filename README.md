@@ -104,6 +104,7 @@ The ones worth knowing from day one:
 | drag | anywhere | select text; letting go copies it |
 | double-click, triple-click | anywhere | copy the word, or the whole line, as in Ghostty |
 | `Space` | card | skip it for now |
+| `B` | card | send it to the back of the queue, behind every other card |
 | `c` `s` `a` | review | comment, send the comments, approve the lot |
 | `d` | review | mark a file done |
 | `f` | review | hide or show the file list, for a wider diff |
