@@ -20,6 +20,7 @@ pub mod review;
 pub mod runtime;
 pub mod shell;
 pub mod step;
+pub mod tell;
 pub mod theme;
 pub mod tour;
 pub mod transcript;

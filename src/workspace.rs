@@ -236,6 +236,11 @@ impl App {
             .filter(|d| !open.contains(d))
             .collect();
         let already = ticked.len() - dirs.len();
+        let names: Vec<String> = ticked
+            .iter()
+            .map(|r| crate::app::project_name(&crate::model::Checkout(pick.root.join(r))))
+            .collect();
+        let system = crate::tell::how_to_tell(&pick.name, &names);
         self.overlay = None;
         self.config.workspaces.insert(
             pick.name.clone(),
@@ -260,6 +265,7 @@ impl App {
         effects.push(Effect::OpenWorkspace {
             session: pick.name,
             dirs,
+            system,
         });
         effects
     }
@@ -344,6 +350,17 @@ mod tests {
         }
     }
 
+    /// The tmux session and folders an `OpenWorkspace` starts.
+    fn opened(effects: &[Effect]) -> (&str, &[PathBuf]) {
+        effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::OpenWorkspace { session, dirs, .. } => Some((session.as_str(), &dirs[..])),
+                _ => None,
+            })
+            .expect("an OpenWorkspace")
+    }
+
     fn app() -> App {
         let mut a = App::new(Config::default(), builtin_themes());
         a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
@@ -396,15 +413,20 @@ mod tests {
         press(&mut a, KeyCode::Down);
         press(&mut a, KeyCode::Char(' '));
         let effects = press(&mut a, KeyCode::Enter);
+        assert_eq!(effects[0], Effect::SaveConfig);
         assert_eq!(
-            effects,
-            [
-                Effect::SaveConfig,
-                Effect::OpenWorkspace {
-                    session: "billing".into(),
-                    dirs: vec!["/w/billing/api".into(), "/w/billing/tools/cli".into()],
-                },
-            ]
+            opened(&effects),
+            (
+                "billing",
+                &["/w/billing/api".into(), "/w/billing/tools/cli".into()][..]
+            )
+        );
+        let Effect::OpenWorkspace { system, .. } = &effects[1] else {
+            unreachable!()
+        };
+        assert!(
+            system.contains("workspace billing") && system.contains("api, cli"),
+            "{system}"
         );
         assert_eq!(a.overlay, None);
         assert_eq!(
@@ -452,11 +474,8 @@ mod tests {
         let ticks: Vec<bool> = pick.repos.iter().map(|(_, on)| *on).collect();
         assert_eq!(ticks, [true, false, true]);
         assert_eq!(
-            press(&mut a, KeyCode::Enter)[1],
-            Effect::OpenWorkspace {
-                session: "billing".into(),
-                dirs: vec!["/w/billing/web".into()],
-            }
+            opened(&press(&mut a, KeyCode::Enter)),
+            ("billing", &["/w/billing/web".into()][..])
         );
         assert!(a.status_text().unwrap().contains("1 open already"));
     }

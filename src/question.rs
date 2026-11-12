@@ -396,9 +396,10 @@ impl App {
         Vec::new()
     }
 
-    fn scroll_question(&mut self, code: KeyCode, ctrl: bool, page: usize) {
+    /// Scrolls the question, or the message of a tell card.
+    pub(crate) fn scroll_question(&mut self, code: KeyCode, ctrl: bool, page: usize) {
         let Some(Card {
-            kind: CardKind::Question(qc),
+            kind: CardKind::Question(qc) | CardKind::Tell(crate::tell::TellCard { message: qc, .. }),
             ..
         }) = self.queue.current_mut()
         else {

@@ -325,7 +325,9 @@ fn on_ipc(
                 config: app.config.clone(),
             })
         }
-        req @ HookRequest::Permission { .. } => {
+        req @ (HookRequest::Permission { .. }
+        | HookRequest::Tell { .. }
+        | HookRequest::Tellable { .. }) => {
             waiting.insert(req_id, reply);
             loading.insert(req_id, false);
             workers.load(Load::Permission {
@@ -464,7 +466,11 @@ fn apply(
             } => Job::NewSession(dir, prompt, worktree),
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
             Effect::FindRepos { root } => Job::FindRepos(root),
-            Effect::OpenWorkspace { session, dirs } => Job::OpenWorkspace(session, dirs),
+            Effect::OpenWorkspace {
+                session,
+                dirs,
+                system,
+            } => Job::OpenWorkspace(session, dirs, system),
             Effect::Copy(sel) => {
                 let text = workers
                     .screen
@@ -625,8 +631,9 @@ enum Job {
     NewSession(PathBuf, Option<String>, bool),
     ListDirs(String, PathBuf),
     FindRepos(PathBuf),
-    /// A tmux session's name, and the folders to start Claude in there.
-    OpenWorkspace(String, Vec<PathBuf>),
+    /// A tmux session's name, the folders to start Claude in there, and
+    /// what to add to each one's system prompt.
+    OpenWorkspace(String, Vec<PathBuf>, String),
     LastMessage(AgentId, String, Checkout),
     Quiz {
         checkout: Checkout,
@@ -750,10 +757,10 @@ fn spawn_effect_worker(
                     let repos = find_repos(&root);
                     Some(Msg::Repos { asked, root, repos })
                 }
-                Job::OpenWorkspace(session, dirs) => {
+                Job::OpenWorkspace(session, dirs, system) => {
                     let mut failed = Vec::new();
                     for dir in dirs {
-                        match crate::agents::tmux::new_claude_in(&session, &dir) {
+                        match crate::agents::tmux::new_claude_in(&session, &dir, &system) {
                             Ok(pane) => watch_trust(pane, dir, tx.clone()),
                             Err(e) => failed.push(format!("{}: {e:#}", dir.display())),
                         }

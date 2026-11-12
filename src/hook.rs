@@ -32,8 +32,29 @@ pub enum HookEvent {
 /// Runs the hook against the configured socket, with `$TMUX_PANE` as the pane.
 pub fn run_hook(event: HookEvent, stdin: impl Read, deadline: Duration) -> Result<Option<String>> {
     let socket = crate::config::paths().socket;
-    let pane = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty());
-    run_hook_with(&socket, pane, event, stdin, deadline)
+    run_hook_with(&socket, tmux_pane(), event, stdin, deadline)
+}
+
+/// The tmux pane this runs in, if any.
+pub fn tmux_pane() -> Option<String> {
+    std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty())
+}
+
+/// How long `aq tell` waits for aq.
+const TELL_WAIT: Duration = Duration::from_secs(5);
+
+/// `aq tell`: sends `req` to aq at `socket`, and returns whether it
+/// worked and what to print.
+pub fn tell(socket: &Path, req: &HookRequest) -> (bool, String) {
+    let unanswered = || (false, "aq did not answer, so nothing was sent".to_string());
+    match connect(socket, TELL_WAIT) {
+        Connect::NoAq => (false, "aq is not running, so nothing was sent".to_string()),
+        Connect::TimedOut => unanswered(),
+        Connect::Connected(stream) => match exchange(stream, req, Instant::now() + TELL_WAIT) {
+            Some(HookReply::Note { ok, text }) => (ok, text),
+            _ => unanswered(),
+        },
+    }
 }
 
 /// Returns the JSON to print on stdout, or `None` to print nothing.
@@ -193,6 +214,8 @@ fn output(event: HookEvent, reply: Option<HookReply>) -> Option<String> {
         (HookEvent::Permission, Some(HookReply::NoDecision) | None) => return None,
         // Shell-change cards come after the fact; the hook only reports.
         (HookEvent::PostTool, _) => return None,
+        // Only `aq tell` is answered with a note.
+        (_, Some(HookReply::Note { .. })) => return None,
     };
     Some(json!({ "hookSpecificOutput": specific }).to_string())
 }
