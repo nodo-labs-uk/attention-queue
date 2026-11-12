@@ -346,6 +346,8 @@ impl App {
             .filter(|c| matches!(c.kind, CardKind::Question(_)) && gone(&c.agent))
             .map(|c| c.id)
             .collect();
+        // A stashed question is over then too.
+        self.stashed.retain(|c| !gone(&c.agent));
         for id in ids {
             if elsewhere {
                 self.answered_elsewhere(id);
@@ -355,8 +357,8 @@ impl App {
         }
     }
 
-    /// `a` or `y` approves a question that asks for a go-ahead, Enter or `i` writes a reply, `x` puts the card
-    /// away, `g` goes to the session's window; the rest scroll.
+    /// `a` or `y` approves a question that asks for a go-ahead, Enter or `i` writes a reply, `x` stashes the
+    /// card, `g` goes to the session's window; the rest scroll.
     pub(crate) fn on_question_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let Some(card) = self.queue.current() else {
             return Vec::new();
@@ -388,13 +390,53 @@ impl App {
                 }));
             }
             KeyCode::Char('x') => {
-                self.queue.remove(id);
-                self.set_status("Question stashed: it is still in the session's window");
+                if let Some(card) = self.queue.remove(id) {
+                    self.stashed.insert(0, card);
+                }
+                self.set_status("Question stashed: S lists the stashed ones");
             }
             KeyCode::Char('g') if !ctrl => return vec![Effect::GoToWindow { pane: agent.pane }],
             code => self.scroll_question(code, ctrl, page),
         }
         Vec::new()
+    }
+
+    /// `S`: the stashed questions, if there are any.
+    pub(crate) fn open_stash(&mut self) {
+        if self.stashed.is_empty() {
+            self.set_status("Nothing stashed: x on a question stashes it");
+        } else {
+            self.overlay = Some(Overlay::Stash { cursor: 0 });
+        }
+    }
+
+    /// In the stash: j/k choose, Enter brings the question back to the
+    /// front of the queue, x drops it for good, Esc closes.
+    pub(crate) fn on_stash_key(&mut self, key: KeyEvent) {
+        let Some(Overlay::Stash { cursor }) = &mut self.overlay else {
+            return;
+        };
+        let n = self.stashed.len();
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => *cursor = (*cursor + 1).min(n.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Enter => {
+                let card = self.stashed.remove(*cursor);
+                let id = card.id;
+                self.queue.push(card);
+                self.queue.show(id);
+                self.overlay = None;
+            }
+            KeyCode::Char('x') => {
+                self.stashed.remove(*cursor);
+                *cursor = (*cursor).min(n.saturating_sub(2));
+                if self.stashed.is_empty() {
+                    self.overlay = None;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q' | 'S') => self.overlay = None,
+            _ => {}
+        }
     }
 
     /// Scrolls the question, or the message of a tell card.
@@ -523,6 +565,47 @@ mod tests {
     }
 
     #[test]
+    fn stashed_questions_can_be_brought_back_or_dropped() {
+        let mut a = app();
+        let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        a.update(key('S'));
+        assert_eq!(a.overlay, None);
+        assert!(a.status_text().unwrap().contains("Nothing stashed"));
+        said(&mut a, "Shall I go on?");
+        a.update(key('x'));
+        assert!(a.queue.is_empty());
+        let screen = crate::ui::tests::render(&a, 100, 12);
+        assert!(
+            screen.lines().next().unwrap().contains("S 1 stashed"),
+            "{screen}"
+        );
+        a.update(key('S'));
+        let screen = crate::ui::tests::render(&a, 100, 12);
+        assert!(
+            screen.contains("Stashed questions") && screen.contains("Shall I go on?"),
+            "{screen}"
+        );
+        // Enter brings it back, first in the queue.
+        a.update(enter());
+        assert_eq!(a.overlay, None);
+        assert!(a.stashed.is_empty());
+        assert_eq!(question(&a), Some("Shall I go on?"));
+        // x in the list drops it for good.
+        a.update(key('x'));
+        a.update(key('S'));
+        a.update(key('x'));
+        assert_eq!(a.overlay, None, "closed once empty");
+        assert!(a.stashed.is_empty() && a.queue.is_empty());
+        // A stashed question goes once its session is working again.
+        said(&mut a, "Tabs or spaces?");
+        a.update(key('x'));
+        let mut busy = a.agents.clone();
+        busy[0].waiting = false;
+        a.update(Msg::Agents(busy));
+        assert!(a.stashed.is_empty());
+    }
+
+    #[test]
     fn a_question_lasts_only_while_its_session_waits_on_it() {
         let mut a = app();
         said(&mut a, "Done.");
@@ -546,9 +629,10 @@ mod tests {
         assert!(a.on_stale());
         assert!(a.update(key('a')).is_empty(), "nothing sent");
         assert_eq!(question(&a), Some("And now: tabs or spaces?"));
-        // x only puts it away.
+        // x only stashes it.
         assert!(a.update(key('x')).is_empty());
         assert!(a.queue.is_empty());
+        assert_eq!(a.stashed.len(), 1);
         said(&mut a, "Shall I go on?");
         // Answered in its own window: the session is working again.
         let mut busy = a.agents.clone();

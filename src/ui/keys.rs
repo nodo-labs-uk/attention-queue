@@ -115,6 +115,12 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("PgUp/PgDn", "page".into()),
             ("q", "close".into()),
         ],
+        (Some(Overlay::Stash { .. }), _) => vec![
+            ("Enter", "bring back".into()),
+            ("j/k", "choose".into()),
+            ("x", "drop".into()),
+            ("Esc", "close".into()),
+        ],
         (Some(Overlay::Search(_)), _) => vec![
             ("j/k", "move".into()),
             ("Enter", "show".into()),

@@ -338,6 +338,8 @@ pub enum Overlay {
     StepReason(ReasonDraft),
     /// `gd` on a step card: where the identifier appears.
     Search(SearchList),
+    /// `S`: the stashed questions, `cursor` on one.
+    Stash { cursor: usize },
     /// `o` on a choice card: typing an answer that is none of the options.
     OwnAnswer(crate::choice::OwnAnswerDraft),
     /// `n` on a permission card: typing the reason Claude reads.
@@ -438,6 +440,9 @@ pub struct App {
     pub(crate) picked: Option<AgentId>,
     /// The sessions you sent a message to, the latest first, for Tab.
     pub(crate) messaged: Vec<AgentId>,
+    /// Question cards put aside with `x`, the latest first, while their
+    /// session still waits on them. `S` lists them.
+    pub(crate) stashed: Vec<Card>,
     /// The last screen read from a pane, for the empty screen's live view.
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
@@ -552,6 +557,7 @@ impl App {
             saved: Some(Default::default()),
             picked: None,
             messaged: Vec::new(),
+            stashed: Vec::new(),
             preview: None,
             capturing: false,
             prompts: BTreeMap::new(),
@@ -1474,6 +1480,10 @@ impl App {
                 self.on_search_key(key);
                 return Vec::new();
             }
+            Some(Overlay::Stash { .. }) => {
+                self.on_stash_key(key);
+                return Vec::new();
+            }
             _ => {}
         }
         if key
@@ -1504,6 +1514,10 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('O') => self.open_workspace_box(),
+            KeyCode::Char('S') => {
+                self.open_stash();
+                Vec::new()
+            }
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             KeyCode::Char('f')

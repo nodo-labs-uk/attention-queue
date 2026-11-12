@@ -85,6 +85,7 @@ draft, to choose between two ways), its message becomes a card.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words
      a is there only when the question asks for a go-ahead
   x  stash the card      g  go to the session's window   j/k scroll
+  S  the stashed questions: Enter brings one back, x drops it
 
 When Claude asks with its own menu of options, the card lists them:
   1-9  pick   j/k + Enter  the same

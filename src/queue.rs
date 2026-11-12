@@ -79,6 +79,11 @@ impl Queue {
         self.pinned = self.current().map(|c| c.id);
     }
 
+    /// Shows card `id` first, as if it had been on screen.
+    pub fn show(&mut self, id: u64) {
+        self.pinned = Some(id);
+    }
+
     /// Moves the current card to the back of its group.
     pub fn skip(&mut self) {
         if let Some(&i) = self.order().first() {

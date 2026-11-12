@@ -38,6 +38,42 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
     render_text(frame, area, app, card, qc, "Claude is asking", &keys);
 }
 
+/// `S`: the stashed questions, one row each: where it came from and its
+/// first line.
+pub fn render_stash(frame: &mut Frame, area: Rect, app: &App, cursor: usize) {
+    use super::workspace::{list_box, row, shown};
+    let t = app.theme();
+    let picked = Style::new().fg(t.bg).bg(t.acc).add_modifier(Modifier::BOLD);
+    let rows = app
+        .stashed
+        .iter()
+        .enumerate()
+        .map(|(i, card)| {
+            let first = match &card.kind {
+                crate::model::CardKind::Question(q) => {
+                    q.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
+                }
+                _ => "",
+            };
+            let text = format!(
+                " {} · {}  {} ",
+                shown(&project_name(&card.checkout)),
+                shown(&window_of(app, card)),
+                shown(first.trim())
+            );
+            row(text, i == cursor, picked, t)
+        })
+        .collect();
+    list_box(
+        frame,
+        area,
+        "Stashed questions",
+        rows,
+        &[("Enter", "bring back"), ("x", "drop"), ("Esc", "close")],
+        t,
+    );
+}
+
 /// `aq tell`: one session's message to another, drawn as a question is.
 pub fn render_tell(frame: &mut Frame, area: Rect, app: &App, card: &Card, tc: &TellCard) {
     let to = app

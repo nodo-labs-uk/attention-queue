@@ -88,6 +88,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ));
     }
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
+    if !app.stashed.is_empty() {
+        right.extend([
+            Span::styled("S", key),
+            Span::styled(
+                format!(" {} stashed  ", app.stashed.len()),
+                Style::new().fg(t.dim),
+            ),
+        ]);
+    }
     right.extend([
         Span::styled("F3", key),
         Span::styled(" keys  ", Style::new().fg(t.dim)),
