@@ -383,6 +383,7 @@ impl App {
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent,
                     input: TextInput::single_line(),
+                    group: None,
                 }));
             }
             KeyCode::Char('x') => {

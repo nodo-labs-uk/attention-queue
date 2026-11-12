@@ -143,39 +143,49 @@ impl App {
         }]
     }
 
-    /// A session just started asks to trust its folder: ask here, unless
-    /// another box is open, which may hold something being typed.
+    /// A session just started asks to trust its folder. The trust box
+    /// opens once no other box is open, since one may hold something being
+    /// typed.
     pub(crate) fn on_trust_asked(&mut self, pane: String, dir: PathBuf) {
-        if self.overlay.is_none() {
-            self.overlay = Some(Overlay::Trust { pane, dir });
-        } else {
-            self.set_status(format!(
-                "Claude in {} waits in its window: trust the folder?",
-                dir.display()
-            ));
-        }
+        self.pending_trust.push_back((pane, dir));
     }
 
     /// y or Enter trusts the folder and the session starts; n, q or Esc
-    /// closes the session.
+    /// closes the session; a trusts every folder waiting. The next waiting
+    /// folder, if any, is asked about next.
     pub(crate) fn on_trust_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let Some(Overlay::Trust { pane, dir }) = &self.overlay else {
-            return Vec::new();
-        };
-        let (pane, dir) = (pane.clone(), dir.display().to_string());
-        match key.code {
+        let effects = match key.code {
+            KeyCode::Char('a') => {
+                let n = self.pending_trust.len();
+                self.set_status(format!("Trusted {n} folders: Claude is starting in each"));
+                self.pending_trust
+                    .drain(..)
+                    .map(|(pane, _)| Effect::TrustFolder { pane })
+                    .collect()
+            }
             KeyCode::Char('y') | KeyCode::Enter => {
-                self.overlay = None;
-                self.set_status(format!("Trusted {dir}: Claude is starting"));
+                let Some((pane, dir)) = self.pending_trust.pop_front() else {
+                    return Vec::new();
+                };
+                self.set_status(format!("Trusted {}: Claude is starting", dir.display()));
                 vec![Effect::TrustFolder { pane }]
             }
             KeyCode::Char('n' | 'q') | KeyCode::Esc => {
-                self.overlay = None;
-                self.set_status(format!("Did not trust {dir}: closed the session"));
+                let Some((pane, dir)) = self.pending_trust.pop_front() else {
+                    return Vec::new();
+                };
+                self.set_status(format!(
+                    "Did not trust {}: closed the session",
+                    dir.display()
+                ));
                 vec![Effect::ClosePane { pane }]
             }
-            _ => Vec::new(),
+            _ => return Vec::new(),
+        };
+        if self.pending_trust.is_empty() {
+            self.overlay = None;
         }
+        effects
     }
 
     /// The folders matching what is typed, from the runtime.
@@ -421,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trust_question_does_not_take_over_an_open_box() {
+    fn a_trust_question_waits_for_an_open_box_to_close() {
         let mut a = app();
         a.update(key('x'));
         a.update(Msg::TrustAsked {
@@ -429,7 +439,39 @@ mod tests {
             dir: "/w/new".into(),
         });
         assert!(matches!(a.overlay, Some(Overlay::NewSession(_))));
-        assert!(a.status_text().unwrap().contains("/w/new"));
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.overlay, Some(Overlay::Trust));
+    }
+
+    #[test]
+    fn several_trust_questions_are_asked_in_turn_or_all_at_once() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        for (pane, dir) in [("%1", "/w/a"), ("%2", "/w/b"), ("%3", "/w/c")] {
+            a.update(Msg::TrustAsked {
+                pane: pane.into(),
+                dir: dir.into(),
+            });
+        }
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(screen.contains("Trust this folder? 1 of 3"), "{screen}");
+        assert!(screen.contains("/w/a"), "{screen}");
+        assert_eq!(
+            a.update(key('n')),
+            [Effect::ClosePane { pane: "%1".into() }]
+        );
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(
+            screen.contains("1 of 2") && screen.contains("/w/b"),
+            "{screen}"
+        );
+        assert_eq!(
+            a.update(key('a')),
+            [
+                Effect::TrustFolder { pane: "%2".into() },
+                Effect::TrustFolder { pane: "%3".into() },
+            ]
+        );
+        assert_eq!(a.overlay, None);
     }
 
     #[test]
