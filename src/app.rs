@@ -1529,7 +1529,16 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('B') if self.overlay.is_none() => {
-                self.queue.to_back();
+                // Alone in the queue, nothing on screen changes: say why.
+                if self.queue.len() < 2 {
+                    self.set_status("It is the only card waiting");
+                } else {
+                    self.queue.to_back();
+                    self.set_status(format!(
+                        "Sent to the back, behind {} more",
+                        self.queue.len() - 1
+                    ));
+                }
                 Vec::new()
             }
             _ if self.overlay.is_none() => match self.queue.current().map(|c| &c.kind) {
@@ -2449,6 +2458,11 @@ pub(crate) mod tests {
     fn b_sends_the_card_to_the_back_of_the_queue() {
         let mut a = app();
         a.queue
+            .push(card(9, "/z", CardKind::Review(ReviewCard::default()), 1));
+        a.update(key('B'));
+        assert_eq!(a.status_text(), Some("It is the only card waiting"));
+        a.queue.remove(9);
+        a.queue
             .push(card(1, "/a", CardKind::Permission(Default::default()), 10));
         a.queue
             .push(card(2, "/b", CardKind::Review(ReviewCard::default()), 5));
@@ -2456,6 +2470,23 @@ pub(crate) mod tests {
         assert_eq!(a.queue.current().unwrap().id, 1, "Space keeps it first");
         a.update(key('B'));
         assert_eq!(a.queue.current().unwrap().id, 2);
+        assert_eq!(a.status_text(), Some("Sent to the back, behind 1 more"));
+        // A question card too.
+        a.queue.push(card(
+            3,
+            "/c",
+            CardKind::Question(crate::question::QuestionCard {
+                text: "ok?".into(),
+                scroll: 0,
+            }),
+            20,
+        ));
+        a.queue.pin();
+        assert_eq!(a.queue.current().unwrap().id, 2);
+        a.update(key('B'));
+        a.queue.pin();
+        a.update(key('B'));
+        assert_eq!(a.queue.current().unwrap().id, 1);
     }
 
     pub(crate) fn ctrl(c: char) -> Msg {
