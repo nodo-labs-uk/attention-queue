@@ -151,7 +151,7 @@ pub const PAGES: &[Page] = &[
             "Next come three made-up sessions to try that on.",
             "",
             "Also there, and not in the practice:",
-            "key:Tab\tback to the session shown before",
+            "key:Tab\tthe session you last sent a message to",
             "key:p\task the session to open a pull request",
             "key:m P\tswitch its model, or its permission mode",
             "key:Esc Esc x\tstop what it is doing, or close it",
