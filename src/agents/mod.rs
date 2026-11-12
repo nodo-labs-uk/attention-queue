@@ -38,6 +38,8 @@ pub struct Agent {
     pub permission_mode: Option<&'static str>,
     /// What Claude Code suggests sending next, read with `input`.
     pub suggestion: Option<String>,
+    /// When it was last sent a prompt, from its transcript.
+    pub last_prompt: Option<String>,
 }
 
 /// Claude Code's input box as last read from the agent's screen.

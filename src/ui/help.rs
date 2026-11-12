@@ -112,8 +112,8 @@ A tab per session along the top (● waiting, ○ working); the picked
 one's screen fills the rest. After you send or approve a review, that
 session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
-  Tab    the session you last sent a message to; each Tab after it goes
-         one further back, then round again; moving with h/l does not count
+  Tab    the session you last typed in, here or in its window, and Tab
+         again back to the one before; moving with h/l does not count
   Enter  message it: sent now, or once it is idle (Esc cancels); what
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in

@@ -438,9 +438,6 @@ pub struct App {
     pub(crate) picked: Option<AgentId>,
     /// The sessions you sent a message to, the latest first, for Tab.
     pub(crate) messaged: Vec<AgentId>,
-    /// Where in `messaged` the last Tab went, while Tab is pressed again and
-    /// again, so each press goes one further back.
-    tab_at: Option<usize>,
     /// The last screen read from a pane, for the empty screen's live view.
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
@@ -555,7 +552,6 @@ impl App {
             saved: Some(Default::default()),
             picked: None,
             messaged: Vec::new(),
-            tab_at: None,
             preview: None,
             capturing: false,
             prompts: BTreeMap::new(),
@@ -646,7 +642,6 @@ impl App {
         self.messaged.retain(|a| a != agent);
         self.messaged.insert(0, agent.clone());
         self.messaged.truncate(10);
-        self.tab_at = None;
     }
 
     /// h/l or j/k pick an agent on the empty screen; Tab goes to the one
@@ -663,7 +658,6 @@ impl App {
         };
         let i = ids.iter().position(|id| *id == current).unwrap_or(0);
         let n = ids.len();
-        let tabbing = self.tab_at.take();
         match key.code {
             KeyCode::Char('j' | 'l') | KeyCode::Down | KeyCode::Right => {
                 self.pick(ids[(i + 1) % n].clone());
@@ -676,20 +670,18 @@ impl App {
                 return self.capture_picked();
             }
             KeyCode::Tab => {
-                // The first press goes to the latest; each press after it
-                // one further back, round to the latest again.
-                let len = self.messaged.len();
-                let start = tabbing.map_or(0, |j| j + 1);
-                let next = (0..len).map(|k| (start + k) % len).find(|&j| {
-                    let id = &self.messaged[j];
-                    *id != current && ids.contains(id)
-                });
-                let Some(j) = next else {
+                // The latest other than this one: from the latest, the one
+                // before, and from that, back again.
+                let last = self
+                    .messaged
+                    .iter()
+                    .find(|id| **id != current && ids.contains(id))
+                    .cloned();
+                let Some(last) = last else {
                     self.set_status("No other session messaged yet: h/l picks one");
                     return Vec::new();
                 };
-                self.tab_at = Some(j);
-                self.pick(self.messaged[j].clone());
+                self.pick(last);
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
@@ -1671,6 +1663,24 @@ impl App {
         effects
     }
 
+    /// Notes, for Tab, the sessions sent a prompt since the last list:
+    /// typed in their window, or sent by aq, oldest first so the latest
+    /// ends up first.
+    fn note_typed_in(&mut self, agents: &[Agent]) {
+        let mut typed: Vec<(&String, &AgentId)> = agents
+            .iter()
+            .filter_map(|a| {
+                let at = a.last_prompt.as_ref()?;
+                let before = self.agents.iter().find(|p| p.id == a.id);
+                (before.and_then(|p| p.last_prompt.as_ref()) != Some(at)).then_some((at, &a.id))
+            })
+            .collect();
+        typed.sort();
+        for (_, id) in typed {
+            self.note_messaged(id);
+        }
+    }
+
     fn on_agents(&mut self, mut agents: Vec<Agent>) -> Vec<Effect> {
         // A menu or dialog can hide the footer for a moment: the mode last
         // seen still holds.
@@ -1681,6 +1691,7 @@ impl App {
                 .find(|p| p.id == a.id)
                 .and_then(|p| p.permission_mode);
         }
+        self.note_typed_in(&agents);
         let mut started: Vec<Agent> = became_waiting(&self.agents, &agents)
             .into_iter()
             .cloned()
@@ -2250,6 +2261,7 @@ pub(crate) mod tests {
             waiting,
             permission_mode: None,
             suggestion: None,
+            last_prompt: None,
             input: InputBox::Unseen,
         }
     }
@@ -2919,23 +2931,25 @@ pub(crate) mod tests {
         assert_eq!(picked(&a), "%1", "and the one before");
         a.update(tab());
         assert_eq!(picked(&a), "%3");
-        // With three, Tab again and again goes through all of them.
+        // With three, Tab goes back and forth between the last two.
         a.update(key('l'));
         message(&mut a);
         a.update(tab());
-        assert_eq!(picked(&a), "%3", "latest but the one shown");
+        assert_eq!(picked(&a), "%3");
         a.update(tab());
-        assert_eq!(picked(&a), "%1");
-        a.update(tab());
-        assert_eq!(picked(&a), "%4", "round to the latest");
+        assert_eq!(picked(&a), "%4");
         a.update(tab());
         assert_eq!(picked(&a), "%3");
-        // Another key starts again from the latest.
-        a.update(key('h'));
+        // A prompt typed in a session's own window counts too.
+        let mut agents = a.agents.clone();
+        agents[1].last_prompt = Some("2026-11-12T10:00:00Z".into());
+        a.update(Msg::Agents(agents));
+        a.update(tab());
+        assert_eq!(picked(&a), "%2", "docs, typed in its window");
         a.update(tab());
         assert_eq!(picked(&a), "%4");
         // A session that has gone is not gone back to.
-        a.agents.remove(0);
+        a.agents.remove(1);
         a.update(tab());
         assert_eq!(picked(&a), "%3");
     }

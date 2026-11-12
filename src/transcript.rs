@@ -56,26 +56,13 @@ pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        // A compaction's summary is written as a prompt, but nobody typed it.
-        if v["isMeta"] == true || v["isSidechain"] == true || v["isCompactSummary"] == true {
+        if hidden(&v) {
             continue;
         }
         let content = &v["message"]["content"];
         match v["type"].as_str() {
             Some("user") => {
-                let text = match content {
-                    Value::String(s) => Some(s.as_str()),
-                    Value::Array(blocks) => blocks
-                        .iter()
-                        .find(|b| b["type"] == "text")
-                        .and_then(|b| b["text"].as_str()),
-                    _ => None,
-                };
-                // Commands and their output come wrapped in tags.
-                if let Some(t) = text
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty() && !t.starts_with('<'))
-                {
+                if let Some(t) = prompt(&v) {
                     out.push(Said::User(t.to_string()));
                 }
             }
@@ -98,6 +85,82 @@ pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
         }
     }
     Ok(out)
+}
+
+/// A line Claude Code writes for itself: notes, a subagent's turns, and a
+/// compaction's summary, which is written as a prompt but nobody typed it.
+fn hidden(v: &Value) -> bool {
+    v["isMeta"] == true || v["isSidechain"] == true || v["isCompactSummary"] == true
+}
+
+/// The text of a `user` line that is a prompt: not a tool result, and not
+/// a command or its output, which come wrapped in tags.
+fn prompt(v: &Value) -> Option<&str> {
+    let text = match &v["message"]["content"] {
+        Value::String(s) => Some(s.as_str()),
+        Value::Array(blocks) => blocks
+            .iter()
+            .find(|b| b["type"] == "text")
+            .and_then(|b| b["text"].as_str()),
+        _ => None,
+    };
+    text.map(str::trim)
+        .filter(|t| !t.is_empty() && !t.starts_with('<'))
+}
+
+/// When session `session_id` was last sent a prompt, typed in its window
+/// or sent by aq, as the transcript's timestamp (UTC, so later sorts
+/// after). The first time, the end of the transcript is read; after that
+/// only what was added since.
+pub fn last_prompt_at(session_id: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Seen = (PathBuf, u64, Option<String>);
+    static SEEN: Mutex<Option<HashMap<String, Seen>>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(HashMap::new);
+    let path = match seen.get(session_id) {
+        Some((p, ..)) => p.clone(),
+        None => find(session_id)?,
+    };
+    let len = std::fs::metadata(&path).ok()?.len();
+    if let Some((_, l, at)) = seen.get(session_id)
+        && *l == len
+    {
+        return at.clone();
+    }
+    let (from, known) = match seen.get(session_id) {
+        Some((_, l, at)) if *l < len => (*l, at.clone()),
+        _ => (len.saturating_sub(CONVERSATION_TAIL), None),
+    };
+    let (found, upto) = last_prompt_in(&path, from, len)?;
+    let at = found.or(known);
+    seen.insert(session_id.to_string(), (path, upto, at.clone()));
+    at
+}
+
+/// The timestamp of the last prompt in the whole lines between bytes
+/// `start` and `len`, and where those lines end: a line still being
+/// written is read next time. A line cut at `start` does not parse, so it
+/// is passed over.
+fn last_prompt_in(path: &Path, start: u64, len: u64) -> Option<(Option<String>, u64)> {
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(len - start).read_to_end(&mut bytes).ok()?;
+    let whole = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    bytes.truncate(whole);
+    // The cut at `start` can fall inside a character.
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .into_iter()
+        .rev()
+        .filter(|l| l.starts_with('{') && l.contains(r#""type":"user""#))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["type"] == "user" && !hidden(v) && prompt(v).is_some())
+        .and_then(|v| v["timestamp"].as_str().map(str::to_string));
+    Some((at, start + whole as u64))
 }
 
 /// `Name(what)`: the command's first line, or the file or pattern.
@@ -243,6 +306,33 @@ mod tests {
             last_bang_command(&[Said::Claude("no `!` here".into())]),
             None
         );
+    }
+
+    #[test]
+    fn the_last_prompt_is_the_last_one_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-11-12T10:00:00Z","message":{"content":"first"}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T10:05:00Z","message":{"content":[{"type":"text","text":"second"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-11-12T10:06:00Z","message":{"content":[{"type":"text","text":"ok"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T10:07:00Z","message":{"content":[{"type":"tool_result","content":"x"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T10:08:00Z","message":{"content":"<task-notification>done</task-notification>"}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T10:09:00Z","isCompactSummary":true,"message":{"content":"This session is being continued"}}"#,
+        ];
+        let text = lines.join("\n") + "\n";
+        let len = text.len() as u64;
+        std::fs::write(&path, &text).unwrap();
+        assert_eq!(
+            last_prompt_in(&path, 0, len),
+            Some((Some("2026-11-12T10:05:00Z".into()), len))
+        );
+        // Only what was added since: no prompt in it.
+        let tail = text.find(r#"{"type":"assistant""#).unwrap() as u64;
+        assert_eq!(last_prompt_in(&path, tail, len), Some((None, len)));
+        // A line still being written is left for next time.
+        std::fs::write(&path, format!("{text}{{\"type\":\"user\"")).unwrap();
+        assert_eq!(last_prompt_in(&path, tail, len + 14), Some((None, len)));
     }
 
     #[test]
