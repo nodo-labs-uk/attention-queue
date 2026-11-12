@@ -77,6 +77,12 @@ pub enum Msg {
     },
     /// The folders an `Effect::ListDirs` asked for.
     Dirs(DirListing),
+    /// A session `Effect::NewSession` started in `pane` asks whether to
+    /// trust `dir`, its first start there.
+    TrustAsked {
+        pane: String,
+        dir: PathBuf,
+    },
     /// The message a session ended its turn with, from its transcript.
     LastMessage {
         agent: AgentId,
@@ -252,6 +258,10 @@ pub enum Effect {
     ClosePane {
         pane: String,
     },
+    /// Say yes to the trust menu of the new session in `pane`.
+    TrustFolder {
+        pane: String,
+    },
     /// Send `/model` to a session, and say yes if Claude Code asks whether
     /// to switch.
     SwitchModel {
@@ -327,6 +337,8 @@ pub enum Overlay {
     CloseAgent(AgentId),
     /// `N`: the first prompt for a new session.
     NewSession(NewSessionDraft),
+    /// A new session asks whether to trust its folder.
+    Trust { pane: String, dir: PathBuf },
     /// `m` on the empty screen: choosing a model for an agent.
     Model(AgentId),
     /// Picking a session's permission mode.
@@ -1060,6 +1072,10 @@ impl App {
                 self.on_dirs(listing);
                 Vec::new()
             }
+            Msg::TrustAsked { pane, dir } => {
+                self.on_trust_asked(pane, dir);
+                Vec::new()
+            }
             Msg::LastMessage {
                 agent,
                 checkout,
@@ -1300,6 +1316,7 @@ impl App {
             Some(Overlay::Prompt(_)) => return self.on_prompt_key(key),
             Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
+            Some(Overlay::Trust { .. }) => return self.on_trust_key(key),
             Some(Overlay::Model(_)) => return self.on_model_key(key),
             Some(Overlay::PermissionMode(_)) => return self.on_permission_mode_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),

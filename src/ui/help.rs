@@ -34,7 +34,8 @@ finished turn; the card on screen stays as it is.
        what you type is its first prompt, and Tab gives it a git worktree
        of its own (claude --worktree). Ctrl-O there picks another folder:
        type a path (Tab completes, arrows choose a match), and one that
-       is not there yet is made when the session starts
+       is not there yet is made when the session starts. If Claude asks
+       whether to trust the folder, aq asks you: y trusts it, n closes it
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. It closes when the shell exits

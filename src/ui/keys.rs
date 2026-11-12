@@ -67,6 +67,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
+        (Some(Overlay::Trust { .. }), _) => {
+            vec![("y", "trust it".into()), ("n", "close it".into())]
+        }
         (Some(Overlay::Model(_) | Overlay::PermissionMode(_)), _) => {
             vec![("Esc", "cancel".into())]
         }

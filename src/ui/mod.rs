@@ -183,6 +183,21 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 t,
             );
         }
+        Some(Overlay::Trust { dir, .. }) => {
+            confirm::render(
+                frame,
+                body,
+                "Trust this folder?",
+                &[
+                    "Claude Code starts here for the first time:".into(),
+                    dir.display().to_string(),
+                    "It will be able to read, edit and run files in it.".into(),
+                    "No closes the new session.".into(),
+                ],
+                &[("y", "yes"), ("n", "no")],
+                t,
+            );
+        }
         Some(Overlay::Model(id)) => {
             let name = app
                 .agent(id)
