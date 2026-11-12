@@ -140,9 +140,7 @@ fn render_live(frame: &mut Frame, area: Rect, app: &App) {
             // Wrapped to the area, so the bottom rows are counted after wrapping.
             let mut rows = Vec::new();
             for line in without_input_box(text) {
-                wrap(&visible(line.trim_end()), area.width as usize, &mut |r| {
-                    rows.push(r)
-                });
+                wrap(&live_line(line), area.width as usize, &mut |r| rows.push(r));
             }
             let skip = rows.len().saturating_sub(area.height as usize);
             rows.drain(skip..)
@@ -242,6 +240,13 @@ fn visible(s: &str) -> String {
     out
 }
 
+/// A row of the session's screen as its terminal draws it: Claude Code
+/// pads its marks with non-breaking spaces, which a terminal shows as
+/// spaces. Other hidden characters are spelled out.
+fn live_line(line: &str) -> String {
+    visible(line.replace('\u{a0}', " ").trim_end())
+}
+
 /// The screen's lines down to Claude Code's input box: the rule above its
 /// last `❯` line, the prompt, and the status lines under it are left out,
 /// since the message box here takes their place. A screen without that box
@@ -279,6 +284,19 @@ mod tests {
             "{all:?}"
         );
         assert!(all.contains("^[") && all.contains("\\u{202e}"), "{all:?}");
+    }
+
+    #[test]
+    fn the_live_screen_shows_a_non_breaking_space_as_the_terminal_does() {
+        assert_eq!(
+            super::live_line("  ⎿ \u{a0}Added 6 lines  "),
+            "  ⎿  Added 6 lines"
+        );
+        assert_eq!(
+            super::live_line("x\u{202e}y"),
+            "x\\u{202e}y",
+            "still spelled out"
+        );
     }
 
     #[test]
