@@ -47,7 +47,7 @@ finished turn; the card on screen stays as it is.
        and, in zsh, typed in ready to run. It closes when the shell exits
   M    next mode for this project         t    next theme
   F1   this help                          Q    quit aq
-  F2   the tour again
+  F2   the tour again                     F3   show or hide the keys row
 
 # Moving around, vim style
   j/k        line                 Ctrl-d/Ctrl-u  half a page
@@ -112,8 +112,8 @@ A tab per session along the top (● waiting, ○ working); the picked
 one's screen fills the rest. After you send or approve a review, that
 session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
-  Tab    the session you last sent a message to, and Tab again to the
-         one before it; moving with h/l does not count
+  Tab    the session you last sent a message to; each Tab after it goes
+         one further back, then round again; moving with h/l does not count
   Enter  message it: sent now, or once it is idle (Esc cancels); what
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in

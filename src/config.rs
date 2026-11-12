@@ -16,6 +16,8 @@ pub struct Config {
     pub tutorial_done: bool,
     /// `f` hid the file list on review and shell change cards.
     pub hide_files: bool,
+    /// F3 showed the row of keys along the bottom.
+    pub show_keys: bool,
     /// `O`: sets of repos opened together, by name. Saved by aq when one is
     /// opened, not written by hand.
     pub workspaces: BTreeMap<String, Workspace>,
@@ -37,6 +39,7 @@ impl Default for Config {
             modes: BTreeMap::new(),
             tutorial_done: false,
             hide_files: false,
+            show_keys: false,
             workspaces: BTreeMap::new(),
         }
     }

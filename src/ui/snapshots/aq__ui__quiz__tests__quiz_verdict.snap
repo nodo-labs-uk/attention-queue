@@ -2,7 +2,7 @@
 source: src/ui/quiz.rs
 expression: "render(&a, 90, 24)"
 ---
-" aq  quiz a · api  question 1 and 2 of 3  score so far 1/2                1 quiz  F1 help "
+" aq  quiz a · api  question 1 and 2 of 3  score so far 1/2       1 quiz  F3 keys  F1 help "
 " quiz  a  window api  quiz                                                                "
 "                                                                                          "
 " Explain what this code does when the bucket is empty.                                    "
@@ -25,4 +25,4 @@ expression: "render(&a, 90, 24)"
 "                                                                                          "
 "                                                                                          "
 "                                                                                          "
-" y fine as is   c fix it   m show the code   Space skip   M mode                          "
+"                                                                                          "

@@ -2,11 +2,11 @@
 source: src/ui/mod.rs
 expression: "render(&a, 34, 8)"
 ---
-" aq  nothing waiting      F1 help "
+" aq  nothing waitF3 keys  F1 help "
 "                                  "
 "  ● 1 api   ○ 4 chezmoi           "
 "  ● 12 web-redesign web           "
 "                                  "
 "Reading the screen…               "
-" h/l pick   Tab last messaged     "
-" Enter message                    "
+"                                  "
+"                                  "

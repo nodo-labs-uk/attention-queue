@@ -56,7 +56,8 @@ pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v["isMeta"] == true || v["isSidechain"] == true {
+        // A compaction's summary is written as a prompt, but nobody typed it.
+        if v["isMeta"] == true || v["isSidechain"] == true || v["isCompactSummary"] == true {
             continue;
         }
         let content = &v["message"]["content"];
@@ -251,6 +252,7 @@ mod tests {
         let lines = [
             r#"{"type":"user","message":{"content":"add a rate limit"}}"#,
             r#"{"type":"user","isMeta":true,"message":{"content":"Caveat: meta"}}"#,
+            r#"{"type":"user","isCompactSummary":true,"message":{"content":"This session is being continued"}}"#,
             r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hm"}]}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I will read it."}]}}"#,

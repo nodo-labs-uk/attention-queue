@@ -488,6 +488,7 @@ pub(crate) mod tests {
     #[test]
     fn long_status_leaves_keys_visible() {
         let mut a = app();
+        a.config.show_keys = true;
         a.update(crate::app::Msg::AgentsFailed(
             "running tmux list-panes: No such file or directory (os error 2)".into(),
         ));
@@ -495,6 +496,36 @@ pub(crate) mod tests {
         let last = screen.lines().last().unwrap();
         assert!(last.contains("Q quit"), "{last}");
         assert!(last.contains("Could not list agents"), "{last}");
+    }
+
+    #[test]
+    fn f3_shows_the_keys_row_and_without_it_status_is_in_the_top_bar() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut a = app();
+        a.set_status("Sent to api");
+        let screen = render(&a, 80, 6);
+        let top = screen.lines().next().unwrap();
+        assert!(
+            top.contains("Sent to api") && top.contains("F3 keys  F1 help"),
+            "{top}"
+        );
+        assert!(!screen.contains("Q quit"), "{screen}");
+        let effects = a.update(crate::app::Msg::Key(
+            KeyEvent::from(KeyCode::F(3)),
+            std::time::Instant::now(),
+        ));
+        assert!(matches!(effects[..], [crate::app::Effect::SaveConfig]));
+        assert!(a.config.show_keys, "kept in the config across restarts");
+        let screen = render(&a, 80, 6);
+        assert!(
+            !screen.lines().next().unwrap().contains("Sent to api"),
+            "{screen}"
+        );
+        let last = screen.lines().last().unwrap();
+        assert!(
+            last.contains("Q quit") && last.contains("Sent to api"),
+            "{last}"
+        );
     }
 
     #[test]

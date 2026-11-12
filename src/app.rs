@@ -438,6 +438,9 @@ pub struct App {
     pub(crate) picked: Option<AgentId>,
     /// The sessions you sent a message to, the latest first, for Tab.
     pub(crate) messaged: Vec<AgentId>,
+    /// Where in `messaged` the last Tab went, while Tab is pressed again and
+    /// again, so each press goes one further back.
+    tab_at: Option<usize>,
     /// The last screen read from a pane, for the empty screen's live view.
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
@@ -552,6 +555,7 @@ impl App {
             saved: Some(Default::default()),
             picked: None,
             messaged: Vec::new(),
+            tab_at: None,
             preview: None,
             capturing: false,
             prompts: BTreeMap::new(),
@@ -568,6 +572,14 @@ impl App {
 
     pub fn theme(&self) -> &Theme {
         &self.themes[self.theme_idx]
+    }
+
+    /// The keys row along the bottom shows: F3 turned it on, or the tour,
+    /// which tells you which key to press, is on.
+    pub fn keys_shown(&self) -> bool {
+        self.config.show_keys
+            || self.practice.is_some()
+            || matches!(self.overlay, Some(Overlay::Tour { .. }))
     }
 
     pub fn status_text(&self) -> Option<&str> {
@@ -634,6 +646,7 @@ impl App {
         self.messaged.retain(|a| a != agent);
         self.messaged.insert(0, agent.clone());
         self.messaged.truncate(10);
+        self.tab_at = None;
     }
 
     /// h/l or j/k pick an agent on the empty screen; Tab goes to the one
@@ -650,6 +663,7 @@ impl App {
         };
         let i = ids.iter().position(|id| *id == current).unwrap_or(0);
         let n = ids.len();
+        let tabbing = self.tab_at.take();
         match key.code {
             KeyCode::Char('j' | 'l') | KeyCode::Down | KeyCode::Right => {
                 self.pick(ids[(i + 1) % n].clone());
@@ -662,16 +676,20 @@ impl App {
                 return self.capture_picked();
             }
             KeyCode::Tab => {
-                let last = self
-                    .messaged
-                    .iter()
-                    .find(|id| **id != current && ids.contains(id))
-                    .cloned();
-                let Some(last) = last else {
+                // The first press goes to the latest; each press after it
+                // one further back, round to the latest again.
+                let len = self.messaged.len();
+                let start = tabbing.map_or(0, |j| j + 1);
+                let next = (0..len).map(|k| (start + k) % len).find(|&j| {
+                    let id = &self.messaged[j];
+                    *id != current && ids.contains(id)
+                });
+                let Some(j) = next else {
                     self.set_status("No other session messaged yet: h/l picks one");
                     return Vec::new();
                 };
-                self.pick(last);
+                self.tab_at = Some(j);
+                self.pick(self.messaged[j].clone());
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
@@ -1419,6 +1437,11 @@ impl App {
         if key.code == KeyCode::F(1) && self.overlay.is_none() {
             self.overlay = Some(Overlay::Help { scroll: 0 });
             return Vec::new();
+        }
+        // Anywhere: it types nothing.
+        if key.code == KeyCode::F(3) {
+            self.config.show_keys = !self.config.show_keys;
+            return vec![Effect::SaveConfig];
         }
         if key.code == KeyCode::F(2) && matches!(self.overlay, None | Some(Overlay::Help { .. })) {
             self.open_tour();
@@ -2896,6 +2919,21 @@ pub(crate) mod tests {
         assert_eq!(picked(&a), "%1", "and the one before");
         a.update(tab());
         assert_eq!(picked(&a), "%3");
+        // With three, Tab again and again goes through all of them.
+        a.update(key('l'));
+        message(&mut a);
+        a.update(tab());
+        assert_eq!(picked(&a), "%3", "latest but the one shown");
+        a.update(tab());
+        assert_eq!(picked(&a), "%1");
+        a.update(tab());
+        assert_eq!(picked(&a), "%4", "round to the latest");
+        a.update(tab());
+        assert_eq!(picked(&a), "%3");
+        // Another key starts again from the latest.
+        a.update(key('h'));
+        a.update(tab());
+        assert_eq!(picked(&a), "%4");
         // A session that has gone is not gone back to.
         a.agents.remove(0);
         a.update(tab());
