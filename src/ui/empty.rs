@@ -48,13 +48,26 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 /// One tab per agent in window order, flowed into as many rows of `width`
 /// as they need. Waiting is a filled dot, working a hollow one, so the state
-/// does not rest on colour; the picked tab is a solid block.
+/// does not rest on colour; the picked tab is a solid block. With agents in
+/// more than one tmux session, each session starts a row, led by its name.
 fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
     let t = app.theme();
     let agents = app.agents_in_order();
     let one_session = agents.iter().all(|a| a.session == agents[0].session);
     let mut rows: Vec<Line> = vec![Line::raw(" ")];
+    let mut group: Option<&str> = None;
     for a in agents {
+        if !one_session && group != Some(a.session.as_str()) {
+            if group.is_some() {
+                rows.push(Line::raw(" "));
+            }
+            group = Some(&a.session);
+            let row = rows.last_mut().expect("a row");
+            row.spans.push(Span::styled(
+                format!("{} ", visible(&a.session)),
+                Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
+            ));
+        }
         let on = &a.id == picked;
         let (dot, dot_fg) = if a.waiting {
             ("●", t.hi)
@@ -63,11 +76,7 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
         };
         // A program can name its own window, so names are shown as visible text.
         let name = visible(&a.window_name);
-        let window = if one_session {
-            format!("{} {}", a.window_index, name)
-        } else {
-            format!("{}:{} {}", visible(&a.session), a.window_index, name)
-        };
+        let window = format!("{} {}", a.window_index, name);
         let project = visible(&agent_project(a));
         let mut label = format!(" {dot} {window}");
         if project != name {
@@ -236,7 +245,7 @@ fn render_conversation(frame: &mut Frame, area: Rect, app: &App) {
 /// `s` with control and invisible characters spelled out, so text from an
 /// agent cannot move the cursor, recolour the terminal or reorder what is
 /// shown.
-fn visible(s: &str) -> String {
+pub(crate) fn visible(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     s.chars().for_each(|c| push_visible(c, &mut out));
     out

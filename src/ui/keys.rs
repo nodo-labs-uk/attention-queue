@@ -67,8 +67,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
-        (Some(Overlay::Trust { .. }), _) => {
-            vec![("y", "trust it".into()), ("n", "close it".into())]
+        (Some(Overlay::Trust), _) => {
+            let mut keys = vec![("y", "trust it".into()), ("n", "close it".into())];
+            if app.pending_trust.len() > 1 {
+                keys.push(("a", "trust all".into()));
+            }
+            keys
         }
         (Some(Overlay::Model(_) | Overlay::PermissionMode(_)), _) => {
             vec![("Esc", "cancel".into())]
@@ -224,6 +228,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (None, None) if app.picked_agent().is_some() => vec![
             ("h/l", "pick".into()),
             ("Enter", "message".into()),
+            ("A", "message group".into()),
             ("g", "go to window".into()),
             ("p", "open PR".into()),
             ("x", "close".into()),

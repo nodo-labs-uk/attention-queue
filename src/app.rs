@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -337,8 +337,9 @@ pub enum Overlay {
     CloseAgent(AgentId),
     /// `N`: the first prompt for a new session.
     NewSession(NewSessionDraft),
-    /// A new session asks whether to trust its folder.
-    Trust { pane: String, dir: PathBuf },
+    /// New sessions ask whether to trust their folders: the first of
+    /// `App::pending_trust`.
+    Trust,
     /// `m` on the empty screen: choosing a model for an agent.
     Model(AgentId),
     /// Picking a session's permission mode.
@@ -349,6 +350,8 @@ pub enum Overlay {
 pub struct PromptDraft {
     pub agent: AgentId,
     pub input: TextInput,
+    /// `A`: the message goes to every session in this tmux session.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,6 +377,9 @@ pub struct App {
     /// Messages of cards in `sending` held until their agent is at its
     /// prompt, with the agent.
     pub(crate) held: BTreeMap<u64, (AgentId, String)>,
+    /// New sessions waiting on Claude Code's trust question, by pane and
+    /// folder, oldest first; the trust box shows the first.
+    pub(crate) pending_trust: VecDeque<(String, PathBuf)>,
     pub steps: Steps,
     /// Terminal size as last reported by the runtime.
     pub(crate) screen: Option<(u16, u16)>,
@@ -499,6 +505,7 @@ impl App {
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
             held: BTreeMap::new(),
+            pending_trust: VecDeque::new(),
             steps: Steps::default(),
             screen: None,
             shell: Shell::default(),
@@ -641,6 +648,15 @@ impl App {
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent: current,
                     input: TextInput::single_line(),
+                    group: None,
+                }));
+            }
+            KeyCode::Char('A') => {
+                let group = self.picked_agent().map(|a| a.session.clone());
+                self.overlay = Some(Overlay::Prompt(PromptDraft {
+                    agent: current,
+                    input: TextInput::single_line(),
+                    group,
                 }));
             }
             _ => {}
@@ -718,15 +734,41 @@ impl App {
             return Vec::new();
         };
         match text.filter(|t| !t.trim().is_empty()) {
-            Some(text) => self.send_prompt(draft.agent, text.trim().to_string()),
+            Some(text) => match draft.group {
+                Some(group) => self.send_to_group(&group, text.trim()),
+                None => self.send_prompt(draft.agent, text.trim().to_string()),
+            },
             // On the sessions view the Esc that closes the box is also the
             // first of the two that stop the session, as in Claude Code.
-            None if key.code == KeyCode::Esc && self.queue.current().is_none() => {
+            None if key.code == KeyCode::Esc
+                && self.queue.current().is_none()
+                && draft.group.is_none() =>
+            {
                 self.esc_at = None;
                 self.on_empty_esc(draft.agent)
             }
             None => Vec::new(),
         }
+    }
+
+    /// `A`: sends `text` to every session in tmux session `group`, as
+    /// `send_prompt` does to one.
+    fn send_to_group(&mut self, group: &str, text: &str) -> Vec<Effect> {
+        let members: Vec<AgentId> = self
+            .agents_in_order()
+            .iter()
+            .filter(|a| a.session == group)
+            .map(|a| a.id.clone())
+            .collect();
+        let n = members.len();
+        let effects = members
+            .into_iter()
+            .flat_map(|agent| self.send_prompt(agent, text.to_string()))
+            .collect();
+        self.set_status(format!(
+            "Sent to the {n} sessions in {group}, each once idle"
+        ));
+        effects
     }
 
     /// Sends a message typed on the empty screen now if the agent is at its
@@ -1034,6 +1076,10 @@ impl App {
         }
         let mut effects = self.handle(msg);
         effects.extend(self.release_held());
+        // A trust question waits for any box open when it came to close.
+        if self.overlay.is_none() && !self.pending_trust.is_empty() {
+            self.overlay = Some(Overlay::Trust);
+        }
         // A review or quiz card for a checkout means the saves for it are
         // done with; other cards (a permission, a step) say nothing of them.
         if !self.unclaimed.is_empty() {
@@ -1316,7 +1362,7 @@ impl App {
             Some(Overlay::Prompt(_)) => return self.on_prompt_key(key),
             Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
-            Some(Overlay::Trust { .. }) => return self.on_trust_key(key),
+            Some(Overlay::Trust) => return self.on_trust_key(key),
             Some(Overlay::Model(_)) => return self.on_model_key(key),
             Some(Overlay::PermissionMode(_)) => return self.on_permission_mode_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
@@ -3218,6 +3264,55 @@ pub(crate) mod tests {
         a.update(key('m'));
         assert_eq!(a.overlay, None);
         assert!(a.status_text().unwrap().contains("busy"));
+    }
+
+    fn two_groups() -> App {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut db = agent("%3", 1, "db", "/w/db", true);
+        db.session = "work".into();
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", true),
+            db,
+        ];
+        a
+    }
+
+    #[test]
+    fn tabs_are_grouped_by_tmux_session_one_row_each() {
+        let a = two_groups();
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        let row = |name: &str| {
+            screen
+                .lines()
+                .find(|l| l.trim_start_matches(['"', ' ']).starts_with(name))
+                .unwrap_or_else(|| panic!("no {name} row: {screen}"))
+                .to_string()
+        };
+        assert!(row("main").contains("1 api") && row("main").contains("2 web"));
+        assert!(row("work").contains("1 db") && !row("work").contains("api"));
+        assert!(!screen.contains("main:1"), "{screen}");
+    }
+
+    #[test]
+    fn a_messages_every_session_in_the_picked_ones_group() {
+        let mut a = two_groups();
+        a.update(key('A'));
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(screen.contains("Message every session in main"), "{screen}");
+        typed(&mut a, "rebase on main");
+        let effects = a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
+        let mut reached: Vec<String> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Send { agent, .. } => Some(agent.pane.clone()),
+                _ => None,
+            })
+            .chain(a.prompts.keys().map(|id| id.pane.clone()))
+            .collect();
+        reached.sort();
+        assert_eq!(reached, ["%1", "%2"]);
+        assert!(a.status_text().unwrap().contains("2 sessions in main"));
     }
 
     #[test]

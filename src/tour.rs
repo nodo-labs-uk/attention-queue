@@ -737,6 +737,7 @@ impl App {
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent: agent.id,
                     input: TextInput::single_line(),
+                    group: None,
                 }));
             }
             "W" => {

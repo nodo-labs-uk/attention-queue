@@ -35,7 +35,8 @@ finished turn; the card on screen stays as it is.
        of its own (claude --worktree). Ctrl-O there picks another folder:
        type a path (Tab completes, arrows choose a match), and one that
        is not there yet is made when the session starts. If Claude asks
-       whether to trust the folder, aq asks you: y trusts it, n closes it
+       whether to trust the folder, aq asks you: y trusts it, n closes it,
+       and a trusts every folder waiting
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. It closes when the shell exits
@@ -102,6 +103,7 @@ session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
   Tab    back to the session shown before, and Tab again to return
   Enter  message it: sent now, or once it is idle (Esc cancels)
+  A      message every session in its tmux session, each once idle
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
          (/model, which also makes it the default for new sessions)

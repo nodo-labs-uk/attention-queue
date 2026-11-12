@@ -183,20 +183,31 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 t,
             );
         }
-        Some(Overlay::Trust { dir, .. }) => {
-            confirm::render(
-                frame,
-                body,
-                "Trust this folder?",
-                &[
-                    "Claude Code starts here for the first time:".into(),
-                    dir.display().to_string(),
-                    "It will be able to read, edit and run files in it.".into(),
-                    "No closes the new session.".into(),
-                ],
-                &[("y", "yes"), ("n", "no")],
-                t,
-            );
+        Some(Overlay::Trust) => {
+            if let Some((_, dir)) = app.pending_trust.front() {
+                let n = app.pending_trust.len();
+                let title = match n {
+                    1 => "Trust this folder?".to_string(),
+                    n => format!("Trust this folder? 1 of {n}"),
+                };
+                let mut hints = vec![("y", "yes"), ("n", "no")];
+                if n > 1 {
+                    hints.push(("a", "all"));
+                }
+                confirm::render(
+                    frame,
+                    body,
+                    &title,
+                    &[
+                        "Claude Code starts here for the first time:".into(),
+                        dir.display().to_string(),
+                        "It will be able to read, edit and run files in it.".into(),
+                        "No closes the new session.".into(),
+                    ],
+                    &hints,
+                    t,
+                );
+            }
         }
         Some(Overlay::Model(id)) => {
             let name = app
@@ -254,7 +265,10 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             let name = app
                 .agent(&d.agent)
                 .map_or_else(|| d.agent.pane.clone(), |a| a.window_name.clone());
-            let title = format!("Message to {name}");
+            let title = match &d.group {
+                Some(group) => format!("Message every session in {}", empty::visible(group)),
+                None => format!("Message to {name}"),
+            };
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
         Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
