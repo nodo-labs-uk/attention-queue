@@ -29,7 +29,7 @@ finished turn; the card on screen stays as it is.
 
 # Every card
   ?    ask the agent a side question      Space  skip this card
-                                          B      send it to the back of the queue
+                                          B      move it to the back of the queue
   W    where are we: a short summary of what is done and what is left
   N    a new Claude session in this project, in a tmux window of its own;
        what you type is its first prompt, and Tab gives it a git worktree
@@ -84,7 +84,7 @@ When a session ends its turn by asking you something (to approve a
 draft, to choose between two ways), its message becomes a card.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words
      a is there only when the question asks for a go-ahead
-  x  put the card away   g  go to the session's window   j/k scroll
+  x  stash the card      g  go to the session's window   j/k scroll
 
 When Claude asks with its own menu of options, the card lists them:
   1-9  pick   j/k + Enter  the same

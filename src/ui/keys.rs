@@ -141,7 +141,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("w/b", "word".into()),
             ("m", if sc.view.raw { "file" } else { "raw" }.into()),
             ("Space", "skip".into()),
-            ("B", "to the back".into()),
+            ("B", "move to back".into()),
         ],
         (
             None,
@@ -172,7 +172,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ),
             ("j/k", "line".into()),
             ("Space", "skip".into()),
-            ("B", "to the back".into()),
+            ("B", "move to back".into()),
             ("?", "ask".into()),
         ],
         (
@@ -186,7 +186,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("n", "deny".into()),
             ("g", "go to window".into()),
             ("Space", "skip".into()),
-            ("B", "to the back".into()),
+            ("B", "move to back".into()),
             ("?", "ask".into()),
         ],
         (
@@ -220,11 +220,11 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             .into_iter()
             .chain([
                 ("Enter", "reply".into()),
-                ("x", "put away".into()),
+                ("x", "stash".into()),
                 ("g", "go to window".into()),
                 ("j/k", "scroll".into()),
                 ("Space", "skip".into()),
-                ("B", "to the back".into()),
+                ("B", "move to back".into()),
                 ("?", "ask".into()),
             ])
             .collect(),
@@ -242,7 +242,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("H/L", "file".into()),
             ("j/k", "line".into()),
             ("Space", "skip".into()),
-            ("B", "to the back".into()),
+            ("B", "move to back".into()),
         ],
         (
             None,
@@ -374,7 +374,7 @@ fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
     };
     keys.extend([
         ("Space", "skip".into()),
-        ("B", "to the back".into()),
+        ("B", "move to back".into()),
         ("M", "mode".into()),
     ]);
     keys

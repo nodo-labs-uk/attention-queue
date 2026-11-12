@@ -389,7 +389,7 @@ impl App {
             }
             KeyCode::Char('x') => {
                 self.queue.remove(id);
-                self.set_status("Question put away: it is still in the session's window");
+                self.set_status("Question stashed: it is still in the session's window");
             }
             KeyCode::Char('g') if !ctrl => return vec![Effect::GoToWindow { pane: agent.pane }],
             code => self.scroll_question(code, ctrl, page),
