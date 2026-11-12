@@ -67,6 +67,8 @@ Each project has a mode, and `M` switches it.
 
 When nothing is waiting, there is a tab per session with the selected one's screen live underneath. Each tab shows the session's permission mode as its footer does, such as `⏵⏵ auto` or `⏸ plan`. Sessions in different tmux sessions get a row each, led by the tmux session's name. `Enter` messages the picked session (sent once it's idle), `A` sends one message to every session in its row, `W` asks where it's up to without interrupting it, `p` asks it to open a PR, `m` switches its model, `P` its permission mode (auto, manual, accept edits or plan), and `Esc Esc` stops it. `N` starts a new Claude session in the same project, in a tmux window of its own, with what you type as its first prompt. `Tab` in that box gives the session a git worktree of its own (Claude's `--worktree`), so two sessions don't edit the same files. `Ctrl-O` picks another folder: type a path with the matching folders listed underneath (`Tab` completes, the arrows choose), and a folder that isn't there yet is made when the session starts. The first time Claude Code starts in a folder it asks whether to trust it; aq shows that question in its own box, where `y` trusts the folder and `n` closes the new session. When several sessions ask at once, they are asked about in turn, and `a` trusts them all.
 
+`O` opens a workspace: several repos at once, for work that spans them. Pick the folder that holds them, and aq finds the git repos inside (up to two levels down) and ticks them all; `Space` unticks one. `Enter` starts a Claude session in each, as windows of one tmux session named after the folder, so they share a row of tabs. aq saves the set in its config, and `O` lists it next time; opening it again starts only the repos that have no session there yet.
+
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
 
 ![N starts a session in a worktree of its own, then Ctrl-O starts one in a folder that is made for it](docs/media/new.svg)
@@ -90,6 +92,7 @@ The ones worth knowing from day one:
 | `!` | anywhere | shell in a popup, with Claude's last `! command` typed in |
 | `W` | anywhere | ask the session where it's up to |
 | `N` | anywhere | start a new Claude session in this project; `Tab` puts it in its own worktree, `Ctrl-O` picks another folder |
+| `O` | anywhere | open a workspace: a Claude session for each git repo in a folder, in one tmux session |
 | drag | anywhere | select text; letting go copies it |
 | double-click, triple-click | anywhere | copy the word, or the whole line, as in Ghostty |
 | `Space` | card | skip it for now |

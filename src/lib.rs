@@ -25,3 +25,4 @@ pub mod tour;
 pub mod transcript;
 pub mod ui;
 pub mod visible;
+pub mod workspace;

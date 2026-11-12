@@ -463,6 +463,8 @@ fn apply(
                 worktree,
             } => Job::NewSession(dir, prompt, worktree),
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
+            Effect::FindRepos { root } => Job::FindRepos(root),
+            Effect::OpenWorkspace { session, dirs } => Job::OpenWorkspace(session, dirs),
             Effect::Copy(sel) => {
                 let text = workers
                     .screen
@@ -622,6 +624,9 @@ enum Job {
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
     ListDirs(String, PathBuf),
+    FindRepos(PathBuf),
+    /// A tmux session's name, and the folders to start Claude in there.
+    OpenWorkspace(String, Vec<PathBuf>),
     LastMessage(AgentId, String, Checkout),
     Quiz {
         checkout: Checkout,
@@ -728,17 +733,37 @@ fn spawn_effect_worker(
                 Job::ReadCode(req) => Some(read_code(req)),
                 Job::NewSession(dir, prompt, worktree) => {
                     let dir = expand_home(&dir);
-                    std::fs::create_dir_all(&dir)
+                    match std::fs::create_dir_all(&dir)
                         .with_context(|| format!("making {}", dir.display()))
                         .and_then(|()| {
-                            let pane =
-                                crate::agents::tmux::new_claude(&dir, prompt.as_deref(), worktree)?;
-                            let asks = crate::agents::tmux::waits_for_trust(&pane)?;
-                            Ok(asks.then_some(Msg::TrustAsked { pane, dir }))
-                        })
-                        .unwrap_or_else(|e| {
-                            Some(Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
-                        })
+                            crate::agents::tmux::new_claude(&dir, prompt.as_deref(), worktree)
+                        }) {
+                        Ok(pane) => {
+                            watch_trust(pane, dir, tx.clone());
+                            None
+                        }
+                        Err(e) => Some(Msg::EffectFailed(format!("Could not start Claude: {e:#}"))),
+                    }
+                }
+                Job::FindRepos(asked) => {
+                    let root = expand_home(&asked);
+                    let repos = find_repos(&root);
+                    Some(Msg::Repos { asked, root, repos })
+                }
+                Job::OpenWorkspace(session, dirs) => {
+                    let mut failed = Vec::new();
+                    for dir in dirs {
+                        match crate::agents::tmux::new_claude_in(&session, &dir) {
+                            Ok(pane) => watch_trust(pane, dir, tx.clone()),
+                            Err(e) => failed.push(format!("{}: {e:#}", dir.display())),
+                        }
+                    }
+                    (!failed.is_empty()).then(|| {
+                        Msg::EffectFailed(format!(
+                            "Could not start Claude in {}",
+                            failed.join("; ")
+                        ))
+                    })
                 }
                 Job::ListDirs(typed, base) => Some(Msg::Dirs(list_dirs(typed, &base))),
                 // Only when the transcript ends on words of Claude's: after a
@@ -1060,6 +1085,55 @@ fn expand_home(path: &Path) -> PathBuf {
 /// The folders beside the last part of `typed` whose names start with it,
 /// and whether `typed` is itself a folder. Hidden ones only when asked for
 /// with a dot.
+/// Watches a new session's pane on a thread of its own, since it can take
+/// seconds, and says if Claude Code asks whether to trust `dir`.
+fn watch_trust(pane: String, dir: PathBuf, tx: UnboundedSender<Msg>) {
+    std::thread::spawn(move || {
+        let msg = match crate::agents::tmux::waits_for_trust(&pane) {
+            Ok(true) => Msg::TrustAsked { pane, dir },
+            Ok(false) => return,
+            Err(e) => Msg::EffectFailed(format!("Could not watch {pane} start: {e:#}")),
+        };
+        let _ = tx.send(msg);
+    });
+}
+
+/// The git repos in `root`, relative to it: `root` itself if it is one
+/// (as `""`), and the folders up to two levels down holding a `.git`,
+/// without looking inside a repo. Hidden folders and the usual build and
+/// dependency folders are passed over.
+pub(crate) fn find_repos(root: &Path) -> Vec<PathBuf> {
+    const SKIP: [&str; 3] = ["node_modules", "target", "vendor"];
+    fn is_repo(dir: &Path) -> bool {
+        dir.join(".git").exists()
+    }
+    fn walk(root: &Path, rel: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join(rel))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| !n.starts_with('.') && !SKIP.contains(&n.as_str()))
+            .map(|n| rel.join(n))
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            if is_repo(&root.join(&dir)) {
+                out.push(dir);
+            } else if depth > 1 {
+                walk(root, &dir, depth - 1, out);
+            }
+        }
+    }
+    let mut repos = Vec::new();
+    if is_repo(root) {
+        repos.push(PathBuf::new());
+    }
+    walk(root, Path::new(""), 2, &mut repos);
+    repos
+}
+
 fn list_dirs(typed: String, base: &Path) -> DirListing {
     use crate::new_session::resolve;
     const MOST: usize = 200;
@@ -1224,6 +1298,35 @@ fn spawn_ticker(tx: UnboundedSender<Msg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repos_are_found_two_levels_down_without_looking_inside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for repo in [
+            "api",
+            "tools/cli",
+            "api/inner",
+            ".hidden/x",
+            "node_modules/y",
+        ] {
+            std::fs::create_dir_all(root.join(repo).join(".git")).unwrap();
+        }
+        // A worktree or submodule has a .git file.
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::write(root.join("web/.git"), "gitdir: elsewhere").unwrap();
+        std::fs::create_dir_all(root.join("a/b/c/.git")).unwrap();
+        assert_eq!(
+            super::find_repos(root),
+            [PathBuf::from("api"), "tools/cli".into(), "web".into()]
+        );
+        std::fs::create_dir(root.join(".git")).unwrap();
+        assert_eq!(
+            super::find_repos(root)[0],
+            PathBuf::new(),
+            "the folder itself"
+        );
+    }
 
     #[test]
     fn folders_are_listed_by_the_start_of_their_name() {

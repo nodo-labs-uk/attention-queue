@@ -5,13 +5,13 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use super::input;
-use crate::new_session::NewSessionDraft;
+use crate::new_session::{FolderPick, NewSessionDraft};
 use crate::theme::Theme;
 use crate::visible::push_visible;
 
 /// The same box for the prompt and for the folder, so nothing moves
-/// between them.
-const SIZE: (u16, u16) = (100, 12);
+/// between them; the workspace box is this size too.
+pub const SIZE: (u16, u16) = (100, 12);
 
 /// `N`: the prompt box, or after Ctrl-O the folder box with its matches.
 pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
@@ -34,7 +34,26 @@ pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
         input::render_with_keys(frame, area, &d.input, &title, "start", &more, t, SIZE);
         return;
     };
-    let title = "Folder for the new session";
+    render_folder(
+        frame,
+        area,
+        pick,
+        "Folder for the new session",
+        "Not there yet: Enter names it, and it is made when the session starts",
+        t,
+    );
+}
+
+/// A folder box: the path being typed, with the folders matching it below.
+/// `missing` is said when the typed folder is not there.
+pub fn render_folder(
+    frame: &mut Frame,
+    area: Rect,
+    pick: &FolderPick,
+    title: &str,
+    missing: &str,
+    t: &Theme,
+) {
     let more = [("Tab", "complete"), ("↑/↓", "choose")];
     input::render_with_keys(frame, area, &pick.input, title, "use it", &more, t, SIZE);
     let rows = input::below_first_row(area, SIZE);
@@ -48,10 +67,7 @@ pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
         Some(l) => {
             let note = match (l.exists, typed.trim().is_empty(), l.names.is_empty()) {
                 (_, true, _) => Line::raw(""),
-                (false, ..) => Line::styled(
-                    "Not there yet: Enter names it, and it is made when the session starts",
-                    Style::new().fg(t.hi),
-                ),
+                (false, ..) => Line::styled(missing.to_string(), Style::new().fg(t.hi)),
                 (true, _, true) => Line::styled("No folders inside", dim),
                 (true, _, false) => Line::raw(""),
             };

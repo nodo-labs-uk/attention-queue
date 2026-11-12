@@ -212,7 +212,7 @@ pub fn render(frame: &mut Frame, area: Rect, input: &TextInput, title: &str, t: 
 /// `render` in a box of `size` (columns, rows), shrunk to fit `area`;
 /// `submit` names what the submitting key does.
 /// Where a box of `size` sits in `area`: centred.
-fn panel(area: Rect, size: (u16, u16)) -> Rect {
+pub fn panel(area: Rect, size: (u16, u16)) -> Rect {
     let [h] = Layout::horizontal([Constraint::Length(size.0.min(area.width))])
         .flex(Flex::Center)
         .areas(area);

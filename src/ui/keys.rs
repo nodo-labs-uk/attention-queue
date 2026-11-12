@@ -34,6 +34,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "use it".into()),
             ("Esc", "back".into()),
         ],
+        (Some(Overlay::Workspace(d)), _) => match &d.stage {
+            crate::workspace::Stage::Choose { .. } => vec![
+                ("Enter", "open".into()),
+                ("j/k", "choose".into()),
+                ("Ctrl-O", "other folder".into()),
+                ("Esc", "cancel".into()),
+            ],
+            crate::workspace::Stage::Folder(_) => vec![
+                ("Tab", "complete".into()),
+                ("↑/↓", "choose".into()),
+                ("Enter", "find repos".into()),
+                ("Esc", "back".into()),
+            ],
+            crate::workspace::Stage::Finding { .. } => vec![("Esc", "back".into())],
+            crate::workspace::Stage::Repos(_) => vec![
+                ("Enter", "open ticked".into()),
+                ("Space", "tick".into()),
+                ("a", "all".into()),
+                ("Esc", "back".into()),
+            ],
+        },
         (Some(Overlay::NewSession(d)), _) => vec![
             ("Enter", "start".into()),
             ("Ctrl-O", "other folder".into()),

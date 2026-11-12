@@ -17,6 +17,7 @@ mod shell;
 mod step;
 mod tour;
 mod tree;
+mod workspace;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -272,6 +273,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
         Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
+        Some(Overlay::Workspace(d)) => workspace::render(frame, body, d, &app.config.workspaces, t),
         None => {}
     }
     if let Some(step) = app.practice_step() {
