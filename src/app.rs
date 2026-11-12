@@ -373,6 +373,19 @@ pub struct PromptDraft {
     pub input: TextInput,
     /// `A`: the message goes to every session in this tmux session.
     pub group: Option<String>,
+    /// What Claude Code suggests sending next, shown in lighter text until
+    /// typed over; Tab or Ctrl-F fills it in.
+    pub suggestion: Option<String>,
+}
+
+impl PromptDraft {
+    /// The part of the suggestion still to type, when what is typed is the
+    /// start of it.
+    pub fn ghost(&self) -> Option<&str> {
+        let s = self.suggestion.as_deref()?;
+        s.strip_prefix(self.input.text().as_str())
+            .filter(|rest| !rest.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,10 +688,12 @@ impl App {
             KeyCode::Esc => return self.on_empty_esc(current),
             KeyCode::Char('x') => self.overlay = Some(Overlay::CloseAgent(current)),
             KeyCode::Enter | KeyCode::Char('i') => {
+                let suggestion = self.agent(&current).and_then(|a| a.suggestion.clone());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent: current,
                     input: TextInput::single_line(),
                     group: None,
+                    suggestion,
                 }));
             }
             KeyCode::Char('A') => {
@@ -687,6 +702,7 @@ impl App {
                     agent: current,
                     input: TextInput::single_line(),
                     group,
+                    suggestion: None,
                 }));
             }
             _ => {}
@@ -755,6 +771,14 @@ impl App {
         let Some(Overlay::Prompt(draft)) = &mut self.overlay else {
             return Vec::new();
         };
+        let complete = key.code == KeyCode::Tab
+            || (key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::CONTROL));
+        if complete {
+            if let Some(s) = draft.ghost().and(draft.suggestion.clone()) {
+                draft.input = TextInput::single_line_with(&s);
+            }
+            return Vec::new();
+        }
         let text = match draft.input.handle_key(key) {
             InputEvent::Editing => return Vec::new(),
             InputEvent::Cancel => None,
@@ -2202,6 +2226,7 @@ pub(crate) mod tests {
             },
             waiting,
             permission_mode: None,
+            suggestion: None,
             input: InputBox::Unseen,
         }
     }
@@ -2804,6 +2829,38 @@ pub(crate) mod tests {
         assert!(effects.is_empty());
         let effects = turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert!(matches!(effects.as_slice(), [Effect::ComputeReview(_)]));
+    }
+
+    #[test]
+    fn the_message_box_shows_claudes_suggestion_and_tab_or_ctrl_f_fills_it_in() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        a.agents[0].suggestion = Some("commit this".into());
+        let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        let tab = || Msg::Key(KeyEvent::from(KeyCode::Tab), Instant::now());
+        let text = |a: &App| match &a.overlay {
+            Some(Overlay::Prompt(d)) => d.input.text(),
+            other => panic!("no message box: {other:?}"),
+        };
+        a.update(enter());
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(screen.contains("commit this"), "{screen}");
+        assert!(screen.contains("Tab suggestion"), "{screen}");
+        a.update(tab());
+        assert_eq!(text(&a), "commit this");
+        // Typed over: the rest of it while it matches, nothing once not.
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now()));
+        a.update(enter());
+        typed(&mut a, "comm");
+        a.update(ctrl('f'));
+        assert_eq!(text(&a), "commit this");
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now()));
+        a.update(enter());
+        typed(&mut a, "push");
+        a.update(tab());
+        assert_eq!(text(&a), "push", "no longer the suggestion");
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(!screen.contains("commit this"), "{screen}");
     }
 
     #[test]

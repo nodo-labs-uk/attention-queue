@@ -182,6 +182,7 @@ fn join(
             waiting: pane.waiting,
             input: super::InputBox::Unseen,
             permission_mode: None,
+            suggestion: None,
         });
     }
     agents
@@ -272,6 +273,7 @@ impl AgentConn for TmuxConn {
         {
             if let Ok(screen) = self.capture_styled(&a.id.pane) {
                 a.input = super::read_input_box(&screen);
+                a.suggestion = super::read_suggestion(&screen);
             }
         }
         Ok(agents)

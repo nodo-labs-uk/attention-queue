@@ -259,6 +259,23 @@ pub fn render_with_keys(
     t: &Theme,
     size: (u16, u16),
 ) {
+    render_with_ghost(frame, area, input, title, submit, more, None, t, size);
+}
+
+/// As `render_with_keys`, with `ghost` drawn in lighter text after the
+/// cursor: the rest of a suggestion that a key fills in.
+#[allow(clippy::too_many_arguments)]
+pub fn render_with_ghost(
+    frame: &mut Frame,
+    area: Rect,
+    input: &TextInput,
+    title: &str,
+    submit: &str,
+    more: &[(&str, &str)],
+    ghost: Option<&str>,
+    t: &Theme,
+    size: (u16, u16),
+) {
     let panel = panel(area, size);
     frame.render_widget(Clear, panel);
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
@@ -298,7 +315,14 @@ pub fn render_with_keys(
     let (w, h) = (inner.width as usize, inner.height as usize);
     let (rows, cursor) = input.wrapped(w);
     let top = cursor.1.saturating_sub(h - 1);
-    let lines: Vec<Line> = rows.into_iter().skip(top).take(h).map(Line::raw).collect();
+    let mut lines: Vec<Line> = rows.into_iter().skip(top).take(h).map(Line::raw).collect();
+    if let (Some(ghost), Some(line)) = (ghost, lines.get_mut(cursor.1 - top)) {
+        let mut shown = String::new();
+        ghost
+            .chars()
+            .for_each(|c| crate::visible::push_visible(c, &mut shown));
+        line.spans.push(Span::styled(shown, Style::new().fg(t.dim)));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
     frame.set_cursor_position(Position::new(
         inner.x + cursor.0 as u16,

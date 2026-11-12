@@ -114,7 +114,9 @@ session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
   Tab    the session you last sent a message to, and Tab again to the
          one before it; moving with h/l does not count
-  Enter  message it: sent now, or once it is idle (Esc cancels)
+  Enter  message it: sent now, or once it is idle (Esc cancels); what
+         Claude suggests next shows in lighter text, and Tab or Ctrl-F
+         fills it in
   A      message every session in its tmux session, each once idle
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku

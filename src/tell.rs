@@ -234,6 +234,7 @@ impl App {
                     agent,
                     input: TextInput::single_line_with(&framed(&tc.from_name, &tc.message.text)),
                     group: None,
+                    suggestion: None,
                 }));
                 Vec::new()
             }
