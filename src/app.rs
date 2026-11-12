@@ -423,8 +423,8 @@ pub struct App {
     pub(crate) saved: Option<crate::persist::SavedState>,
     /// The idle agent picked on the empty screen, to go to with Enter.
     pub(crate) picked: Option<AgentId>,
-    /// The session shown before the picked one, for Tab to go back to.
-    pub(crate) last_picked: Option<AgentId>,
+    /// The sessions you sent a message to, the latest first, for Tab.
+    pub(crate) messaged: Vec<AgentId>,
     /// The last screen read from a pane, for the empty screen's live view.
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
@@ -538,7 +538,7 @@ impl App {
             unclaimed: Default::default(),
             saved: Some(Default::default()),
             picked: None,
-            last_picked: None,
+            messaged: Vec::new(),
             preview: None,
             capturing: false,
             prompts: BTreeMap::new(),
@@ -612,15 +612,19 @@ impl App {
     /// Shows `id` on the empty screen, remembering the session shown
     /// before it for Tab.
     fn pick(&mut self, id: AgentId) {
-        let shown = self.picked_agent().map(|a| a.id.clone());
-        if shown.as_ref() != Some(&id) {
-            self.last_picked = shown;
-        }
         self.picked = Some(id);
     }
 
-    /// h/l or j/k pick an agent on the empty screen; Tab goes back to the
-    /// one shown before; Enter or i write it a message;
+    /// Notes that you sent `agent` a message, for Tab. Only the latest few
+    /// are kept.
+    fn note_messaged(&mut self, agent: &AgentId) {
+        self.messaged.retain(|a| a != agent);
+        self.messaged.insert(0, agent.clone());
+        self.messaged.truncate(10);
+    }
+
+    /// h/l or j/k pick an agent on the empty screen; Tab goes to the one
+    /// you last sent a message to; Enter or i write it a message;
     /// g goes to its window; p asks it to open a pull request; m picks its model.
     fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ids: Vec<AgentId> = self
@@ -645,8 +649,13 @@ impl App {
                 return self.capture_picked();
             }
             KeyCode::Tab => {
-                let Some(last) = self.last_picked.clone().filter(|id| ids.contains(id)) else {
-                    self.set_status("No other session shown yet: h/l picks one");
+                let last = self
+                    .messaged
+                    .iter()
+                    .find(|id| **id != current && ids.contains(id))
+                    .cloned();
+                let Some(last) = last else {
+                    self.set_status("No other session messaged yet: h/l picks one");
                     return Vec::new();
                 };
                 self.pick(last);
@@ -782,10 +791,13 @@ impl App {
             .map(|a| a.id.clone())
             .collect();
         let n = members.len();
+        // A message to them all is not one to go back to with Tab.
+        let messaged = self.messaged.clone();
         let effects = members
             .into_iter()
             .flat_map(|agent| self.send_prompt(agent, text.to_string()))
             .collect();
+        self.messaged = messaged;
         self.set_status(format!(
             "Sent to the {n} sessions in {group}, each once idle"
         ));
@@ -796,6 +808,7 @@ impl App {
     /// prompt, or once it is. A second message for the same agent joins the
     /// one waiting, so both arrive as one.
     pub(crate) fn send_prompt(&mut self, agent: AgentId, text: String) -> Vec<Effect> {
+        self.note_messaged(&agent);
         // Any message to the session answers what it asked.
         self.drop_questions(false, |a| *a == agent);
         let name = self
@@ -1928,6 +1941,7 @@ impl App {
         done: String,
     ) -> Vec<Effect> {
         self.sending.insert(id, done);
+        self.note_messaged(&agent);
         if self.at_prompt(&agent) {
             self.set_status("Sending");
             return vec![Effect::Send {
@@ -2793,27 +2807,40 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn tab_goes_back_and_forth_between_the_last_two_sessions() {
+    fn tab_goes_to_the_last_session_messaged_whatever_was_picked_since() {
         let mut a = App::new(Config::default(), builtin_themes());
         a.agents = vec![
             agent("%1", 1, "api", "/w/api", true),
             agent("%2", 2, "docs", "/w/docs", false),
             agent("%3", 3, "web", "/w/web", true),
+            agent("%4", 4, "db", "/w/db", true),
         ];
         let tab = || Msg::Key(KeyEvent::from(KeyCode::Tab), Instant::now());
+        let enter = || Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now());
         let picked = |a: &App| a.picked_agent().unwrap().id.pane.clone();
+        let message = |a: &mut App| {
+            a.update(enter());
+            typed(a, "hi");
+            a.update(enter());
+        };
         a.update(tab());
-        assert_eq!(picked(&a), "%1", "nothing shown before yet");
+        assert_eq!(picked(&a), "%1", "nothing messaged yet");
         assert!(a.status_text().unwrap().contains("h/l"));
+        message(&mut a);
         a.update(key('l'));
         a.update(key('l'));
-        assert_eq!(picked(&a), "%3");
+        message(&mut a);
+        // Moving past docs and on to db does not count.
+        a.update(key('l'));
+        assert_eq!(picked(&a), "%4");
         a.update(tab());
-        assert_eq!(picked(&a), "%2");
+        assert_eq!(picked(&a), "%3", "the last messaged");
+        a.update(tab());
+        assert_eq!(picked(&a), "%1", "and the one before");
         a.update(tab());
         assert_eq!(picked(&a), "%3");
         // A session that has gone is not gone back to.
-        a.agents.remove(1);
+        a.agents.remove(0);
         a.update(tab());
         assert_eq!(picked(&a), "%3");
     }

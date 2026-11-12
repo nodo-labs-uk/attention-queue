@@ -9,10 +9,9 @@ use crate::app::{App, Overlay};
 use crate::model::{Card, CardKind};
 use crate::quiz::{QuizCard, QuizState, Verdict};
 
-/// Bottom row: the keys that work right now, and the latest status message.
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme();
-    let keys: Vec<(&str, String)> = match (&app.overlay, app.queue.current()) {
+/// The keys that work right now, the likeliest first.
+fn keys_for(app: &App) -> Vec<(&str, String)> {
+    match (&app.overlay, app.queue.current()) {
         (Some(Overlay::Ask(a)), _) if a.input.is_some() => {
             vec![("Enter", "ask".into()), ("Esc", "cancel".into())]
         }
@@ -249,14 +248,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ) => quiz_keys(qc),
         (None, None) if app.picked_agent().is_some() => vec![
             ("h/l", "pick".into()),
+            ("Tab", "last messaged".into()),
             ("Enter", "message".into()),
             ("A", "message group".into()),
+            ("W", "where are we".into()),
+            ("?", "ask".into()),
             ("g", "go to window".into()),
             ("p", "open PR".into()),
-            ("x", "close".into()),
-            ("M", "mode".into()),
+            ("m", "model".into()),
             ("P", "permissions".into()),
-            ("W", "where are we".into()),
+            ("M", "mode".into()),
+            ("Esc Esc", "stop".into()),
+            ("x", "close".into()),
+            ("N", "new session".into()),
+            ("O", "workspace".into()),
+            ("!", "shell".into()),
             ("t", "theme".into()),
             ("Q", "quit".into()),
         ],
@@ -267,24 +273,58 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 ..
             }),
         ) => TELL_KEYS.iter().map(|(k, l)| (*k, l.to_string())).collect(),
-        (None, None) => vec![("t", "theme".into()), ("Q", "quit".into())],
-    };
-    let mut spans = vec![Span::raw(" ")];
-    for (k, label) in keys {
-        spans.push(Span::styled(
-            k,
-            Style::new().fg(t.key).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(format!(" {label}   "), Style::new().fg(t.dim)));
+        (None, None) => vec![
+            ("O", "workspace".into()),
+            ("t", "theme".into()),
+            ("Q", "quit".into()),
+        ],
     }
+}
+
+/// The keys flowed into rows of `width`, a key never split from its label.
+fn rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    let t = app.theme();
+    let mut rows = vec![Line::raw(" ")];
+    for (k, label) in keys_for(app) {
+        let item = [
+            Span::styled(
+                k.to_string(),
+                Style::new().fg(t.key).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {label}   "), Style::new().fg(t.dim)),
+        ];
+        let w: usize = item.iter().map(Span::width).sum();
+        let row = rows.last_mut().expect("a row");
+        if row.width() + w > width as usize && row.width() > 1 {
+            rows.push(Line::raw(" "));
+        }
+        rows.last_mut().expect("a row").spans.extend(item);
+    }
+    rows
+}
+
+/// How many rows the keys take in a screen of `width` and `height`: at
+/// most a quarter of it, so a small window keeps room for the rest; the
+/// keys cut are the least likely ones, listed last. It does not change
+/// with the status message, so nothing moves when one shows.
+pub fn height(app: &App, width: u16, height: u16) -> u16 {
+    (rows(app, width).len() as u16).min((height / 4).max(1))
+}
+
+/// Bottom rows: the keys that work right now, and the latest status message
+/// right of the last row.
+pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let t = app.theme();
+    let mut rows = rows(app, area.width);
+    rows.truncate(area.height as usize);
+    let last_w = rows.last().map_or(0, |r| r.width() as u16).min(area.width);
     let base = Style::new().bg(t.panel).fg(t.fg);
-    let keys = Line::from(spans);
-    let keys_w = (keys.width() as u16).min(area.width);
-    frame.render_widget(Paragraph::new(keys).style(base), area);
+    frame.render_widget(Paragraph::new(rows).style(base), area);
     if let Some(msg) = app.status_text() {
         // Only the space right of the keys; a message too long for it is cut at the end.
+        let last = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
         let [_, rest] =
-            Layout::horizontal([Constraint::Length(keys_w), Constraint::Fill(1)]).areas(area);
+            Layout::horizontal([Constraint::Length(last_w), Constraint::Fill(1)]).areas(last);
         let text = format!("{msg} ");
         let align = if text.chars().count() > rest.width as usize {
             Alignment::Left

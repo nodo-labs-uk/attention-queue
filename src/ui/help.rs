@@ -112,7 +112,8 @@ A tab per session along the top (● waiting, ○ working); the picked
 one's screen fills the rest. After you send or approve a review, that
 session is the one picked.
   h/l    pick a session (j/k too)   g  go to its window
-  Tab    back to the session shown before, and Tab again to return
+  Tab    the session you last sent a message to, and Tab again to the
+         one before it; moving with h/l does not count
   Enter  message it: sent now, or once it is idle (Esc cancels)
   A      message every session in its tmux session, each once idle
   p      ask an idle session to open a PR (/create-pr) and go there

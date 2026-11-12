@@ -126,7 +126,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
     let [top, body, bottom] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
-        Constraint::Length(1),
+        Constraint::Length(keys::height(app, area.width, area.height)),
     ])
     .areas(area);
     bar::render(frame, top, app);
