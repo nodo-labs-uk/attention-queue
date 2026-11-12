@@ -77,6 +77,13 @@ pub enum Msg {
     },
     /// The folders an `Effect::ListDirs` asked for.
     Dirs(DirListing),
+    /// The git repos an `Effect::FindRepos` found in `root` (`asked` with
+    /// `~` expanded), relative to it.
+    Repos {
+        asked: PathBuf,
+        root: PathBuf,
+        repos: Vec<PathBuf>,
+    },
     /// A session `Effect::NewSession` started in `pane` asks whether to
     /// trust `dir`, its first start there.
     TrustAsked {
@@ -258,6 +265,18 @@ pub enum Effect {
     ClosePane {
         pane: String,
     },
+    /// Find the git repos in `root`, for the workspace box.
+    FindRepos {
+        root: PathBuf,
+    },
+    /// Start Claude in each of `dirs`, as windows of tmux session
+    /// `session`, made if it is not there.
+    OpenWorkspace {
+        session: String,
+        dirs: Vec<PathBuf>,
+        /// Added to each session's system prompt: how to reach the others.
+        system: String,
+    },
     /// Say yes to the trust menu of the new session in `pane`.
     TrustFolder {
         pane: String,
@@ -337,6 +356,8 @@ pub enum Overlay {
     CloseAgent(AgentId),
     /// `N`: the first prompt for a new session.
     NewSession(NewSessionDraft),
+    /// `O`: opening a workspace.
+    Workspace(crate::workspace::WorkspaceDraft),
     /// New sessions ask whether to trust their folders: the first of
     /// `App::pending_trust`.
     Trust,
@@ -1118,6 +1139,7 @@ impl App {
                 self.on_dirs(listing);
                 Vec::new()
             }
+            Msg::Repos { asked, root, repos } => self.on_repos(asked, root, repos),
             Msg::TrustAsked { pane, dir } => {
                 self.on_trust_asked(pane, dir);
                 Vec::new()
@@ -1198,6 +1220,23 @@ impl App {
             } if tool_name == crate::choice::TOOL => {
                 self.on_choice(req_id, at, &session_id, &cwd, checkout, tool_input)
             }
+            Msg::Ipc {
+                req_id,
+                req: HookRequest::Tell { pane, to, text },
+                ..
+            } => {
+                let (decision, mut effects) = self.on_tell(pane.as_deref(), &to, &text);
+                effects.insert(0, Effect::Reply { req_id, decision });
+                effects
+            }
+            Msg::Ipc {
+                req_id,
+                req: HookRequest::Tellable { pane },
+                ..
+            } => vec![Effect::Reply {
+                req_id,
+                decision: self.on_tellable(pane.as_deref()),
+            }],
             // No card for the other kinds; nothing waits.
             Msg::Ipc { req_id, .. } => vec![Effect::Reply {
                 req_id,
@@ -1363,6 +1402,7 @@ impl App {
             Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
             Some(Overlay::Trust) => return self.on_trust_key(key),
+            Some(Overlay::Workspace(_)) => return self.on_workspace_key(key),
             Some(Overlay::Model(_)) => return self.on_model_key(key),
             Some(Overlay::PermissionMode(_)) => return self.on_permission_mode_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
@@ -1411,6 +1451,7 @@ impl App {
                 }
                 Vec::new()
             }
+            KeyCode::Char('O') => self.open_workspace_box(),
             KeyCode::Char('t') => self.next_theme(),
             KeyCode::Char('M') => self.cycle_mode(),
             KeyCode::Char('f')
@@ -1440,6 +1481,7 @@ impl App {
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
                 Some(CardKind::Question(_)) => self.on_question_key(key),
+                Some(CardKind::Tell(_)) => self.on_tell_key(key),
                 Some(CardKind::Choice(_)) => self.on_choice_key(key),
                 Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
                 Some(CardKind::Review(_)) => self.on_review_key(key),
@@ -1496,7 +1538,7 @@ impl App {
 
     /// The project in front of you: the current card's checkout, or with
     /// no card the picked session's; its name, and the session if known.
-    fn here(&self) -> Option<(PathBuf, String, Option<&Agent>)> {
+    pub(crate) fn here(&self) -> Option<(PathBuf, String, Option<&Agent>)> {
         match self.queue.current() {
             Some(card) => Some((
                 card.checkout.0.clone(),

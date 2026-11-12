@@ -544,3 +544,70 @@ async fn post_tool_reports_and_returns_without_a_reply() {
         }
     );
 }
+
+/// Runs `aq tell` with `args` against `socket`, from pane %7.
+async fn aq_tell(socket: &Path, args: &[&str]) -> std::process::Output {
+    let socket = socket.to_path_buf();
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_aq"))
+            .arg("tell")
+            .args(args)
+            .env("AQ_SOCKET", socket)
+            .env("TMUX_PANE", "%7")
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn aq_tell_sends_its_words_and_prints_aqs_note() {
+    let (_dir, socket, mut rx) = start_server();
+    let seen = tokio::spawn(async move {
+        let ev = rx.recv().await.unwrap();
+        let _ = ev.reply.send(HookReply::Note {
+            ok: true,
+            text: "Waiting for approval".into(),
+        });
+        ev.req
+    });
+    let out = aq_tell(&socket, &["web", "add", "the", "field"]).await;
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Waiting for approval\n"
+    );
+    assert_eq!(
+        seen.await.unwrap(),
+        HookRequest::Tell {
+            pane: Some("%7".into()),
+            to: "web".into(),
+            text: "add the field".into(),
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn aq_tell_fails_with_the_reason_when_aq_refuses_or_is_not_there() {
+    let (_dir, socket, rx) = start_server();
+    answer_all(
+        rx,
+        HookReply::Note {
+            ok: false,
+            text: "No session called db".into(),
+        },
+    );
+    let out = aq_tell(&socket, &["db", "hi"]).await;
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "aq tell: No session called db\n"
+    );
+
+    let dir = private_dir();
+    let out = aq_tell(&dir.path().join("none.sock"), &["web", "hi"]).await;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("aq is not running"));
+}

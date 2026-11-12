@@ -4,6 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use super::question::TELL_KEYS;
 use crate::app::{App, Overlay};
 use crate::model::{Card, CardKind};
 use crate::quiz::{QuizCard, QuizState, Verdict};
@@ -34,6 +35,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "use it".into()),
             ("Esc", "back".into()),
         ],
+        (Some(Overlay::Workspace(d)), _) => match &d.stage {
+            crate::workspace::Stage::Choose { .. } => vec![
+                ("Enter", "open".into()),
+                ("j/k", "choose".into()),
+                ("Ctrl-O", "other folder".into()),
+                ("Esc", "cancel".into()),
+            ],
+            crate::workspace::Stage::Folder(_) => vec![
+                ("Tab", "complete".into()),
+                ("↑/↓", "choose".into()),
+                ("Enter", "find repos".into()),
+                ("Esc", "back".into()),
+            ],
+            crate::workspace::Stage::Finding { .. } => vec![("Esc", "back".into())],
+            crate::workspace::Stage::Repos(_) => vec![
+                ("Enter", "open ticked".into()),
+                ("Space", "tick".into()),
+                ("a", "all".into()),
+                ("Esc", "back".into()),
+            ],
+        },
         (Some(Overlay::NewSession(d)), _) => vec![
             ("Enter", "start".into()),
             ("Ctrl-O", "other folder".into()),
@@ -238,6 +260,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ("t", "theme".into()),
             ("Q", "quit".into()),
         ],
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Tell(_),
+                ..
+            }),
+        ) => TELL_KEYS.iter().map(|(k, l)| (*k, l.to_string())).collect(),
         (None, None) => vec![("t", "theme".into()), ("Q", "quit".into())],
     };
     let mut spans = vec![Span::raw(" ")];

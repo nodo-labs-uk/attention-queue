@@ -16,6 +16,18 @@ pub struct Config {
     pub tutorial_done: bool,
     /// `f` hid the file list on review and shell change cards.
     pub hide_files: bool,
+    /// `O`: sets of repos opened together, by name. Saved by aq when one is
+    /// opened, not written by hand.
+    pub workspaces: BTreeMap<String, Workspace>,
+}
+
+/// A folder and the git repos in it that open together, each a session in
+/// a tmux session named after the workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub root: PathBuf,
+    /// Relative to `root`; `""` is `root` itself.
+    pub repos: Vec<PathBuf>,
 }
 
 impl Default for Config {
@@ -25,6 +37,7 @@ impl Default for Config {
             modes: BTreeMap::new(),
             tutorial_done: false,
             hide_files: false,
+            workspaces: BTreeMap::new(),
         }
     }
 }
@@ -150,6 +163,13 @@ mod tests {
         let x = Checkout::new("/tmp/x");
         let mut cfg = Config::default();
         cfg.set_mode(&x, Mode::Step);
+        cfg.workspaces.insert(
+            "billing".into(),
+            Workspace {
+                root: "/w/billing".into(),
+                repos: vec!["api".into(), "".into()],
+            },
+        );
         cfg.save(&file).unwrap();
         let loaded = Config::load(&file).unwrap();
         assert_eq!(loaded.mode_for(&x), Mode::Step);

@@ -39,6 +39,14 @@ pub enum HookRequest {
         /// `$TMUX_PANE` of the hook, so the card can jump to the window.
         pane: Option<String>,
     },
+    /// `aq tell <to> <text>`, run in the session in `pane`.
+    Tell {
+        pane: Option<String>,
+        to: String,
+        text: String,
+    },
+    /// `aq tell` alone: who the session in `pane` can tell.
+    Tellable { pane: Option<String> },
 }
 
 /// The answer to a waiting hook.
@@ -55,6 +63,11 @@ pub enum HookReply {
         input: Value,
     },
     NoDecision,
+    /// For `aq tell`: what to print, and whether it worked.
+    Note {
+        ok: bool,
+        text: String,
+    },
 }
 
 /// A request from a hook. `reply` closes when the hook goes away.

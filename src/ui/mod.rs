@@ -17,6 +17,7 @@ mod shell;
 mod step;
 mod tour;
 mod tree;
+mod workspace;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -272,6 +273,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render_sized(frame, body, &d.input, &title, "send", t, (100, 12));
         }
         Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
+        Some(Overlay::Workspace(d)) => workspace::render(frame, body, d, &app.config.workspaces, t),
         None => {}
     }
     if let Some(step) = app.practice_step() {
@@ -286,6 +288,7 @@ pub fn kind_label(kind: &CardKind) -> &'static str {
     match kind {
         CardKind::Permission(_) => "permission",
         CardKind::Question(_) | CardKind::Choice(_) => "question",
+        CardKind::Tell(_) => "message",
         CardKind::Step(_) => "step",
         CardKind::ShellChange(_) => "shell change",
         CardKind::Review(_) => "review",
@@ -345,6 +348,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::ShellChange(sc) => shell::render(frame, area, app, card, sc, hl),
         CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
         CardKind::Question(qc) => question::render(frame, area, app, card, qc),
+        CardKind::Tell(tc) => question::render_tell(frame, area, app, card, tc),
         CardKind::Choice(cc) => choice::render(frame, area, app, card, cc),
         CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }

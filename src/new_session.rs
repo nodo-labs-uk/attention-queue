@@ -75,6 +75,15 @@ pub fn resolve(typed: &str, base: &Path) -> PathBuf {
     }
 }
 
+/// The folder that holds `dir`, as a folder box starts on it: its
+/// neighbours are the likeliest pick.
+pub fn parent_typed(dir: &Path) -> String {
+    match dir.parent() {
+        Some(p) if p != Path::new("/") => format!("{}/", p.display()),
+        _ => "/".to_string(),
+    }
+}
+
 /// `typed` with its last part replaced by `name`, ready for the next part.
 fn completed(typed: &str, name: &str) -> String {
     let keep = typed.rfind('/').map_or(0, |i| i + 1);
@@ -102,17 +111,8 @@ impl App {
             return Vec::new();
         }
         if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            // The folder that holds this project: its neighbours are the
-            // likeliest pick.
-            let typed = match draft.dir.parent() {
-                Some(p) if p != Path::new("/") => format!("{}/", p.display()),
-                _ => "/".to_string(),
-            };
-            draft.folder = Some(FolderPick {
-                input: TextInput::single_line_with(&typed),
-                listing: None,
-                cursor: None,
-            });
+            let typed = parent_typed(&draft.dir);
+            draft.folder = Some(FolderPick::new(&typed));
             return vec![Effect::ListDirs {
                 typed,
                 base: draft.dir.clone(),
@@ -190,79 +190,121 @@ impl App {
 
     /// The folders matching what is typed, from the runtime.
     pub(crate) fn on_dirs(&mut self, listing: DirListing) {
-        if let Some(Overlay::NewSession(NewSessionDraft {
-            folder: Some(pick), ..
-        })) = &mut self.overlay
-        {
-            pick.listing = Some(listing);
+        match &mut self.overlay {
+            Some(Overlay::NewSession(NewSessionDraft {
+                folder: Some(pick), ..
+            }))
+            | Some(Overlay::Workspace(crate::workspace::WorkspaceDraft {
+                stage: crate::workspace::Stage::Folder(pick),
+                ..
+            })) => pick.listing = Some(listing),
+            _ => {}
         }
     }
 }
 
-/// Keys while picking the folder: Tab completes the chosen match (the
-/// first, until the arrows choose another); Enter takes the chosen match,
-/// or the text as typed; Esc goes back to the prompt with the folder as it
-/// was.
+/// What a key did in a folder box.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FolderKey {
+    /// Nothing for the box's owner to do.
+    Stay,
+    /// The text changed: list the folders matching it.
+    List(String),
+    /// Esc: leave the folder as it was.
+    Cancel,
+    /// Enter: the folder as typed or chosen, without a trailing `/`, and
+    /// whether it is not there yet. Empty when nothing was typed.
+    Chosen { typed: String, new: bool },
+}
+
+impl FolderPick {
+    pub fn new(typed: &str) -> Self {
+        FolderPick {
+            input: TextInput::single_line_with(typed),
+            listing: None,
+            cursor: None,
+        }
+    }
+
+    /// Tab completes the chosen match (the first, until the arrows choose
+    /// another); Enter takes the chosen match, or the text as typed.
+    pub fn on_key(&mut self, key: KeyEvent) -> FolderKey {
+        let before = self.input.text();
+        let names = self.listing().map_or_else(Vec::new, |l| l.names.clone());
+        match key.code {
+            KeyCode::Tab => {
+                if let Some(name) = names.get(self.cursor.unwrap_or(0)) {
+                    self.input = TextInput::single_line_with(&completed(&before, name));
+                }
+            }
+            KeyCode::Up => {
+                self.cursor = Some(self.cursor.unwrap_or(0).saturating_sub(1));
+                return FolderKey::Stay;
+            }
+            KeyCode::Down => {
+                let next = self.cursor.map_or(0, |c| c + 1);
+                self.cursor = Some(next.min(names.len().saturating_sub(1)));
+                return FolderKey::Stay;
+            }
+            _ => match self.input.handle_key(key) {
+                InputEvent::Editing => {}
+                InputEvent::Cancel => return FolderKey::Cancel,
+                InputEvent::Submit(text) => {
+                    let chosen = self.cursor.and_then(|c| names.get(c));
+                    let (typed, new) = match chosen {
+                        Some(name) => (completed(&text, name), false),
+                        None => (text, self.listing().is_some_and(|l| !l.exists)),
+                    };
+                    let typed = typed.trim();
+                    let typed = match typed.trim_end_matches('/') {
+                        "" if typed.starts_with('/') => "/",
+                        t => t,
+                    };
+                    return FolderKey::Chosen {
+                        typed: typed.to_string(),
+                        new,
+                    };
+                }
+            },
+        }
+        let typed = self.input.text();
+        if typed == before {
+            return FolderKey::Stay;
+        }
+        self.cursor = None;
+        FolderKey::List(typed)
+    }
+}
+
+/// Keys while picking the new session's folder: Esc goes back to the
+/// prompt with the folder as it was.
 fn on_folder_key(draft: &mut NewSessionDraft, key: KeyEvent) -> Vec<Effect> {
     let Some(pick) = draft.folder.as_mut() else {
         return Vec::new();
     };
-    let before = pick.input.text();
-    let names = pick.listing().map_or_else(Vec::new, |l| l.names.clone());
-    match key.code {
-        KeyCode::Tab => {
-            if let Some(name) = names.get(pick.cursor.unwrap_or(0)) {
-                pick.input = TextInput::single_line_with(&completed(&before, name));
-            }
+    match pick.on_key(key) {
+        FolderKey::Stay => Vec::new(),
+        FolderKey::List(typed) => vec![Effect::ListDirs {
+            typed,
+            base: draft.dir.clone(),
+        }],
+        FolderKey::Cancel => {
+            draft.folder = None;
+            Vec::new()
         }
-        KeyCode::Up => {
-            pick.cursor = Some(pick.cursor.unwrap_or(0).saturating_sub(1));
-            return Vec::new();
-        }
-        KeyCode::Down => {
-            let next = pick.cursor.map_or(0, |c| c + 1);
-            pick.cursor = Some(next.min(names.len().saturating_sub(1)));
-            return Vec::new();
-        }
-        _ => match pick.input.handle_key(key) {
-            InputEvent::Editing => {}
-            InputEvent::Cancel => {
-                draft.folder = None;
-                return Vec::new();
+        FolderKey::Chosen { typed, new } => {
+            draft.folder = None;
+            if !typed.is_empty() {
+                draft.dir = resolve(&typed, &draft.dir);
+                draft.name = draft
+                    .dir
+                    .file_name()
+                    .map_or_else(|| typed.clone(), |n| n.to_string_lossy().into_owned());
+                draft.new = new;
             }
-            InputEvent::Submit(text) => {
-                let chosen = pick.cursor.and_then(|c| names.get(c));
-                let (typed, new) = match chosen {
-                    Some(name) => (completed(&text, name), false),
-                    None => (text, pick.listing().is_some_and(|l| !l.exists)),
-                };
-                draft.folder = None;
-                let typed = typed.trim();
-                let typed = match typed.trim_end_matches('/') {
-                    "" if typed.starts_with('/') => "/",
-                    t => t,
-                };
-                if !typed.is_empty() {
-                    draft.dir = resolve(typed, &draft.dir);
-                    draft.name = draft
-                        .dir
-                        .file_name()
-                        .map_or_else(|| typed.to_string(), |n| n.to_string_lossy().into_owned());
-                    draft.new = new;
-                }
-                return Vec::new();
-            }
-        },
+            Vec::new()
+        }
     }
-    let typed = pick.input.text();
-    if typed == before {
-        return Vec::new();
-    }
-    pick.cursor = None;
-    vec![Effect::ListDirs {
-        typed,
-        base: draft.dir.clone(),
-    }]
 }
 
 #[cfg(test)]

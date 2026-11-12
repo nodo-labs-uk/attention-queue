@@ -37,6 +37,11 @@ finished turn; the card on screen stays as it is.
        is not there yet is made when the session starts. If Claude asks
        whether to trust the folder, aq asks you: y trusts it, n closes it,
        and a trusts every folder waiting
+  O    open a workspace: the git repos in a folder, each in a Claude
+       session of its own, all in a tmux session named after the folder.
+       Pick the folder, untick repos you don't want, Enter opens the rest;
+       aq saves the set, and O lists it next time. Repos open already in
+       that tmux session are left as they are
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. It closes when the shell exits
@@ -86,6 +91,12 @@ When Claude asks with its own menu of options, the card lists them:
   o  answer in your own words   u  back a question
   x  let the menu show in the session's window instead   g  and go there
 This needs AskUserQuestion in the PreToolUse hook's matcher.
+
+# Message card
+A session ran aq tell to ask another session to do something. Nothing
+reaches the other session until you say so (in vibe mode, it goes at once).
+  y  send it, starting 'From the <name> session:'   e  edit it first
+  n  drop it   j/k scroll
 
 # Quiz card
 Each question opens with its piece of the diff and a box for your answer.
