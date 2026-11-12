@@ -143,6 +143,41 @@ impl App {
         }]
     }
 
+    /// A session just started asks to trust its folder: ask here, unless
+    /// another box is open, which may hold something being typed.
+    pub(crate) fn on_trust_asked(&mut self, pane: String, dir: PathBuf) {
+        if self.overlay.is_none() {
+            self.overlay = Some(Overlay::Trust { pane, dir });
+        } else {
+            self.set_status(format!(
+                "Claude in {} waits in its window: trust the folder?",
+                dir.display()
+            ));
+        }
+    }
+
+    /// y or Enter trusts the folder and the session starts; n, q or Esc
+    /// closes the session.
+    pub(crate) fn on_trust_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(Overlay::Trust { pane, dir }) = &self.overlay else {
+            return Vec::new();
+        };
+        let (pane, dir) = (pane.clone(), dir.display().to_string());
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                self.overlay = None;
+                self.set_status(format!("Trusted {dir}: Claude is starting"));
+                vec![Effect::TrustFolder { pane }]
+            }
+            KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                self.overlay = None;
+                self.set_status(format!("Did not trust {dir}: closed the session"));
+                vec![Effect::ClosePane { pane }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The folders matching what is typed, from the runtime.
     pub(crate) fn on_dirs(&mut self, listing: DirListing) {
         if let Some(Overlay::NewSession(NewSessionDraft {
@@ -359,6 +394,42 @@ mod tests {
             (d.dir.as_path(), d.input.text().as_str()),
             (Path::new("/w/api"), "x")
         );
+    }
+
+    #[test]
+    fn a_folder_claude_asks_to_trust_is_answered_in_aq() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let asked = || Msg::TrustAsked {
+            pane: "%9".into(),
+            dir: "/w/new".into(),
+        };
+        a.update(asked());
+        assert!(a.update(key('j')).is_empty(), "other keys do nothing");
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        assert!(screen.contains("/w/new"), "{screen}");
+        assert_eq!(
+            a.update(key('y')),
+            [Effect::TrustFolder { pane: "%9".into() }]
+        );
+        assert_eq!(a.overlay, None);
+        a.update(asked());
+        assert_eq!(
+            press(&mut a, KeyCode::Esc),
+            [Effect::ClosePane { pane: "%9".into() }]
+        );
+        assert!(a.status_text().unwrap().contains("closed the session"));
+    }
+
+    #[test]
+    fn a_trust_question_does_not_take_over_an_open_box() {
+        let mut a = app();
+        a.update(key('x'));
+        a.update(Msg::TrustAsked {
+            pane: "%9".into(),
+            dir: "/w/new".into(),
+        });
+        assert!(matches!(a.overlay, Some(Overlay::NewSession(_))));
+        assert!(a.status_text().unwrap().contains("/w/new"));
     }
 
     #[test]

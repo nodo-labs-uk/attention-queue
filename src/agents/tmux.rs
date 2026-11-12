@@ -393,15 +393,64 @@ fn shell_quote(s: &str) -> String {
 /// worktree of `dir`'s repository and works there. The command goes through
 /// the shell, so `claude` is found as in your own windows; the prompt is
 /// quoted for it.
-pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<()> {
+/// Returns the new window's pane.
+pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<String> {
     let command = claude_command(prompt, worktree);
     let mut cmd = Command::new("tmux");
-    cmd.args(["new-window", "-d", "-c"])
+    cmd.args(["new-window", "-d", "-P", "-F", "#{pane_id}", "-c"])
         // The start directory is expanded as a format; the command is not.
         .arg(format_literal(&dir.to_string_lossy()))
         .arg(command);
-    let (status, _, err) =
+    let (status, out, err) =
         super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux new-window")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(out.trim().to_string())
+}
+
+/// The second option of the menu Claude Code shows on its first start in a
+/// folder nobody has trusted. Its hooks do not run until it is answered.
+const TRUST_PROMPT: &str = "Yes, I trust this folder";
+
+/// The banner Claude Code shows once it is past the trust menu, or never
+/// showed it.
+const STARTED: &str = "Claude Code v";
+
+/// How long a new session has to show its banner or the trust menu.
+const START_WAIT: Duration = Duration::from_secs(10);
+
+/// What a new session's screen says about the trust menu: `Some(true)`
+/// while it asks, `Some(false)` once Claude Code is past it, `None` while
+/// it is still starting.
+fn asks_for_trust(screen: &str) -> Option<bool> {
+    if screen.contains(TRUST_PROMPT) {
+        Some(true)
+    } else if screen.contains(STARTED) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Watches a new session's `pane` until Claude Code starts; true if it
+/// stops to ask whether to trust the folder.
+pub fn waits_for_trust(pane: &str) -> Result<bool> {
+    let until = Instant::now() + START_WAIT;
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(250));
+        if let Some(asks) = asks_for_trust(&capture_pane(pane, &[])?) {
+            return Ok(asks);
+        }
+    }
+    Ok(false)
+}
+
+/// Answers the trust menu in `pane` with yes. Number keys do not pick in
+/// that menu; the cursor starts on "No, exit".
+pub fn trust_folder(pane: &str) -> Result<()> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["send-keys", "-t", pane, "Down", "Enter"]);
+    let (status, _, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux send-keys")?;
     anyhow::ensure!(status.success(), "{}", err.trim());
     Ok(())
 }
@@ -567,6 +616,17 @@ pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};
     use super::*;
+
+    #[test]
+    fn a_new_session_is_seen_asking_for_trust_or_past_it() {
+        let asking = " Accessing workspace:\n /w/new\n ❯ No, exit\n   Yes, I trust this folder\n";
+        assert_eq!(asks_for_trust(asking), Some(true));
+        assert_eq!(
+            asks_for_trust(" ▐▛███▛█   Claude Code v2.1.322\n❯ \n"),
+            Some(false)
+        );
+        assert_eq!(asks_for_trust(""), None, "still starting");
+    }
 
     #[test]
     fn a_new_session_command_ends_with_the_worktree_flag() {

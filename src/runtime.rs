@@ -453,6 +453,7 @@ fn apply(
                 checkout,
             } => Job::LastMessage(agent, session_id, checkout),
             Effect::ClosePane { pane } => Job::Close(pane),
+            Effect::TrustFolder { pane } => Job::Trust(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
             Effect::SwitchModel { agent, model } => Job::SwitchModel(agent, model),
             Effect::SetPermissionMode { agent, mode } => Job::SetPermissionMode(agent, mode),
@@ -612,6 +613,7 @@ enum Job {
     /// A session's conversation, by session id.
     Conversation(String),
     Close(String),
+    Trust(String),
     Interrupt(String),
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
@@ -729,10 +731,14 @@ fn spawn_effect_worker(
                     std::fs::create_dir_all(&dir)
                         .with_context(|| format!("making {}", dir.display()))
                         .and_then(|()| {
-                            crate::agents::tmux::new_claude(&dir, prompt.as_deref(), worktree)
+                            let pane =
+                                crate::agents::tmux::new_claude(&dir, prompt.as_deref(), worktree)?;
+                            let asks = crate::agents::tmux::waits_for_trust(&pane)?;
+                            Ok(asks.then_some(Msg::TrustAsked { pane, dir }))
                         })
-                        .err()
-                        .map(|e| Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
+                        .unwrap_or_else(|e| {
+                            Some(Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
+                        })
                 }
                 Job::ListDirs(typed, base) => Some(Msg::Dirs(list_dirs(typed, &base))),
                 // Only when the transcript ends on words of Claude's: after a
@@ -799,6 +805,9 @@ fn spawn_effect_worker(
                 Job::GoTo(pane) => crate::permission::go_to_window(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not go to {pane}: {e:#}"))),
+                Job::Trust(pane) => crate::agents::tmux::trust_folder(&pane)
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not answer {pane}: {e:#}"))),
                 Job::Close(pane) => crate::agents::tmux::kill_pane(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not close {pane}: {e:#}"))),
