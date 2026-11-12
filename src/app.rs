@@ -1528,6 +1528,10 @@ impl App {
                 self.queue.skip();
                 Vec::new()
             }
+            KeyCode::Char('B') if self.overlay.is_none() => {
+                self.queue.to_back();
+                Vec::new()
+            }
             _ if self.overlay.is_none() => match self.queue.current().map(|c| &c.kind) {
                 Some(CardKind::Step(_)) => self.on_step_key(key),
                 Some(CardKind::ShellChange(_)) => self.on_shell_key(key),
@@ -2438,6 +2442,19 @@ pub(crate) mod tests {
         a.queue
             .push(card(2, "/b", CardKind::Review(ReviewCard::default()), 5));
         a.update(key(' '));
+        assert_eq!(a.queue.current().unwrap().id, 2);
+    }
+
+    #[test]
+    fn b_sends_the_card_to_the_back_of_the_queue() {
+        let mut a = app();
+        a.queue
+            .push(card(1, "/a", CardKind::Permission(Default::default()), 10));
+        a.queue
+            .push(card(2, "/b", CardKind::Review(ReviewCard::default()), 5));
+        a.update(key(' '));
+        assert_eq!(a.queue.current().unwrap().id, 1, "Space keeps it first");
+        a.update(key('B'));
         assert_eq!(a.queue.current().unwrap().id, 2);
     }
 
