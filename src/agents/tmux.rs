@@ -423,8 +423,9 @@ pub fn new_claude_in(session: &str, dir: &Path, system: &str) -> Result<String> 
     } else {
         cmd.args(["new-session", "-d", "-s", session]);
     }
+    // The name is expanded as a format, like the start directory.
     if let Some(name) = dir.file_name() {
-        cmd.arg("-n").arg(name);
+        cmd.arg("-n").arg(format_literal(&name.to_string_lossy()));
     }
     cmd.args(["-P", "-F", "#{pane_id}", "-c"])
         .arg(format_literal(&dir.to_string_lossy()))
