@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -21,7 +21,8 @@ const KIND_ORDER: [fn(&CardKind) -> bool; 8] = [
 ];
 
 /// Top row: the current card on the left, counts of everything queued and
-/// the help key on the right.
+/// the keys and help keys on the right. With the keys row hidden, the
+/// latest status message shows here, between the two.
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let t = app.theme();
     let base = Style::new().bg(t.panel).fg(t.fg);
@@ -65,7 +66,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(t.bg).bg(t.hi).add_modifier(Modifier::BOLD),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(left)).style(base), area);
+    let left = Line::from(left);
+    let left_w = left.width() as u16;
+    frame.render_widget(Paragraph::new(left).style(base), area);
 
     let cards: Vec<&Card> = app.queue.iter().collect();
     let mut right = Vec::new();
@@ -84,13 +87,35 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(t.dim),
         ));
     }
-    right.push(Span::styled(
-        "F1",
-        Style::new().fg(t.key).add_modifier(Modifier::BOLD),
-    ));
-    right.push(Span::styled(" help ", Style::new().fg(t.dim)));
-    frame.render_widget(
-        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
-        area,
-    );
+    let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
+    right.extend([
+        Span::styled("F3", key),
+        Span::styled(" keys  ", Style::new().fg(t.dim)),
+        Span::styled("F1", key),
+        Span::styled(" help ", Style::new().fg(t.dim)),
+    ]);
+    let right = Line::from(right);
+    let right_w = right.width() as u16;
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+
+    if let Some(msg) = app.status_text().filter(|_| !app.keys_shown()) {
+        let [_, gap, _] = Layout::horizontal([
+            Constraint::Length(left_w + 2),
+            Constraint::Fill(1),
+            Constraint::Length(right_w + 1),
+        ])
+        .areas(area);
+        // Against the keys on the right; one too long is cut at its end.
+        let align = if msg.chars().count() > gap.width as usize {
+            Alignment::Left
+        } else {
+            Alignment::Right
+        };
+        frame.render_widget(
+            Paragraph::new(msg)
+                .style(Style::new().fg(t.hi))
+                .alignment(align),
+            gap,
+        );
+    }
 }

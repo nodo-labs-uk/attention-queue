@@ -308,6 +308,9 @@ fn rows(app: &App, width: u16) -> Vec<Line<'static>> {
 /// keys cut are the least likely ones, listed last. It does not change
 /// with the status message, so nothing moves when one shows.
 pub fn height(app: &App, width: u16, height: u16) -> u16 {
+    if !app.keys_shown() {
+        return 0;
+    }
     (rows(app, width).len() as u16).min((height / 4).max(1))
 }
 

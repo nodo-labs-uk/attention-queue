@@ -80,6 +80,7 @@ mod tests {
         let mut c = card(1, "/w/api", CardKind::ShellChange(sc), 0);
         c.agent = a.agents[0].id.clone();
         a.queue.push(c);
+        a.config.show_keys = true;
         let screen = render(&a, 80, 20);
         assert!(screen.contains("shell change"), "{screen}");
         assert!(screen.contains("$ sed -i s/a/b/ src/limit.rs"), "{screen}");
