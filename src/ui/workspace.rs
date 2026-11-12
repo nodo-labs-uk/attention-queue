@@ -115,7 +115,7 @@ pub fn render(
     }
 }
 
-fn row(text: String, on: bool, picked: Style, t: &Theme) -> Line<'static> {
+pub(crate) fn row(text: String, on: bool, picked: Style, t: &Theme) -> Line<'static> {
     if on {
         Line::styled(text, picked)
     } else {
@@ -125,7 +125,7 @@ fn row(text: String, on: bool, picked: Style, t: &Theme) -> Line<'static> {
 
 /// A folder or workspace name can hold anything, so it is shown as
 /// visible text.
-fn shown(s: &str) -> String {
+pub(crate) fn shown(s: &str) -> String {
     let mut out = String::new();
     s.chars().for_each(|c| push_visible(c, &mut out));
     out
@@ -133,7 +133,7 @@ fn shown(s: &str) -> String {
 
 /// The box with `rows`, scrolled to keep the highlighted row in view, and
 /// `keys` along its bottom.
-fn list_box(
+pub(crate) fn list_box(
     frame: &mut Frame,
     area: Rect,
     title: &str,

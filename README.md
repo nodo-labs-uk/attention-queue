@@ -59,7 +59,7 @@ Each project has a mode, and `M` switches it.
 
 **Vibe**: nothing is checked; the agent just codes.
 
-**Questions**, in every mode: when a session ends its turn by asking you something (to approve a draft, to choose between two ways), its message becomes a card. `a` approves when the question asks for a go-ahead, `Enter` replies in your own words, and `x` stashes the card. When Claude asks with its own menu of options, the card lists them and a number key picks one; the answer goes back through the hook, so nothing is typed into the session. A turn that has both a diff and a question shows the question on the review card, and sending from there answers it.
+**Questions**, in every mode: when a session ends its turn by asking you something (to approve a draft, to choose between two ways), its message becomes a card. `a` approves when the question asks for a go-ahead, `Enter` replies in your own words, and `x` stashes the card, and `S` lists the stashed ones: `Enter` brings one back to the front of the queue, and `x` drops it. A stashed question goes once its session moves on. When Claude asks with its own menu of options, the card lists them and a number key picks one; the answer goes back through the hook, so nothing is typed into the session. A turn that has both a diff and a question shows the question on the review card, and sending from there answers it.
 
 ![A session asks to approve a PR draft and a approves it; then Claude's option menu is answered from a card](docs/media/questions.svg)
 
