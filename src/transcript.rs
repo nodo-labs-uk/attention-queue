@@ -221,6 +221,22 @@ pub fn description_before(transcript: &Path, tool_use_id: &str) -> Option<String
     last.map(cut)
 }
 
+/// What Claude wrote since the last prompt, its text blocks joined.
+pub fn last_reply(said: &[Said]) -> Option<String> {
+    let start = said
+        .iter()
+        .rposition(|s| matches!(s, Said::User(_)))
+        .map_or(0, |i| i + 1);
+    let text: Vec<&str> = said[start..]
+        .iter()
+        .filter_map(|s| match s {
+            Said::Claude(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    (!text.is_empty()).then(|| text.join("\n\n"))
+}
+
 /// The last command Claude suggested you run yourself with Claude Code's
 /// `!` prefix: inline as `` `! cmd` ``, or a line `! cmd` (a line ending in
 /// `\` takes the next one with it). Without the `! `. Placeholders such as

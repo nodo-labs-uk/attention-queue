@@ -271,6 +271,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("Enter", "message".into()),
             ("A", "message group".into()),
             ("W", "where are we".into()),
+            ("r", "read reply fast".into()),
             ("?", "ask".into()),
             ("g", "go to window".into()),
             ("p", "open PR".into()),
