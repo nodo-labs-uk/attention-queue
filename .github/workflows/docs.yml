@@ -1,0 +1,46 @@
+# Builds the documentation site from book/ and publishes it to GitHub Pages
+# on every push to main that touches it.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: ["book/**", "docs/media/**", ".github/workflows/docs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install mdBook
+        run: |
+          curl -fsSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          echo "$PWD" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          # The pictures live with the README; the book uses the same files.
+          cp -r docs/media book/src/media
+          mdbook build book
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: book/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
