@@ -82,7 +82,8 @@ finished turn; the card on screen stays as it is.
 # Question card
 When a session ends its turn by asking you something (to approve a
 draft, to choose between two ways), its message becomes a card.
-  a  approve (sends: Approved, carry on.)   Enter  reply in your own words
+  a  approve (sends: Approved, carry on.)   Enter  reply in your own words;
+     Claude's suggestion shows in lighter text, Tab or Ctrl-F fills it in
      a is there only when the question asks for a go-ahead
   x  stash the card      g  go to the session's window   j/k scroll
   S  the stashed questions: Enter brings one back, x drops it

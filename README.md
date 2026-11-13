@@ -112,7 +112,7 @@ The ones worth knowing from day one:
 | `f` | review | hide or show the file list, for a wider diff |
 | `e` | review | open the file at this line in `$VISUAL` or `$EDITOR` |
 | `y` `n` | step, permission | allow, or refuse with a reason |
-| `a` `Enter` | question | approve, or reply in your own words |
+| `a` `Enter` | question | approve, or reply in your own words, with Claude's suggestion in lighter text (`Tab` fills it in) |
 | `y` `e` `n` | message | send a session's `aq tell` message, edit it first, or drop it |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
 | `h` `l` | sessions | pick a session |
