@@ -382,11 +382,12 @@ impl App {
                 return self.send_prompt(agent, APPROVE_MESSAGE.to_string());
             }
             KeyCode::Enter | KeyCode::Char('i' | 'c') => {
+                let suggestion = self.agent(&agent).and_then(|a| a.suggestion.clone());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent,
                     input: TextInput::single_line(),
                     group: None,
-                    suggestion: None,
+                    suggestion,
                 }));
             }
             KeyCode::Char('x') => {
@@ -549,6 +550,18 @@ mod tests {
         );
         assert!(a.update(key('a')).is_empty());
         assert_eq!(a.queue.len(), 1, "the card stays");
+    }
+
+    #[test]
+    fn the_reply_box_shows_claudes_suggestion() {
+        let mut a = app();
+        a.agents[0].suggestion = Some("the README".into());
+        said(&mut a, "README or API reference?");
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
+        match &a.overlay {
+            Some(Overlay::Prompt(d)) => assert_eq!(d.ghost(), Some("the README")),
+            other => panic!("no reply box: {other:?}"),
+        }
     }
 
     #[test]
