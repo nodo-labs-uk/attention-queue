@@ -87,7 +87,7 @@ Claude asks before it runs `aq tell` unless the command is allowed, for example 
 
 ## Keys
 
-The first time aq starts, a tour has you try the workflow on made-up cards, telling you which key to press, one at a time. First a review (move, comment, mark done, send, approve), then `M` into step mode (allow one edit, refuse the next with a reason), then quiz mode (answer a question and send the gap the judge found back as a fix). Last come three made-up sessions: pick one, message it, ask where it's up to, start a new one and move its project through the modes. Nothing in the tour reaches a real session. `F2` runs the tour again, and `F1` lists every key. The row of keys along the bottom is hidden until `F3` shows it, and aq remembers the choice.
+The first time aq starts, a tour has you try the workflow on made-up cards, telling you which key to press, one at a time. First a review (move, comment, mark done, send, approve), then `M` into step mode (allow one edit, refuse the next with a reason), then quiz mode (answer a question and send the gap the judge found back as a fix). Last come three made-up sessions: pick one, message it, ask where it's up to, start a new one and move its project through the modes. Nothing in the tour reaches a real session. `F2` runs the tour again, and `F1` lists every key. The row of keys along the bottom is hidden until `F3` shows it, and aq remembers the choice. If a system message (`wall`, `shutdown`) is written over aq, it is gone within 5 seconds, and `Ctrl-L` clears it at once.
 
 ![The first-run tour: practice cards for review, step and quiz, then made-up sessions, asking for each key](docs/media/tour.svg)
 

@@ -38,6 +38,9 @@ const AGENT_POLL: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_secs(1);
 /// At most 30 frames a second.
 const FRAME: Duration = Duration::from_millis(33);
+/// How often the whole screen is written again, for text that reached the
+/// terminal past aq, such as a broadcast from `wall` or `shutdown`.
+const REPAINT: Duration = Duration::from_secs(5);
 /// Saved state is written at most this often.
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// How long quitting waits for saves and sends still running.
@@ -201,6 +204,9 @@ async fn serve(
     let mut hl_theme = app.theme().name.clone();
     let mut dirty = true;
     let mut next_frame = Instant::now();
+    // What is on screen, as aq last drew it, and when to write it all again.
+    let mut shown: Option<ratatui::buffer::Buffer> = None;
+    let mut repaint_at = Instant::now() + REPAINT;
     // Closing aq's window sends SIGHUP: quit as if Q was pressed, so state
     // is saved and the tmux flag aq set is cleared.
     let mut hangup = signal(SignalKind::hangup())?;
@@ -212,6 +218,14 @@ async fn serve(
             _ = terminate.recv() => break,
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
+                // Ctrl-L writes the whole screen again now, as in a shell.
+                if let Msg::Key(k, _) = &msg
+                    && k.code == event::KeyCode::Char('l')
+                    && k.modifiers.contains(event::KeyModifiers::CONTROL)
+                {
+                    repaint_at = Instant::now();
+                    continue;
+                }
                 sync_size(terminal, app, workers, waiting)?;
                 on_msg(app, msg, workers, waiting, loading)?;
                 dirty = true;
@@ -227,6 +241,14 @@ async fn serve(
                 on_msg(app, Msg::ReadTick(std::time::Instant::now()), workers, waiting, loading)?;
                 dirty = true;
             }
+            _ = tokio::time::sleep_until(repaint_at) => {
+                if let Some(buf) = &shown {
+                    repaint(terminal, buf)?;
+                    // A frame after it puts the cursor back where a box wants it.
+                    dirty = true;
+                }
+                repaint_at = Instant::now() + REPAINT;
+            }
             _ = tokio::time::sleep_until(next_frame), if dirty => {
                 if hl_theme != app.theme().name {
                     hl.set_theme(app.theme());
@@ -239,12 +261,25 @@ async fn serve(
                 {
                     *screen = Some(frame.buffer.clone());
                 }
+                shown = Some(frame.buffer.clone());
                 dirty = false;
                 next_frame = Instant::now() + FRAME;
             }
         }
     }
     Ok(())
+}
+
+/// Writes every cell of `buf` to the terminal, whatever ratatui thinks is
+/// there already. Nothing is cleared first, so nothing flickers.
+fn repaint(terminal: &mut DefaultTerminal, buf: &ratatui::buffer::Buffer) -> std::io::Result<()> {
+    use ratatui::backend::Backend;
+    // A buffer no drawn cell matches (a private-use character), so the diff
+    // is every cell.
+    let unknown = ratatui::buffer::Buffer::filled(buf.area, ratatui::buffer::Cell::new("\u{e000}"));
+    let backend = terminal.backend_mut();
+    backend.draw(unknown.diff(buf).into_iter())?;
+    Backend::flush(backend)
 }
 
 /// aq cannot go on: every hook gets "no decision" (a permission prompt
