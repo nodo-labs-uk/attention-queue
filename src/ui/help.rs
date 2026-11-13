@@ -149,7 +149,9 @@ A card that takes the screen by itself ignores deciding keys for 1.5 s.
 Messages wait until their session is idle at its prompt.
 Going to a window leaves aq running; come back with your tmux keys.
 A system message (wall, shutdown) written over aq is gone within 5 s;
-Ctrl-L clears it now.";
+Ctrl-L clears it now.
+tmux's status line is hidden while aq's window shows; it comes back
+on other windows and when aq quits.";
 
 /// The help page over `area`, scrolled down by `scroll` lines.
 pub fn render(frame: &mut Frame, area: Rect, scroll: u16, t: &Theme) {

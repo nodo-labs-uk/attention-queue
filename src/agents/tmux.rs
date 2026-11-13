@@ -309,7 +309,8 @@ impl AgentConn for TmuxConn {
 /// marking waiting windows that aq already lists.
 pub const OPEN_FLAG: &str = "@aq_open";
 
-/// Sets or clears `OPEN_FLAG` on the default tmux server. Without a server
+/// Sets or clears `OPEN_FLAG` on the default tmux server, and hides tmux's
+/// status line while aq's window is the one showing. Without a server
 /// there is nothing to mark, so failures are ignored.
 pub fn mark_open(open: bool) {
     let mut cmd = Command::new("tmux");
@@ -319,6 +320,59 @@ pub fn mark_open(open: bool) {
         cmd.args(["set-option", "-gu", OPEN_FLAG]);
     }
     let _ = super::run_for(cmd, "", TMUX_TIMEOUT);
+    if let Ok(pane) = std::env::var("TMUX_PANE") {
+        hide_status_line(&pane, open);
+    }
+}
+
+/// The slot in the `session-window-changed` hook array that aq uses, out of
+/// the way of hooks you set yourself.
+const STATUS_HOOK: &str = "session-window-changed[4171]";
+
+/// While `open`, aq's own session hides its status line whenever aq's
+/// window (the one holding `pane`) is the current one, and shows it for
+/// every other window: aq lists the sessions itself. When aq closes, the
+/// hook goes and the session's status line follows the global setting again.
+fn hide_status_line(pane: &str, open: bool) {
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new("tmux");
+        cmd.args(args);
+        let _ = super::run_for(cmd, "", TMUX_TIMEOUT);
+    };
+    let Some(ids) = display(pane, "#{session_id} #{window_id}") else {
+        return;
+    };
+    let Some((session, window)) = ids.split_once(' ') else {
+        return;
+    };
+    if !open {
+        run(&["set-hook", "-u", "-t", session, STATUS_HOOK]);
+        run(&["set-option", "-u", "-t", session, "status"]);
+        return;
+    }
+    // The flag test makes the hook do nothing once aq has closed, even if
+    // it closed before it could remove the hook.
+    let toggle = format!(
+        "if-shell -F '#{{&&:#{{==:#{{window_id}},{window}}},#{{{OPEN_FLAG}}}}}' 'set-option status off' 'set-option -u status'"
+    );
+    run(&["set-hook", "-t", session, STATUS_HOOK, &toggle]);
+    // Now as well: aq usually starts in the window that is showing.
+    run(&[
+        "if-shell",
+        "-t",
+        session,
+        "-F",
+        &format!("#{{==:#{{window_id}},{window}}}"),
+        &format!("set-option -t {session} status off"),
+    ]);
+}
+
+/// `format` expanded for `target`, or `None` if tmux cannot.
+fn display(target: &str, format: &str) -> Option<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["display-message", "-p", "-t", target, format]);
+    let (status, out, _) = super::run_for(cmd, "", TMUX_TIMEOUT).ok()?;
+    status.success().then(|| out.trim().to_string())
 }
 
 /// Closes `pane`, ending what runs in it. `server` as for `capture_pane`.
