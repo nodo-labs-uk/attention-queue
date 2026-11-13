@@ -10,6 +10,8 @@ When nothing is waiting, aq shows a tab for each Claude session, with the picked
 - Each tab shows the session's permission mode (auto, plan, accept edits) as its footer does, and the project's mode when it is not review.
 - Sessions in different tmux sessions get a row each, led by the tmux session's name.
 
+While aq's window is showing, tmux's own status line is hidden, since the tabs list the sessions. It shows on your other windows, and comes back when aq quits.
+
 ## Keys
 
 | Key | What it does |
