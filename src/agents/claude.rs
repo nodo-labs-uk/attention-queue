@@ -29,17 +29,26 @@ struct Raw {
     status: String,
 }
 
-/// Parses `claude agents --json`, keeping interactive entries only.
+/// Parses `claude agents --json`, keeping interactive and background
+/// entries. A session can move into a background process that the window
+/// then shows, with the window's own `claude` no longer listed; one under
+/// no tmux pane, or started by a listed session, is dropped when joined.
 pub fn parse_agents_json(s: &str) -> Result<Vec<ClaudeProc>> {
     let entries: Vec<serde_json::Value> =
         serde_json::from_str(s).context("parsing claude agents --json")?;
-    // Filter before strict parsing so one odd non-interactive entry cannot empty the list.
-    let interactive = entries
-        .into_iter()
-        .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("interactive"));
     let mut procs = Vec::new();
-    for e in interactive {
-        let r: Raw = serde_json::from_value(e).context("parsing interactive agent entry")?;
+    for e in entries {
+        let r = match e.get("kind").and_then(|k| k.as_str()) {
+            Some("interactive") => {
+                serde_json::from_value::<Raw>(e).context("parsing interactive agent entry")?
+            }
+            // An odd background entry is skipped, so it cannot empty the list.
+            Some("background") => match serde_json::from_value::<Raw>(e) {
+                Ok(r) => r,
+                Err(_) => continue,
+            },
+            _ => continue,
+        };
         procs.push(ClaudeProc {
             pid: r.pid,
             cwd: r.cwd,
@@ -81,20 +90,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_agents_json_skips_non_interactive() {
+    fn parses_agents_json_keeps_interactive_and_background() {
         let s = include_str!("../../tests/fixtures/agents.json");
         let procs = parse_agents_json(s).unwrap();
-        assert_eq!(procs.len(), 2);
+        assert_eq!(procs.len(), 3);
+        assert_eq!(procs[2].pid, 281000);
         assert_eq!(procs[0].pid, 279801);
         assert_eq!(procs[0].status, AgentStatus::Busy);
         assert_eq!(procs[0].name, "chezmoi-86");
         assert_eq!(procs[1].status, AgentStatus::Idle);
-        assert!(procs.iter().all(|p| p.pid != 281000));
     }
 
     #[test]
-    fn odd_non_interactive_entry_does_not_empty_list() {
-        let s = r#"[{"pid":9,"kind":"background"},
+    fn odd_background_entry_does_not_empty_list() {
+        let s = r#"[{"pid":9,"kind":"background"},{"pid":8,"kind":"other"},
             {"pid":1,"cwd":"/","kind":"interactive","sessionId":"x","status":"idle"}]"#;
         let procs = parse_agents_json(s).unwrap();
         assert_eq!(procs.len(), 1);

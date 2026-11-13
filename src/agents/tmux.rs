@@ -1054,6 +1054,33 @@ mod tests {
     }
 
     #[test]
+    fn a_background_session_shown_in_a_pane_joins_it() {
+        // The pane's claude (5) is not listed: the session moved into a
+        // background process (7) under it. A background run that a listed
+        // session started (9 under 279801) stays out.
+        let mut procs = fixture_procs();
+        for (pid, under) in [(7, "x"), (9, "y")] {
+            procs.push(ClaudeProc {
+                pid,
+                cwd: "/w".into(),
+                session_id: under.into(),
+                name: String::new(),
+                status: AgentStatus::Idle,
+            });
+        }
+        let anc = |a: u32, p: u32| {
+            matches!(
+                (a, p),
+                (2466920, 279801) | (2466920, 9) | (279801, 9) | (3935219, 7)
+            )
+        };
+        let agents = join(&fixture_panes(), &procs, anc);
+        let ids: Vec<_> = agents.iter().map(|a| a.id.claude_pid).collect();
+        assert_eq!(ids, vec![279801, 7]);
+        assert_eq!(agents[1].id.pane, "%48");
+    }
+
+    #[test]
     fn join_matches_pane_whose_pid_is_ancestor() {
         // chezmoi claude 279801 sits under pane %54 (pid 2466920); locus 280112 under %48 (3935219).
         let anc = |a: u32, p: u32| (a, p) == (2466920, 279801) || (a, p) == (3935219, 280112);
