@@ -122,6 +122,7 @@ session is the one picked.
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in
   A      message every session in its tmux session, each once idle
+  r      read its last reply fast, as r on a question card
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
          (/model, which also makes it the default for new sessions)

@@ -1,5 +1,6 @@
-//! Fast reading: `r` on a question shows its words one at a time, at a
-//! speed you set, each placed so the eye rests on the same column.
+//! Fast reading: `r` on a question, or on a session's last reply, shows
+//! its words one at a time, at a speed you set, each placed so the eye
+//! rests on the same column.
 
 use std::time::{Duration, Instant};
 
@@ -110,13 +111,58 @@ pub fn focus(word: &str) -> usize {
 }
 
 impl App {
-    /// `r` on a question or tell card: its text, a word at a time, playing.
+    /// `r` on a question or tell card: its text, a word at a time.
     pub(crate) fn open_reader(&mut self) {
         let text = match self.queue.current().map(|c: &Card| &c.kind) {
-            Some(CardKind::Question(q)) => &q.text,
-            Some(CardKind::Tell(t)) => &t.message.text,
+            Some(CardKind::Question(q)) => q.text.clone(),
+            Some(CardKind::Tell(t)) => t.message.text.clone(),
             _ => return,
         };
+        self.read_fast(&text);
+    }
+
+    /// `r` on the sessions view: the picked session's last reply, once its
+    /// conversation is read from the transcript.
+    pub(crate) fn read_reply_fast(&mut self) -> Vec<Effect> {
+        if !self.practice_agents.is_empty() {
+            self.set_status("The tour's sessions have nothing to read");
+            return Vec::new();
+        }
+        let Some(session_id) = self.picked_agent().map(|a| a.session_id.clone()) else {
+            return Vec::new();
+        };
+        self.read_reply = Some(session_id);
+        // Read afresh: the reply may have grown since the last read.
+        self.reading_conversation = false;
+        self.read_conversation()
+    }
+
+    /// A conversation came in: if `r` waits for it, read its last reply.
+    pub(crate) fn on_conversation_read(&mut self) -> Vec<Effect> {
+        let Some(want) = self.read_reply.clone() else {
+            return Vec::new();
+        };
+        if self.picked_agent().map(|a| &a.session_id) != Some(&want) {
+            self.read_reply = None;
+            return Vec::new();
+        }
+        let reply = match self.picked_conversation() {
+            Some(Ok(said)) => crate::transcript::last_reply(said),
+            Some(Err(_)) => None,
+            // Another session's conversation came first: ask again.
+            None => return self.read_conversation(),
+        };
+        self.read_reply = None;
+        match reply {
+            Some(text) if self.overlay.is_none() => self.read_fast(&text),
+            Some(_) => {}
+            None => self.set_status("No reply from Claude to read yet"),
+        }
+        Vec::new()
+    }
+
+    /// Opens the reader on `text`, playing.
+    fn read_fast(&mut self, text: &str) {
         let words = words(text);
         if words.is_empty() {
             self.set_status("Nothing to read");

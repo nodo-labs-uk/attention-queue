@@ -474,6 +474,9 @@ pub struct App {
     pub conversation: Option<(String, Result<Vec<Said>, String>)>,
     /// A `ReadConversation` is on its way.
     pub(crate) reading_conversation: bool,
+    /// The session whose last reply `r` reads fast, once its conversation
+    /// is read.
+    pub(crate) read_reply: Option<String>,
 }
 
 /// A pane's screen as last read, or why it could not be.
@@ -573,6 +576,7 @@ impl App {
             practice_agents: Vec::new(),
             conversation: None,
             reading_conversation: false,
+            read_reply: None,
         }
     }
 
@@ -703,6 +707,7 @@ impl App {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
             KeyCode::Char('p') => return self.ask_for_pr(current),
+            KeyCode::Char('r') => return self.read_reply_fast(),
             KeyCode::Char('m') => self.open_model(current),
             KeyCode::Char('P') => self.overlay = Some(Overlay::PermissionMode(current)),
             KeyCode::Esc => return self.on_empty_esc(current),
@@ -964,7 +969,7 @@ impl App {
     }
 
     /// Asks for the picked agent's conversation, one read at a time.
-    fn read_conversation(&mut self) -> Vec<Effect> {
+    pub(crate) fn read_conversation(&mut self) -> Vec<Effect> {
         if self.reading_conversation {
             return Vec::new();
         }
@@ -1218,7 +1223,7 @@ impl App {
             Msg::Conversation { session_id, said } => {
                 self.reading_conversation = false;
                 self.conversation = Some((session_id, said));
-                Vec::new()
+                self.on_conversation_read()
             }
             Msg::Agents(agents) => self.on_agents(agents),
             Msg::Wheel { up } => self.on_wheel(up),
@@ -2968,6 +2973,39 @@ pub(crate) mod tests {
         assert_eq!(text(&a), "push", "no longer the suggestion");
         let screen = crate::ui::tests::render(&a, 120, 30);
         assert!(!screen.contains("commit this"), "{screen}");
+    }
+
+    #[test]
+    fn r_reads_the_picked_sessions_last_reply_fast() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        let effects = a.update(key('r'));
+        assert!(
+            matches!(&effects[..], [Effect::ReadConversation { session_id }] if session_id == "s1")
+        );
+        a.update(Msg::Conversation {
+            session_id: "s1".into(),
+            said: Ok(vec![
+                Said::Claude("Old reply.".into()),
+                Said::User("Next?".into()),
+                Said::Claude("First part.".into()),
+                Said::Tool("Bash ls".into()),
+                Said::Claude("Second part.".into()),
+            ]),
+        });
+        let Some(Overlay::Reader(r)) = &a.overlay else {
+            panic!("the reader opens");
+        };
+        assert_eq!(r.words, ["First", "part.", "Second", "part."]);
+        // A session that has not replied yet says so.
+        a.overlay = None;
+        a.update(key('r'));
+        a.update(Msg::Conversation {
+            session_id: "s1".into(),
+            said: Ok(vec![Said::User("Hello".into())]),
+        });
+        assert!(a.overlay.is_none());
+        assert!(a.status_text().unwrap().contains("No reply"));
     }
 
     #[test]
