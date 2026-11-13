@@ -60,6 +60,12 @@ fn is_rule(line: &str) -> bool {
     !l.is_empty() && l.chars().all(|c| c == '─')
 }
 
+/// Whether `line` starts a broadcast from `wall` or `shutdown`, written
+/// over whatever was on screen.
+pub fn is_broadcast(line: &str) -> bool {
+    line.starts_with("Broadcast message from ")
+}
+
 /// The row of Claude Code's input box on a plain screen: the last `❯` line
 /// with a rule right above it. Menus use `❯` too, but with no rule above.
 pub fn input_row(lines: &[&str]) -> Option<usize> {
@@ -78,7 +84,12 @@ pub fn read_input_box(screen: &str) -> InputBox {
         return InputBox::Unseen;
     };
     let mut text = typed_after_prompt(styled[p]);
-    for row in rows[p + 1..].iter().take_while(|r| !is_rule(r)) {
+    // A broadcast from `wall` can be written over the rule that closes the
+    // box: it and what follows are not typed.
+    for row in rows[p + 1..]
+        .iter()
+        .take_while(|r| !is_rule(r) && !is_broadcast(r))
+    {
         text.push('\n');
         text.push_str(row);
     }
@@ -253,6 +264,16 @@ mod input_box_tests {
 
     fn screen(prompt_line: &str) -> String {
         format!("● Done.\n{RULE}\n{prompt_line}\n{RULE}\n  ctx:11% Opus\n")
+    }
+
+    #[test]
+    fn a_broadcast_over_the_box_is_not_typed() {
+        let wall = format!(
+            "● Done.\n{RULE}\n❯ fix it\nBroadcast message from root@host (Fri 11:00):──────\n  ctx:9% Opus\nThe system will reboot!\n\n"
+        );
+        assert_eq!(read_input_box(&wall), InputBox::Holding("fix it".into()));
+        let empty = wall.replace("❯ fix it", "❯ ");
+        assert_eq!(read_input_box(&empty), InputBox::Empty);
     }
 
     #[test]

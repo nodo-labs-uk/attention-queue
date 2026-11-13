@@ -26,6 +26,10 @@ The socket's folder can be opened by other users. Make it private (`chmod 700`),
 
 A message is sent once its session is idle at its prompt with an empty input box. If you have half-typed something in the session's own window, the message waits until the box is empty. `Esc Esc` on the session's tab drops a queued message.
 
+## A system broadcast garbles the screen
+
+A `wall` message (such as "The system will reboot at...") is written over every terminal, aq and the Claude panes included. aq repaints its own screen within 5 seconds, and Ctrl-L repaints it at once. A session whose screen shows a broadcast gets a Ctrl-L too, which makes Claude Code redraw without touching what is typed in its box. The broadcast is never read as text typed in that box.
+
 ## Report a problem
 
 Open an issue at [github.com/nodo-labs-uk/attention-queue/issues](https://github.com/nodo-labs-uk/attention-queue/issues), with what you did, what you expected and what happened.

@@ -298,6 +298,10 @@ pub enum Effect {
     Interrupt {
         pane: String,
     },
+    /// Press Ctrl-L in a pane, so Claude Code draws its screen again.
+    Redraw {
+        pane: String,
+    },
     /// Start `claude` in a new tmux window in `dir`, made first if it is
     /// not there, with `prompt` as its first message if there is one.
     NewSession {
@@ -451,6 +455,9 @@ pub struct App {
     pub preview: Option<Preview>,
     /// A `CapturePane` is on its way, so another is not asked for.
     pub(crate) capturing: bool,
+    /// The pane last sent Ctrl-L for a system broadcast on its screen; it
+    /// is sent once, until the broadcast has gone.
+    pub(crate) redrawn: Option<String>,
     /// Messages typed on the empty screen, waiting for their agent to be at
     /// its prompt.
     pub(crate) prompts: BTreeMap<AgentId, String>,
@@ -567,6 +574,7 @@ impl App {
             stashed: Vec::new(),
             preview: None,
             capturing: false,
+            redrawn: None,
             prompts: BTreeMap::new(),
             touched: BTreeMap::new(),
             live_scroll: 0,
@@ -980,6 +988,28 @@ impl App {
         vec![Effect::ReadConversation { session_id }]
     }
 
+    /// A broadcast from `wall` or `shutdown` is written over every terminal,
+    /// sessions' panes too, and stays there until the session draws again.
+    /// Ctrl-L has Claude Code draw at once.
+    fn redraw_after_broadcast(&mut self, pane: &str, text: &Result<String, String>) -> Vec<Effect> {
+        let broadcast = text
+            .as_ref()
+            .is_ok_and(|t| t.lines().any(crate::agents::is_broadcast));
+        if !broadcast {
+            if self.redrawn.as_deref() == Some(pane) {
+                self.redrawn = None;
+            }
+            return Vec::new();
+        }
+        if self.redrawn.as_deref() == Some(pane) {
+            return Vec::new();
+        }
+        self.redrawn = Some(pane.to_string());
+        vec![Effect::Redraw {
+            pane: pane.to_string(),
+        }]
+    }
+
     /// The picked agent's conversation, once read.
     pub fn picked_conversation(&self) -> Option<&Result<Vec<Said>, String>> {
         let id = &self.picked_agent()?.session_id;
@@ -1230,8 +1260,9 @@ impl App {
             Msg::Mouse { kind, col, row, at } => self.on_mouse(kind, (col, row), at),
             Msg::PaneCaptured { pane, text } => {
                 self.capturing = false;
+                let effects = self.redraw_after_broadcast(&pane, &text);
                 self.preview = Some(Preview { pane, text });
-                Vec::new()
+                effects
             }
             Msg::AgentsFailed(e) => {
                 self.set_status(format!("Could not list agents: {e}"));
@@ -2973,6 +3004,26 @@ pub(crate) mod tests {
         assert_eq!(text(&a), "push", "no longer the suggestion");
         let screen = crate::ui::tests::render(&a, 120, 30);
         assert!(!screen.contains("commit this"), "{screen}");
+    }
+
+    #[test]
+    fn a_broadcast_over_a_session_has_it_redrawn_once() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let screen = |a: &mut App, text: &str| {
+            a.update(Msg::PaneCaptured {
+                pane: "%1".into(),
+                text: Ok(text.into()),
+            })
+        };
+        let wall = "> hi\nBroadcast message from root@host (Fri 11:00):\nThe system will reboot\n";
+        let redraw = vec![Effect::Redraw { pane: "%1".into() }];
+        assert_eq!(screen(&mut a, wall), redraw);
+        assert!(screen(&mut a, wall).is_empty(), "once, not every capture");
+        assert!(screen(&mut a, "> hi").is_empty());
+        assert_eq!(screen(&mut a, wall), redraw, "a new broadcast, again");
+        // The words in a reply, indented, are not a broadcast.
+        a.redrawn = None;
+        assert!(screen(&mut a, "  Broadcast message from root shows here").is_empty());
     }
 
     #[test]
