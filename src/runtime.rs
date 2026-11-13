@@ -498,6 +498,7 @@ fn apply(
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::TrustFolder { pane } => Job::Trust(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
+            Effect::Redraw { pane } => Job::Redraw(pane),
             Effect::SwitchModel { agent, model } => Job::SwitchModel(agent, model),
             Effect::SetPermissionMode { agent, mode } => Job::SetPermissionMode(agent, mode),
             Effect::NewSession {
@@ -664,6 +665,7 @@ enum Job {
     Close(String),
     Trust(String),
     Interrupt(String),
+    Redraw(String),
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>),
@@ -912,6 +914,9 @@ fn spawn_effect_worker(
                 Job::Interrupt(pane) => crate::agents::tmux::press_escape(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not stop {pane}: {e:#}"))),
+                Job::Redraw(pane) => crate::agents::tmux::press_redraw(&pane, &[])
+                    .err()
+                    .map(|e| Msg::EffectFailed(format!("Could not redraw {pane}: {e:#}"))),
                 Job::Conversation(session_id) => Some(Msg::Conversation {
                     said: crate::transcript::find(&session_id)
                         .ok_or_else(|| "No transcript found for this session".to_string())

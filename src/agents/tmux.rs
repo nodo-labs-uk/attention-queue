@@ -591,6 +591,11 @@ pub fn press_escape(pane: &str, server: &[&str]) -> Result<()> {
     press(pane, "Escape", server)
 }
 
+/// Presses Ctrl-L in `pane`, which makes Claude Code draw its screen again.
+pub fn press_redraw(pane: &str, server: &[&str]) -> Result<()> {
+    press(pane, "C-l", server)
+}
+
 fn press(pane: &str, key: &str, server: &[&str]) -> Result<()> {
     let mut cmd = Command::new("tmux");
     cmd.args(server).args(["send-keys", "-t", pane, key]);
