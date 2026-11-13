@@ -444,7 +444,7 @@ pub fn popup_editor(dir: &Path, path: &Path, line: u32) -> Result<()> {
 /// popup, and every other key falls through to the root table as usual.
 const BTW_KEYS: &str = "aq-btw";
 
-/// A session's own window in a popup across the top of aq, with `/btw `
+/// A session's own window in a popup over aq, as wide as the ? box, with `/btw `
 /// typed in its box if `type_btw`. The popup attaches to a session of its
 /// own, grouped with the agent's, so the agent's tmux session stays on the
 /// window it shows. Ctrl-Q closes the popup and that session goes.
@@ -473,6 +473,13 @@ pub fn popup_btw(
         "-t",
         &format!("={session}"),
     ])?;
+    // tmux sizes a window to the client that used it last, so the session
+    // draws to fit the popup while it shows. Its own size comes back after.
+    let size = display(pane, "#{window_width} #{window_height}");
+    let fixed = Command::new("tmux")
+        .args(["show-options", "-wqv", "-t", pane, "window-size"])
+        .output()
+        .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
     let shown = (|| {
         tmux(&["set-option", "-t", &view, "status", "off"])?;
         tmux(&["set-option", "-t", &view, "key-table", BTW_KEYS])?;
@@ -490,18 +497,20 @@ pub fn popup_btw(
             shell_quote(socket),
             shell_quote(&exact)
         );
+        // As wide as the box ? opens, centred over aq.
+        let width = std::env::var("TMUX_PANE")
+            .ok()
+            .and_then(|p| display(&p, "#{window_width}"))
+            .and_then(|w| w.parse::<u16>().ok())
+            .map_or(100, |w| (w * 4 / 5).min(100).max(w.min(20)));
         let mut cmd = Command::new("tmux");
         cmd.args([
             "display-popup",
             "-E",
             "-w",
-            "100%",
+            &width.to_string(),
             "-h",
             "60%",
-            "-x",
-            "0",
-            "-y",
-            "0",
             "-T",
             &format_literal(title),
         ]);
@@ -518,6 +527,13 @@ pub fn popup_btw(
         Ok(())
     })();
     let _ = tmux(&["kill-session", "-t", &exact]);
+    if let Some((w, h)) = size.as_deref().and_then(|s| s.split_once(' ')) {
+        let _ = tmux(&["resize-window", "-t", pane, "-x", w, "-y", h]);
+        // resize-window fixes the size; let it follow its clients again.
+        if !fixed {
+            let _ = tmux(&["set-option", "-wu", "-t", pane, "window-size"]);
+        }
+    }
     shown
 }
 
