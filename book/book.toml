@@ -1,0 +1,15 @@
+[book]
+title = "aq: an attention queue for Claude Code"
+authors = ["Nodo Labs"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/nodo-labs-uk/attention-queue"
+edit-url-template = "https://github.com/nodo-labs-uk/attention-queue/edit/main/book/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true
+
+[output.html.search]
+enable = true

@@ -29,6 +29,8 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 > Don't change anything else.
 > ```
 
+**Documentation:** [nodo-labs-uk.github.io/attention-queue](https://nodo-labs-uk.github.io/attention-queue/)
+
 **Contents:** [Design principles](#design-principles) · [Modes](#modes) · [Sessions](#sessions) · [Keys](#keys) · [Compared with other tools](#compared-with-other-tools) · [Install](#install) · [Files](#files) · [Development](#development) · [Licence](#licence)
 
 ## Design principles
