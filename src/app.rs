@@ -58,6 +58,8 @@ pub enum Msg {
     Key(KeyEvent, Instant),
     /// Time passes; `now` comes from the runtime so `update` stays pure.
     Tick(Instant),
+    /// The fast reader's next word is due.
+    ReadTick(Instant),
     /// The left mouse button went down, moved or came up at a cell, stamped
     /// by the runtime when it was read.
     Mouse {
@@ -338,6 +340,8 @@ pub enum Overlay {
     StepReason(ReasonDraft),
     /// `gd` on a step card: where the identifier appears.
     Search(SearchList),
+    /// `r` on a question: its words one at a time.
+    Reader(Box<crate::reader::Reader>),
     /// `S`: the stashed questions, `cursor` on one.
     Stash { cursor: usize },
     /// `o` on a choice card: typing an answer that is none of the options.
@@ -1137,6 +1141,7 @@ impl App {
         let at = match &msg {
             Msg::Key(_, t)
             | Msg::Tick(t)
+            | Msg::ReadTick(t)
             | Msg::PreTool { at: t, .. }
             | Msg::Ipc { now: t, .. } => Some(*t),
             _ => None,
@@ -1179,6 +1184,10 @@ impl App {
     fn handle(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
             Msg::Key(key, _) => self.on_key(key),
+            Msg::ReadTick(now) => {
+                self.on_reader_tick(now);
+                Vec::new()
+            }
             Msg::Tick(now) => {
                 self.expire_status(now);
                 let mut effects = self.capture_picked();
@@ -1484,6 +1493,7 @@ impl App {
                 self.on_stash_key(key);
                 return Vec::new();
             }
+            Some(Overlay::Reader(_)) => return self.on_reader_key(key),
             _ => {}
         }
         if key

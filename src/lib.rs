@@ -16,6 +16,7 @@ pub mod persist;
 pub mod question;
 pub mod queue;
 pub mod quiz;
+pub mod reader;
 pub mod review;
 pub mod runtime;
 pub mod shell;
