@@ -325,7 +325,7 @@ pub enum Effect {
         path: PathBuf,
         line: u32,
     },
-    /// Show a session's own window in a tmux popup across the top of aq,
+    /// Show a session's own window in a tmux popup over aq, the size of the ? box,
     /// with `/btw ` typed in its box if `type_btw`.
     Btw {
         session: String,

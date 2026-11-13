@@ -24,7 +24,7 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 | `W` | ask where it is up to |
 | `?` | ask it a [side question](tools.md#side-questions) |
 | `r` | [read its last reply fast](tools.md#fast-reading) |
-| `b` | that session dropped down from the top in a popup, with `/btw ` typed in its box for a side question; Ctrl-Q closes it |
+| `b` | that session in a popup the size of the `?` box, with `/btw ` typed in its box for a side question; Ctrl-Q closes it |
 | `p` | ask an idle session to open a PR (`/create-pr`) and go there |
 | `m` | switch its model: `f` fable, `o` opus, `s` sonnet, `h` haiku |
 | `P` | switch its permission mode: `a` auto, `m` manual, `e` accept edits, `p` plan |
