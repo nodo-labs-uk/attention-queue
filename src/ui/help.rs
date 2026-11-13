@@ -86,6 +86,8 @@ draft, to choose between two ways), its message becomes a card.
      a is there only when the question asks for a go-ahead
   x  stash the card      g  go to the session's window   j/k scroll
   S  the stashed questions: Enter brings one back, x drops it
+  r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
+     number and Enter set the words a minute, ←/→ go back or on
 
 When Claude asks with its own menu of options, the card lists them:
   1-9  pick   j/k + Enter  the same

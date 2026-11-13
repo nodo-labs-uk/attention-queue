@@ -18,6 +18,8 @@ pub struct Config {
     pub hide_files: bool,
     /// F3 showed the row of keys along the bottom.
     pub show_keys: bool,
+    /// `r`: words a minute when reading fast.
+    pub read_wpm: u32,
     /// `O`: sets of repos opened together, by name. Saved by aq when one is
     /// opened, not written by hand.
     pub workspaces: BTreeMap<String, Workspace>,
@@ -40,6 +42,7 @@ impl Default for Config {
             tutorial_done: false,
             hide_files: false,
             show_keys: false,
+            read_wpm: 350,
             workspaces: BTreeMap::new(),
         }
     }

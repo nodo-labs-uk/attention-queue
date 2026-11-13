@@ -243,6 +243,10 @@ impl App {
                 self.set_status(format!("Dropped the message from {}", tc.from_name));
                 Vec::new()
             }
+            KeyCode::Char('r') if !ctrl => {
+                self.open_reader();
+                Vec::new()
+            }
             code => {
                 let page = self.screen.map_or(10, |(_, h)| (h as usize / 2).max(1));
                 self.scroll_question(code, ctrl, page);

@@ -396,6 +396,7 @@ impl App {
                 self.set_status("Question stashed: S lists the stashed ones");
             }
             KeyCode::Char('g') if !ctrl => return vec![Effect::GoToWindow { pane: agent.pane }],
+            KeyCode::Char('r') if !ctrl => self.open_reader(),
             code => self.scroll_question(code, ctrl, page),
         }
         Vec::new()
@@ -562,6 +563,52 @@ mod tests {
         let effects = a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
         assert!(matches!(&effects[..], [Effect::Send { text, .. }] if text == "the README"));
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn r_reads_the_question_fast_at_a_speed_you_set() {
+        use crate::app::Overlay;
+        let mut a = app();
+        let press =
+            |a: &mut App, code: KeyCode| a.update(Msg::Key(KeyEvent::from(code), Instant::now()));
+        said(&mut a, "Shall I **merge** the branch now?");
+        a.update(key('r'));
+        let Some(Overlay::Reader(r)) = &a.overlay else {
+            panic!("no reader: {:?}", a.overlay);
+        };
+        assert_eq!(r.words, ["Shall", "I", "merge", "the", "branch", "now?"]);
+        assert!(r.playing());
+        assert_eq!(r.wpm, 350);
+        let screen = crate::ui::tests::render(&a, 100, 16);
+        assert!(
+            screen.contains("Reading fast") && screen.contains("Shall"),
+            "{screen}"
+        );
+        assert!(screen.contains("word 1 of 6 · 350 wpm"), "{screen}");
+        // Up and Down change the speed, kept in the config.
+        let effects = press(&mut a, KeyCode::Up);
+        assert!(matches!(effects[..], [Effect::SaveConfig]));
+        assert_eq!(a.config.read_wpm, 375);
+        // Or type it.
+        for c in "600".chars() {
+            a.update(key(c));
+        }
+        let screen = crate::ui::tests::render(&a, 100, 16);
+        assert!(screen.contains("New speed: 600"), "{screen}");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.config.read_wpm, 600);
+        // Space pauses; time no longer moves it on.
+        a.update(key(' '));
+        a.update(Msg::ReadTick(
+            Instant::now() + std::time::Duration::from_secs(9),
+        ));
+        let Some(Overlay::Reader(r)) = &a.overlay else {
+            panic!()
+        };
+        assert!(!r.playing());
+        assert_eq!(r.word(), "Shall");
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.overlay, None);
     }
 
     #[test]

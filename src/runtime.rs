@@ -206,6 +206,7 @@ async fn serve(
     let mut hangup = signal(SignalKind::hangup())?;
     let mut terminate = signal(SignalKind::terminate())?;
     while !app.quit {
+        let reader_due = app.reader_due();
         tokio::select! {
             _ = hangup.recv() => break,
             _ = terminate.recv() => break,
@@ -219,6 +220,11 @@ async fn serve(
                 sync_size(terminal, app, workers, waiting)?;
                 sweep(app, workers, waiting, loading)?;
                 on_ipc(app, ev, workers, waiting, loading)?;
+                dirty = true;
+            }
+            // The fast reader's next word.
+            _ = tokio::time::sleep_until(reader_due.map_or(next_frame, Instant::from_std)), if reader_due.is_some() => {
+                on_msg(app, Msg::ReadTick(std::time::Instant::now()), workers, waiting, loading)?;
                 dirty = true;
             }
             _ = tokio::time::sleep_until(next_frame), if dirty => {

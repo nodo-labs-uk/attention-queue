@@ -12,6 +12,7 @@ mod new_session;
 mod permission;
 mod question;
 mod quiz;
+mod reader;
 mod review;
 mod shell;
 mod step;
@@ -162,6 +163,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             input::render(frame, body, &d.input, "Deny: tell Claude why", t);
         }
         Some(Overlay::Search(list)) => step::render_search(frame, body, list, t),
+        Some(Overlay::Reader(r)) => reader::render(frame, body, r, t),
         Some(Overlay::Stash { cursor }) => question::render_stash(frame, body, app, *cursor),
         Some(Overlay::QuizAnswer(d)) => quiz::render_answer(frame, body, app, d, hl),
         Some(Overlay::QuizCode { card, question }) => {

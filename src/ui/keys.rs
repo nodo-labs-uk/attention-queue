@@ -115,6 +115,13 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("PgUp/PgDn", "page".into()),
             ("q", "close".into()),
         ],
+        (Some(Overlay::Reader(r)), _) => vec![
+            ("Space", if r.playing() { "pause" } else { "play" }.into()),
+            ("↑/↓", "speed".into()),
+            ("0-9 Enter", "set speed".into()),
+            ("←/→", "back/on".into()),
+            ("Esc", "close".into()),
+        ],
         (Some(Overlay::Stash { .. }), _) => vec![
             ("Enter", "bring back".into()),
             ("j/k", "choose".into()),
@@ -227,6 +234,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             .chain([
                 ("Enter", "reply".into()),
                 ("x", "stash".into()),
+                ("r", "read fast".into()),
                 ("g", "go to window".into()),
                 ("j/k", "scroll".into()),
                 ("Space", "skip".into()),
