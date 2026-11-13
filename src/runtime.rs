@@ -527,6 +527,19 @@ fn apply(
                 title,
                 session_id,
             } => Job::Shell(dir, title, session_id),
+            Effect::Btw {
+                session,
+                window,
+                pane,
+                title,
+                type_btw,
+            } => Job::Btw {
+                session,
+                window,
+                pane,
+                title,
+                type_btw,
+            },
             Effect::Edit { dir, path, line } => Job::Edit(dir, path, line),
             Effect::ComputeQuiz {
                 checkout,
@@ -669,6 +682,13 @@ enum Job {
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>),
+    Btw {
+        session: String,
+        window: u32,
+        pane: String,
+        title: String,
+        type_btw: bool,
+    },
     Edit(PathBuf, PathBuf, u32),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
@@ -854,6 +874,26 @@ fn spawn_effect_worker(
                         if let Err(e) = r {
                             let _ = tx
                                 .send(Msg::EffectFailed(format!("Could not open a shell: {e:#}")));
+                        }
+                    });
+                    None
+                }
+                // Waited on apart, as the shell is.
+                Job::Btw {
+                    session,
+                    window,
+                    pane,
+                    title,
+                    type_btw,
+                } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let r = crate::agents::tmux::popup_btw(
+                            &session, window, &pane, &title, type_btw,
+                        );
+                        if let Err(e) = r {
+                            let _ =
+                                tx.send(Msg::EffectFailed(format!("Could not open /btw: {e:#}")));
                         }
                     });
                     None

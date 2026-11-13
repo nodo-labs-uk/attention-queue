@@ -386,6 +386,87 @@ pub fn popup_editor(dir: &Path, path: &Path, line: u32) -> Result<()> {
     popup(dir, &title, Some(&command))
 }
 
+/// The key table the `/btw` popup's session uses: Ctrl-Q in it closes the
+/// popup, and every other key falls through to the root table as usual.
+const BTW_KEYS: &str = "aq-btw";
+
+/// A session's own window in a popup across the top of aq, with `/btw `
+/// typed in its box if `type_btw`. The popup attaches to a session of its
+/// own, grouped with the agent's, so the agent's tmux session stays on the
+/// window it shows. Ctrl-Q closes the popup and that session goes.
+pub fn popup_btw(
+    session: &str,
+    window: u32,
+    pane: &str,
+    title: &str,
+    type_btw: bool,
+) -> Result<()> {
+    let tmux = |args: &[&str]| -> Result<()> {
+        let mut cmd = Command::new("tmux");
+        cmd.args(args);
+        let (status, _, err) = super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux")?;
+        anyhow::ensure!(status.success(), "{}", err.trim());
+        Ok(())
+    };
+    let view = format!("aq-btw-{}", std::process::id());
+    let exact = format!("={view}");
+    let _ = tmux(&["kill-session", "-t", &exact]);
+    tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        &view,
+        "-t",
+        &format!("={session}"),
+    ])?;
+    let shown = (|| {
+        tmux(&["set-option", "-t", &view, "status", "off"])?;
+        tmux(&["set-option", "-t", &view, "key-table", BTW_KEYS])?;
+        tmux(&["bind-key", "-T", BTW_KEYS, "C-q", "detach-client"])?;
+        tmux(&["select-window", "-t", &format!("{view}:{window}")])?;
+        if type_btw {
+            tmux(&["send-keys", "-t", pane, "-l", "/btw "])?;
+        }
+        // The popup runs a tmux client of its own on this server.
+        let socket = std::env::var("TMUX").unwrap_or_default();
+        let socket = socket.split(',').next().unwrap_or_default();
+        anyhow::ensure!(!socket.is_empty(), "aq is not running inside tmux");
+        let attach = format!(
+            "TMUX= tmux -S {} attach -t {}",
+            shell_quote(socket),
+            shell_quote(&exact)
+        );
+        let mut cmd = Command::new("tmux");
+        cmd.args([
+            "display-popup",
+            "-E",
+            "-w",
+            "100%",
+            "-h",
+            "60%",
+            "-x",
+            "0",
+            "-y",
+            "0",
+            "-T",
+            &format_literal(title),
+        ]);
+        if let Ok(pane) = std::env::var("TMUX_PANE") {
+            cmd.args(["-t", &pane]);
+        }
+        cmd.arg(format_literal(&attach));
+        let out = cmd.output().context("running tmux display-popup")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok(())
+    })();
+    let _ = tmux(&["kill-session", "-t", &exact]);
+    shown
+}
+
 /// A tmux popup over aq in `dir`, running `command` or else the shell.
 fn popup(dir: &Path, title: &str, command: Option<&str>) -> Result<()> {
     let title = format_literal(title);

@@ -325,6 +325,15 @@ pub enum Effect {
         path: PathBuf,
         line: u32,
     },
+    /// Show a session's own window in a tmux popup across the top of aq,
+    /// with `/btw ` typed in its box if `type_btw`.
+    Btw {
+        session: String,
+        window: u32,
+        pane: String,
+        title: String,
+        type_btw: bool,
+    },
     /// Open a shell in a tmux popup over aq, gone when the shell exits.
     Shell {
         dir: PathBuf,
@@ -715,6 +724,7 @@ impl App {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
             KeyCode::Char('p') => return self.ask_for_pr(current),
+            KeyCode::Char('b') => return self.open_btw(),
             KeyCode::Char('r') => return self.read_reply_fast(),
             KeyCode::Char('m') => self.open_model(current),
             KeyCode::Char('P') => self.overlay = Some(Overlay::PermissionMode(current)),
@@ -1008,6 +1018,31 @@ impl App {
         vec![Effect::Redraw {
             pane: pane.to_string(),
         }]
+    }
+
+    /// `b` on the sessions view: the picked session in a popup across the
+    /// top, `/btw ` typed in its box when the box is empty, for a side
+    /// question the session answers without adding it to the conversation.
+    fn open_btw(&mut self) -> Vec<Effect> {
+        if !self.practice_agents.is_empty() {
+            self.set_status("The tour's sessions are made up: b works on real ones");
+            return Vec::new();
+        }
+        let Some(a) = self.picked_agent() else {
+            return Vec::new();
+        };
+        let type_btw = a.input == InputBox::Empty;
+        let effect = Effect::Btw {
+            session: a.session.clone(),
+            window: a.window_index,
+            pane: a.id.pane.clone(),
+            title: format!(" /btw in {} · Ctrl-Q closes ", a.window_name),
+            type_btw,
+        };
+        if !type_btw {
+            self.set_status("Its box is not empty, so /btw is not typed in");
+        }
+        vec![effect]
     }
 
     /// The picked agent's conversation, once read.
@@ -3024,6 +3059,26 @@ pub(crate) mod tests {
         // The words in a reply, indented, are not a broadcast.
         a.redrawn = None;
         assert!(screen(&mut a, "  Broadcast message from root shows here").is_empty());
+    }
+
+    #[test]
+    fn b_opens_the_session_with_btw_typed_when_its_box_is_empty() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut api = agent("%1", 3, "api", "/w/api", true);
+        api.input = InputBox::Empty;
+        a.agents = vec![api];
+        let btw = |type_btw| Effect::Btw {
+            session: "main".into(),
+            window: 3,
+            pane: "%1".into(),
+            title: " /btw in api · Ctrl-Q closes ".into(),
+            type_btw,
+        };
+        assert_eq!(a.update(key('b')), vec![btw(true)]);
+        // Half a message typed: shown as it is, with nothing added to it.
+        a.agents[0].input = InputBox::Holding("half".into());
+        assert_eq!(a.update(key('b')), vec![btw(false)]);
+        assert!(a.status_text().unwrap().contains("not typed"));
     }
 
     #[test]

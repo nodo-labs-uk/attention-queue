@@ -157,6 +157,7 @@ This is the same list as aq's help page (`F1`).
 | `m` | switch its model |
 | `P` | switch its permission mode |
 | `r` | read its last reply fast |
+| `b` | the session in a popup, with `/btw` typed |
 | `x` | close its pane |
 | `Esc Esc` | stop it |
 | `Ctrl-U` `Ctrl-D`, `PgUp` `PgDn`, wheel | scroll its screen back |

@@ -123,6 +123,8 @@ session is the one picked.
          fills it in
   A      message every session in its tmux session, each once idle
   r      read its last reply fast, as r on a question card
+  b      /btw: the session's own window drops down from the top, with
+         /btw typed in its box; ask, read the answer, Ctrl-Q closes it
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
          (/model, which also makes it the default for new sessions)
