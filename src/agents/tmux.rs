@@ -695,6 +695,28 @@ pub fn waits_for_trust(pane: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// The tmux pane that `pid` runs in, found from its parents. A session
+/// that Claude Code moved into a background process has lost `$TMUX_PANE`.
+pub fn pane_of_process(pid: u32) -> Option<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
+    let (status, out, _) = super::run_for(cmd, "", TMUX_TIMEOUT).ok()?;
+    if !status.success() {
+        return None;
+    }
+    pane_holding(&out, pid, super::is_ancestor)
+}
+
+/// Of `list-panes` lines of pane pid and id, the pane whose process is
+/// `pid` or one of its parents.
+fn pane_holding(panes: &str, pid: u32, is_ancestor: impl Fn(u32, u32) -> bool) -> Option<String> {
+    panes.lines().find_map(|line| {
+        let (pane_pid, id) = line.split_once(' ')?;
+        let pane_pid: u32 = pane_pid.parse().ok()?;
+        (pane_pid == pid || is_ancestor(pane_pid, pid)).then(|| id.to_string())
+    })
+}
+
 /// Answers the trust menu in `pane` with yes. Number keys do not pick in
 /// that menu; the cursor starts on "No, exit".
 pub fn trust_folder(pane: &str) -> Result<()> {
@@ -1051,6 +1073,15 @@ mod tests {
 
     fn fixture_panes() -> Vec<Pane> {
         parse_list_panes(include_str!("../../tests/fixtures/list-panes.txt"))
+    }
+
+    #[test]
+    fn a_process_finds_the_pane_it_runs_under() {
+        let panes = "100 %1\n200 %2\n";
+        let anc = |a: u32, p: u32| (a, p) == (200, 250);
+        assert_eq!(pane_holding(panes, 250, anc).as_deref(), Some("%2"));
+        assert_eq!(pane_holding(panes, 100, anc).as_deref(), Some("%1"));
+        assert_eq!(pane_holding(panes, 300, anc), None);
     }
 
     #[test]

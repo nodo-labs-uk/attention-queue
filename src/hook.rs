@@ -35,9 +35,13 @@ pub fn run_hook(event: HookEvent, stdin: impl Read, deadline: Duration) -> Resul
     run_hook_with(&socket, tmux_pane(), event, stdin, deadline)
 }
 
-/// The tmux pane this runs in, if any.
+/// The tmux pane this runs in, if any: `$TMUX_PANE`, or else the pane
+/// found from the process's parents.
 pub fn tmux_pane() -> Option<String> {
-    std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty())
+    std::env::var("TMUX_PANE")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .or_else(|| crate::agents::tmux::pane_of_process(std::process::id()))
 }
 
 /// How long `aq tell` waits for aq.
