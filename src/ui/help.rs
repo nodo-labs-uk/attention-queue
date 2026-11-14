@@ -31,9 +31,10 @@ finished turn; the card on screen stays as it is.
   ?    ask the agent a side question      Space  skip this card
                                           B      move it to the back of the queue
   W    where are we: a short summary of what is done and what is left
-  N    a new Claude session in this project, in a tmux window of its own;
-       what you type is its first prompt, and Tab gives it a git worktree
-       of its own (claude --worktree). Ctrl-O there picks another folder:
+  N    a new Claude session in this project, in a tmux window of its own
+       (with none open, in aq's folder); what you type is its first
+       prompt, and Tab gives it a git worktree of its own (claude
+       --worktree). Ctrl-O there picks another folder:
        type a path (Tab completes, arrows choose a match), and one that
        is not there yet is made when the session starts. If Claude asks
        whether to trust the folder, aq asks you: y trusts it, n closes it,
@@ -149,6 +150,8 @@ session is the one picked.
 A card that takes the screen by itself ignores deciding keys for 1.5 s.
 Messages wait until their session is idle at its prompt.
 Going to a window leaves aq running; come back with your tmux keys.
+Started with no session open, as after a restart, aq reopens the ones
+open when it last looked, each with claude --resume in its old window.
 A system message (wall, shutdown) written over aq is gone within 5 s;
 Ctrl-L clears it now.
 tmux's status line is hidden while aq's window shows; it comes back

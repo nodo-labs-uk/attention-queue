@@ -631,6 +631,25 @@ pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<St
 /// session yet; `system` is added to its system prompt. Returns the pane.
 /// `-d` leaves you where you are.
 pub fn new_claude_in(session: &str, dir: &Path, system: &str) -> Result<String> {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+    let command = format!(
+        "{} --append-system-prompt {}",
+        claude_command(None, false),
+        shell_quote(system)
+    );
+    window_in(session, name.as_deref(), dir, &command)
+}
+
+/// Starts a saved session again with `claude --resume`, in a window of its
+/// old name in its old tmux session.
+pub fn resume_claude_in(s: &crate::persist::OpenSession) -> Result<String> {
+    let command = format!("claude --resume {}", shell_quote(&s.session_id));
+    window_in(&s.tmux_session, Some(&s.window), &s.dir, &command)
+}
+
+/// Runs `command` in `dir` in tmux session `session`, as a new window
+/// named `name`, or as the session's first if there is no such session.
+fn window_in(session: &str, name: Option<&str>, dir: &Path, command: &str) -> Result<String> {
     let exact = format!("={session}");
     let mut has = Command::new("tmux");
     has.args(["has-session", "-t", &exact]);
@@ -643,16 +662,12 @@ pub fn new_claude_in(session: &str, dir: &Path, system: &str) -> Result<String> 
         cmd.args(["new-session", "-d", "-s", session]);
     }
     // The name is expanded as a format, like the start directory.
-    if let Some(name) = dir.file_name() {
-        cmd.arg("-n").arg(format_literal(&name.to_string_lossy()));
+    if let Some(name) = name {
+        cmd.arg("-n").arg(format_literal(name));
     }
     cmd.args(["-P", "-F", "#{pane_id}", "-c"])
         .arg(format_literal(&dir.to_string_lossy()))
-        .arg(format!(
-            "{} --append-system-prompt {}",
-            claude_command(None, false),
-            shell_quote(system)
-        ));
+        .arg(command);
     let (status, out, err) = super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux")?;
     anyhow::ensure!(status.success(), "{}", err.trim());
     Ok(out.trim().to_string())

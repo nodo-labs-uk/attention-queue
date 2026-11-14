@@ -304,6 +304,9 @@ pub enum Effect {
     },
     /// Start `claude` in a new tmux window in `dir`, made first if it is
     /// not there, with `prompt` as its first message if there is one.
+    /// Start each session again in its tmux session and window, with
+    /// `claude --resume`.
+    Reopen(Vec<crate::persist::OpenSession>),
     NewSession {
         dir: PathBuf,
         prompt: Option<String>,
@@ -453,6 +456,13 @@ pub struct App {
     /// The state as last handed out to be written; `None` after a failed
     /// write, so the next look writes it again.
     pub(crate) saved: Option<crate::persist::SavedState>,
+    /// The Claude sessions open in tmux, as last seen, for `state.json`.
+    pub(crate) open_sessions: Vec<crate::persist::OpenSession>,
+    /// Whether a list of agents has come yet; the first decides whether
+    /// last run's sessions are reopened.
+    pub(crate) agents_seen: bool,
+    /// Sessions are being reopened: the list saved stays until one shows.
+    pub(crate) reopening: bool,
     /// The idle agent picked on the empty screen, to go to with Enter.
     pub(crate) picked: Option<AgentId>,
     /// The sessions you sent a message to, the latest first, for Tab.
@@ -578,6 +588,9 @@ impl App {
             esc_at: None,
             unclaimed: Default::default(),
             saved: Some(Default::default()),
+            open_sessions: Vec::new(),
+            agents_seen: false,
+            reopening: false,
             picked: None,
             messaged: Vec::new(),
             stashed: Vec::new(),
@@ -1589,7 +1602,13 @@ impl App {
             KeyCode::Char('W') => self.ask_where_are_we(),
             KeyCode::Char('!') => self.open_shell(),
             KeyCode::Char('N') => {
-                if let Some((dir, name, _)) = self.here() {
+                // With no session to start from, aq's own folder.
+                let here = self.here().map(|(dir, name, _)| (dir, name)).or_else(|| {
+                    let dir = std::env::current_dir().ok()?;
+                    let name = dir.file_name()?.to_string_lossy().into_owned();
+                    Some((dir, name))
+                });
+                if let Some((dir, name)) = here {
                     self.open_new_session(dir, name);
                 }
                 Vec::new()
@@ -1789,6 +1808,42 @@ impl App {
         }
     }
 
+    /// Keeps the list of open sessions for `state.json`. When aq starts and
+    /// finds none open, it reopens last run's instead.
+    fn note_open_sessions(&mut self, agents: &[Agent]) -> Option<Effect> {
+        let first = !std::mem::replace(&mut self.agents_seen, true);
+        if first && agents.is_empty() && !self.open_sessions.is_empty() {
+            self.reopening = true;
+            let n = self.open_sessions.len();
+            self.set_status(format!(
+                "Reopening the {n} session{} open last time",
+                if n == 1 { "" } else { "s" }
+            ));
+            return Some(Effect::Reopen(self.open_sessions.clone()));
+        }
+        if self.reopening && agents.is_empty() {
+            return None;
+        }
+        self.reopening = false;
+        let mut open: Vec<&Agent> = agents
+            .iter()
+            .filter(|a| crate::llm::valid_session_id(&a.session_id))
+            .collect();
+        open.sort_by(|a, b| (&a.session, a.window_index).cmp(&(&b.session, b.window_index)));
+        let mut seen = BTreeSet::new();
+        open.retain(|a| seen.insert(a.session_id.clone()));
+        self.open_sessions = open
+            .into_iter()
+            .map(|a| crate::persist::OpenSession {
+                tmux_session: a.session.clone(),
+                window: a.window_name.clone(),
+                dir: a.cwd.clone(),
+                session_id: a.session_id.clone(),
+            })
+            .collect();
+        None
+    }
+
     fn on_agents(&mut self, mut agents: Vec<Agent>) -> Vec<Effect> {
         // A menu or dialog can hide the footer for a moment: the mode last
         // seen still holds.
@@ -1800,6 +1855,7 @@ impl App {
                 .and_then(|p| p.permission_mode);
         }
         self.note_typed_in(&agents);
+        let reopen = self.note_open_sessions(&agents);
         let mut started: Vec<Agent> = became_waiting(&self.agents, &agents)
             .into_iter()
             .cloned()
@@ -1843,6 +1899,7 @@ impl App {
         for checkout in checkouts {
             effects.extend(self.ensure_baseline(&checkout));
         }
+        effects.extend(reopen);
         effects
     }
 
@@ -3007,6 +3064,63 @@ pub(crate) mod tests {
         assert!(effects.is_empty());
         let effects = turn_end(&mut a, vec![agent("%1", 1, "api", "/a", true)]);
         assert!(matches!(effects.as_slice(), [Effect::ComputeReview(_)]));
+    }
+
+    #[test]
+    fn sessions_open_last_time_are_reopened_when_aq_starts_with_none() {
+        let mut a = app();
+        a.update(Msg::Agents(vec![
+            agent("%2", 2, "web", "/w/web", false),
+            agent("%1", 1, "api", "/w/api", true),
+        ]));
+        let saved = a.saved_state().sessions;
+        let names: Vec<_> = saved.iter().map(|s| s.window.as_str()).collect();
+        assert_eq!(names, ["api", "web"], "in window order");
+        assert_eq!(saved[0].session_id, "s1");
+        assert_eq!(saved[0].tmux_session, "main");
+
+        // The machine restarts: the next aq finds no session open.
+        let mut b = app();
+        b.restore(a.saved_state());
+        assert_eq!(
+            b.update(Msg::Agents(vec![])),
+            vec![Effect::Reopen(saved.clone())]
+        );
+        assert!(
+            b.status_text()
+                .unwrap()
+                .contains("Reopening the 2 sessions")
+        );
+        // While they start, the list is kept, and they are not reopened twice.
+        assert!(b.update(Msg::Agents(vec![])).is_empty());
+        assert_eq!(b.saved_state().sessions, saved);
+        b.update(Msg::Agents(vec![agent("%9", 1, "api", "/w/api", true)]));
+        assert_eq!(b.saved_state().sessions.len(), 1);
+    }
+
+    #[test]
+    fn sessions_are_not_reopened_when_some_are_open_or_all_were_closed() {
+        let mut a = app();
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/w/api", true)]));
+        let mut b = app();
+        b.restore(a.saved_state());
+        let effects = b.update(Msg::Agents(vec![agent("%2", 2, "web", "/w/web", true)]));
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Reopen(_))));
+        // Every session closed while aq looks: nothing to reopen next time.
+        b.update(Msg::Agents(vec![]));
+        assert!(b.saved_state().sessions.is_empty());
+    }
+
+    #[test]
+    fn n_with_no_session_starts_one_in_aqs_own_folder() {
+        let mut a = app();
+        a.update(key('N'));
+        match &a.overlay {
+            Some(Overlay::NewSession(d)) => {
+                assert_eq!(d.dir, std::env::current_dir().unwrap());
+            }
+            other => panic!("no new session box: {other:?}"),
+        }
     }
 
     #[test]
