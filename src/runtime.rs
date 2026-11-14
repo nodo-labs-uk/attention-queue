@@ -506,6 +506,7 @@ fn apply(
                 prompt,
                 worktree,
             } => Job::NewSession(dir, prompt, worktree),
+            Effect::Reopen(sessions) => Job::Reopen(sessions),
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
             Effect::FindRepos { root } => Job::FindRepos(root),
             Effect::OpenWorkspace {
@@ -692,6 +693,7 @@ enum Job {
     Edit(PathBuf, PathBuf, u32),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
+    Reopen(Vec<crate::persist::OpenSession>),
     ListDirs(String, PathBuf),
     FindRepos(PathBuf),
     /// A tmux session's name, the folders to start Claude in there, and
@@ -819,6 +821,20 @@ fn spawn_effect_worker(
                     let root = expand_home(&asked);
                     let repos = find_repos(&root);
                     Some(Msg::Repos { asked, root, repos })
+                }
+                // A folder that is gone (a worktree removed) is left out:
+                // its conversation is filed under that folder.
+                Job::Reopen(sessions) => {
+                    let failed: Vec<String> = sessions
+                        .iter()
+                        .filter(|s| {
+                            !s.dir.is_dir() || crate::agents::tmux::resume_claude_in(s).is_err()
+                        })
+                        .map(|s| s.window.clone())
+                        .collect();
+                    (!failed.is_empty()).then(|| {
+                        Msg::EffectFailed(format!("Could not reopen {}", failed.join(", ")))
+                    })
                 }
                 Job::OpenWorkspace(session, dirs, system) => {
                     let mut failed = Vec::new();

@@ -28,6 +28,19 @@ pub struct SavedState {
     pub drafts: Vec<Draft>,
     #[serde(deserialize_with = "readable_quizzes")]
     pub quizzes: Vec<QuizProgress>,
+    /// The Claude sessions open in tmux when aq last looked, to reopen
+    /// when aq starts and none are open, as after the machine restarts.
+    pub sessions: Vec<OpenSession>,
+}
+
+/// A Claude session in a tmux window, enough to start it again there with
+/// `claude --resume`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenSession {
+    pub tmux_session: String,
+    pub window: String,
+    pub dir: PathBuf,
+    pub session_id: String,
 }
 
 /// The saved quizzes that still read; one saved in an older form is
@@ -181,6 +194,7 @@ impl App {
         state.drafts.retain(|d| mode(&d.card) == Mode::Review);
         state.quizzes.retain(|q| mode(&q.card) == Mode::Quiz);
         self.rounds = state.rounds.clone();
+        self.open_sessions = state.sessions.clone();
         self.unclaimed = Unclaimed {
             drafts: state.drafts.clone(),
             quizzes: state.quizzes.clone(),
@@ -194,6 +208,7 @@ impl App {
             rounds: self.rounds.clone(),
             drafts: self.unclaimed.drafts.clone(),
             quizzes: self.unclaimed.quizzes.clone(),
+            sessions: self.open_sessions.clone(),
         };
         for card in self.queue.iter().filter(|c| !crate::tour::is_practice(c)) {
             match &card.kind {
@@ -358,6 +373,10 @@ mod tests {
              "answers":[{"given":{"Choice":0},"verdict":"Right"}],"fixes":[],"asking":0}]}"#;
         let state: SavedState = serde_json::from_str(text).unwrap();
         assert!(state.quizzes.is_empty());
+        assert!(
+            state.sessions.is_empty(),
+            "a file from before sessions were kept"
+        );
     }
 
     #[test]

@@ -1,8 +1,12 @@
 # New sessions and workspaces
 
+## Reopened after a restart
+
+aq keeps a list of the Claude sessions open in tmux. When it starts and finds none open, as after the machine restarts, it reopens each one with `claude --resume`, in its old tmux session (made again if it is gone) and under its old window name. A session whose folder is gone, such as a removed worktree, is left out. If you close every session while aq is running, there is nothing to reopen next time.
+
 ## A new session: N
 
-`N` starts a new Claude session in the project in front of you, in a tmux window of its own. What you type in the box is its first prompt.
+`N` starts a new Claude session in the project in front of you, in a tmux window of its own. What you type in the box is its first prompt. With no session open, it starts in the folder you started aq in.
 
 ![N starts a session in a worktree of its own, then Ctrl-O starts one in a folder that is made for it](media/new.svg)
 
