@@ -419,6 +419,13 @@ impl App {
             return;
         };
         let n = self.stashed.len();
+        // A stashed question goes once its session moves on, even with the
+        // stash open.
+        if n == 0 {
+            self.overlay = None;
+            return;
+        }
+        *cursor = (*cursor).min(n - 1);
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => *cursor = (*cursor + 1).min(n.saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
@@ -663,6 +670,20 @@ mod tests {
         busy[0].waiting = false;
         a.update(Msg::Agents(busy));
         assert!(a.stashed.is_empty());
+    }
+
+    #[test]
+    fn a_question_gone_while_the_stash_is_open_is_not_picked() {
+        let mut a = app();
+        said(&mut a, "Tabs or spaces?");
+        a.update(key('x'));
+        a.update(key('S'));
+        let mut busy = a.agents.clone();
+        busy[0].waiting = false;
+        a.update(Msg::Agents(busy));
+        a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
+        assert_eq!(a.overlay, None);
+        assert!(a.queue.is_empty());
     }
 
     #[test]

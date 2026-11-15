@@ -50,6 +50,10 @@ pub fn scroll_top(cursor_row: usize, total: usize, height: usize) -> usize {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mut Highlighter) {
+    // Squashed to no rows, the area sits below the screen.
+    if area.height == 0 {
+        return;
+    }
     let buf = frame.buffer_mut();
     buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
     let dim = Style::new().fg(t.dim);

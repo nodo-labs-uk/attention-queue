@@ -263,9 +263,12 @@ fn apply_sgr(seq: &str, dim: &mut bool, coloured: &mut bool) {
             22 => *dim = false,
             30..=37 | 90..=97 => *coloured = true,
             39 => *coloured = false,
-            38 => {
-                *coloured = true;
-                // 38;5;n or 38;2;r;g;b
+            // 38;5;n or 38;2;r;g;b; 48 (background) and 58 (underline)
+            // take the same numbers after them.
+            n @ (38 | 48 | 58) => {
+                if n == 38 {
+                    *coloured = true;
+                }
                 i += if params.get(i + 1) == Some(&"2") {
                     4
                 } else {
@@ -473,6 +476,14 @@ mod input_box_tests {
             )),
             InputBox::Empty
         );
+        // A background colour's numbers are not read as dim (2) or a colour.
+        for bg in ["48;5;2", "48;2;2;30;30", "58;5;2"] {
+            assert_eq!(
+                read_input_box(&screen(&format!("\x1b[39m\x1b[{bg}m❯\u{a0}my draft"))),
+                InputBox::Holding("my draft".into()),
+                "{bg}"
+            );
+        }
     }
 
     #[test]

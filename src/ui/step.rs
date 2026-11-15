@@ -154,6 +154,9 @@ fn render_file(
     t: &Theme,
     hl: &mut Highlighter,
 ) {
+    if area.height == 0 {
+        return;
+    }
     buf.set_style(area, Style::new().bg(t.bg).fg(t.fg));
     let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     buf.set_style(head, Style::new().bg(t.panel));

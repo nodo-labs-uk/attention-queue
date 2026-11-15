@@ -44,7 +44,7 @@ An optional `syntax` names one of the code highlighting themes bundled with aq; 
 
 ## State: `~/.local/state/aq/state.json`
 
-Review rounds, unsent comments and quiz progress, so a restart loses nothing. `XDG_STATE_HOME` moves the folder.
+Review rounds, unsent comments and quiz progress, so a restart loses nothing. `XDG_STATE_HOME` moves the folder. If aq cannot read the file when it starts, it renames it to `state.json.bad` and starts empty, so nothing saved is written over.
 
 ## Socket
 

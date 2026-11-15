@@ -42,8 +42,10 @@ pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
     let len = file.metadata()?.len();
     let start = len.saturating_sub(CONVERSATION_TAIL);
     file.seek(SeekFrom::Start(start))?;
-    let mut text = String::new();
-    BufReader::new(file).read_to_string(&mut text)?;
+    let mut bytes = Vec::new();
+    BufReader::new(file).read_to_end(&mut bytes)?;
+    // The cut may split a character; it is on the first line, left out below.
+    let text = String::from_utf8_lossy(&bytes);
     // Cut mid-line: the first line is only a part.
     let lines = text.lines().skip(usize::from(start > 0));
     let mut out = Vec::new();
@@ -349,6 +351,18 @@ mod tests {
         // A line still being written is left for next time.
         std::fs::write(&path, format!("{text}{{\"type\":\"user\"")).unwrap();
         assert_eq!(last_prompt_in(&path, tail, len + 14), Some((None, len)));
+    }
+
+    #[test]
+    fn a_long_conversation_cut_inside_a_character_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let last = r#"{"type":"user","message":{"content":"go on"}}"#;
+        // The 2 MiB cut falls on the second byte of a "·".
+        let filler = "·".repeat(CONVERSATION_TAIL as usize / 2);
+        let text = format!("x{filler}\n{last}");
+        std::fs::write(&path, &text).unwrap();
+        assert_eq!(conversation(&path).unwrap(), [Said::User("go on".into())]);
     }
 
     #[test]
