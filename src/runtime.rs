@@ -461,6 +461,7 @@ fn apply(
                 prompt,
                 worktree,
             } => Job::NewSession(dir, prompt, worktree),
+            Effect::ResumeSession(session) => Job::Resume(session),
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
             Effect::Copy(sel) => {
                 let text = workers
@@ -619,6 +620,7 @@ enum Job {
     Edit(PathBuf, PathBuf, u32),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
+    Resume(crate::persist::OpenSession),
     ListDirs(String, PathBuf),
     LastMessage(AgentId, String, Checkout),
     Quiz {
@@ -733,6 +735,13 @@ fn spawn_effect_worker(
                         })
                         .err()
                         .map(|e| Msg::EffectFailed(format!("Could not start Claude: {e:#}")))
+                }
+                Job::Resume(session) => {
+                    crate::agents::tmux::resume_claude(&session.dir, &session.session_id)
+                        .err()
+                        .map(|e| {
+                            Msg::EffectFailed(format!("Could not reopen {}: {e:#}", session.name))
+                        })
                 }
                 Job::ListDirs(typed, base) => Some(Msg::Dirs(list_dirs(typed, &base))),
                 // Only when the transcript ends on words of Claude's: after a

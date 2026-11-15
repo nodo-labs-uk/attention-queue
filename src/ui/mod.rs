@@ -183,6 +183,31 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 t,
             );
         }
+        Some(Overlay::Reopen) => {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let mut lines = vec![
+                "Open when aq last ran, and not running now:".into(),
+                String::new(),
+            ];
+            lines.extend(app.lost.iter().map(|s| {
+                let dir = home
+                    .as_deref()
+                    .and_then(|h| s.dir.strip_prefix(h).ok())
+                    .map_or_else(
+                        || s.dir.display().to_string(),
+                        |rest| format!("~/{}", rest.display()),
+                    );
+                format!("  {:<18} {dir}", s.name)
+            }));
+            confirm::render(
+                frame,
+                body,
+                "Reopen sessions",
+                &lines,
+                &[("y", "reopen all"), ("n", "forget them")],
+                t,
+            );
+        }
         Some(Overlay::Model(id)) => {
             let name = app
                 .agent(id)

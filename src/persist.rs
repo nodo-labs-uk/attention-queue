@@ -1,5 +1,6 @@
 //! Saved state, kept across restarts in `state.json` in the state dir: each
-//! checkout's last review round, draft review comments and quiz progress.
+//! checkout's last review round, draft review comments, quiz progress and
+//! the Claude sessions that were open.
 //! Cards are not saved. A saved draft goes back on the review card of the
 //! same checkout and round start, a saved quiz on the quiz card of the same
 //! checkout, from tree and to tree.
@@ -28,6 +29,19 @@ pub struct SavedState {
     pub drafts: Vec<Draft>,
     #[serde(deserialize_with = "readable_quizzes")]
     pub quizzes: Vec<QuizProgress>,
+    /// The sessions open at the last look, and those that ended without
+    /// being closed and are not reopened or forgotten yet.
+    pub sessions: Vec<OpenSession>,
+}
+
+/// A Claude session that was open: enough for `claude --resume` to start
+/// it again in its folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenSession {
+    pub dir: PathBuf,
+    pub session_id: String,
+    /// Its tmux window's name, to tell the user which one it was.
+    pub name: String,
 }
 
 /// The saved quizzes that still read; one saved in an older form is
@@ -181,6 +195,7 @@ impl App {
         state.drafts.retain(|d| mode(&d.card) == Mode::Review);
         state.quizzes.retain(|q| mode(&q.card) == Mode::Quiz);
         self.rounds = state.rounds.clone();
+        self.sessions = state.sessions.clone();
         self.unclaimed = Unclaimed {
             drafts: state.drafts.clone(),
             quizzes: state.quizzes.clone(),
@@ -194,6 +209,7 @@ impl App {
             rounds: self.rounds.clone(),
             drafts: self.unclaimed.drafts.clone(),
             quizzes: self.unclaimed.quizzes.clone(),
+            sessions: self.open_sessions(),
         };
         for card in self.queue.iter().filter(|c| !crate::tour::is_practice(c)) {
             match &card.kind {

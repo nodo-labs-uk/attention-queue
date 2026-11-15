@@ -275,6 +275,9 @@ pub enum Effect {
         /// In a git worktree of its own, made by `claude --worktree`.
         worktree: bool,
     },
+    /// Start `claude --resume` on a session in a new tmux window in its
+    /// folder.
+    ResumeSession(crate::persist::OpenSession),
     /// List the folders matching `typed`, a path as `new_session::resolve`
     /// reads it against `base`, for the new session's folder box.
     ListDirs {
@@ -329,6 +332,9 @@ pub enum Overlay {
     NewSession(NewSessionDraft),
     /// `m` on the empty screen: choosing a model for an agent.
     Model(AgentId),
+    /// At start: asking whether to reopen the sessions that ended without
+    /// being closed.
+    Reopen,
     /// Picking a session's permission mode.
     PermissionMode(AgentId),
 }
@@ -413,6 +419,13 @@ pub struct App {
     pub conversation: Option<(String, Result<Vec<Said>, String>)>,
     /// A `ReadConversation` is on its way.
     pub(crate) reading_conversation: bool,
+    /// The Claude sessions open at the last look; until the first, those
+    /// saved by the last run.
+    pub(crate) sessions: Vec<crate::persist::OpenSession>,
+    /// Sessions that ended without being closed, to offer to reopen.
+    pub(crate) lost: Vec<crate::persist::OpenSession>,
+    /// A list of agents has come in since aq started.
+    pub(crate) sessions_listed: bool,
 }
 
 /// A pane's screen as last read, or why it could not be.
@@ -510,6 +523,9 @@ impl App {
             practice_agents: Vec::new(),
             conversation: None,
             reading_conversation: false,
+            sessions: Vec::new(),
+            lost: Vec::new(),
+            sessions_listed: false,
         }
     }
 
@@ -679,9 +695,11 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 self.overlay = None;
-                let name = self
-                    .agent(&agent)
-                    .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+                let (name, session_id) = self.agent(&agent).map_or_else(
+                    || (agent.pane.clone(), String::new()),
+                    |a| (a.window_name.clone(), a.session_id.clone()),
+                );
+                self.forget_session(&session_id);
                 self.set_status(format!("Closed {name}"));
                 vec![Effect::ClosePane { pane: agent.pane }]
             }
@@ -1300,6 +1318,7 @@ impl App {
             Some(Overlay::Prompt(_)) => return self.on_prompt_key(key),
             Some(Overlay::NewSession(_)) => return self.on_new_session_key(key),
             Some(Overlay::CloseAgent(_)) => return self.on_close_key(key),
+            Some(Overlay::Reopen) => return self.on_reopen_key(key),
             Some(Overlay::Model(_)) => return self.on_model_key(key),
             Some(Overlay::PermissionMode(_)) => return self.on_permission_mode_key(key),
             Some(Overlay::Ask(_)) => return self.on_ask_key(key),
@@ -1507,6 +1526,7 @@ impl App {
     }
 
     fn on_agents(&mut self, mut agents: Vec<Agent>) -> Vec<Effect> {
+        self.track_sessions(&agents);
         // A menu or dialog can hide the footer for a moment: the mode last
         // seen still holds.
         for a in agents.iter_mut().filter(|a| a.permission_mode.is_none()) {

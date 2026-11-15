@@ -143,7 +143,7 @@ Run `aq` in a tmux window.
 ## Files
 
 - `~/.config/aq/config.toml`: the theme, each checkout's mode, whether the file list is hidden, and whether the tour has been seen (`t` cycles themes).
-- `~/.local/state/aq/state.json`: review rounds, unsent comments and quiz progress, so a restart loses nothing.
+- `~/.local/state/aq/state.json`: review rounds, unsent comments, quiz progress and the Claude sessions that were open, so a restart loses nothing. If sessions from the last run are not running when aq starts (after a crash or a reboot), aq lists them and `y` reopens them all with `claude --resume`, each in its own tmux window.
 - Socket: `$XDG_RUNTIME_DIR/aq.sock`, or `/tmp/aq-$UID/aq.sock`. `AQ_SOCKET` overrides it.
 
 ## Development

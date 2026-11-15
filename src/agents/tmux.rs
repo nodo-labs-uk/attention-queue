@@ -406,6 +406,28 @@ pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<()
     Ok(())
 }
 
+/// `claude --resume <session_id>` in a new tmux window in `dir`, left in
+/// the background. The id comes from a saved file, so only an id's
+/// characters are let through to the shell.
+pub fn resume_claude(dir: &Path, session_id: &str) -> Result<()> {
+    anyhow::ensure!(
+        !session_id.is_empty()
+            && session_id
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || c == '-'),
+        "{session_id:?} is not a session id"
+    );
+    anyhow::ensure!(dir.is_dir(), "{} is gone", dir.display());
+    let mut cmd = Command::new("tmux");
+    cmd.args(["new-window", "-d", "-c"])
+        .arg(format_literal(&dir.to_string_lossy()))
+        .arg(format!("claude --resume {session_id}"));
+    let (status, _, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux new-window")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
 /// The flag comes last: it takes an optional name, and would take a prompt
 /// after it as one.
 fn claude_command(prompt: Option<&str>, worktree: bool) -> String {
@@ -567,6 +589,17 @@ pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};
     use super::*;
+
+    #[test]
+    fn crafted_session_id_is_refused_before_tmux_runs() {
+        for id in ["", "abc; rm -rf ~", "$(touch x)", "a b"] {
+            let err = resume_claude(Path::new("/"), id).unwrap_err();
+            assert!(
+                err.to_string().contains("is not a session id"),
+                "{id}: {err}"
+            );
+        }
+    }
 
     #[test]
     fn a_new_session_command_ends_with_the_worktree_flag() {
