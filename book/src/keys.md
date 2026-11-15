@@ -110,6 +110,15 @@ This is the same list as aq's help page (`F1`).
 | `x` | let the menu show in the session's window |
 | `g` | the same, and go there |
 
+## Menu card
+
+A menu Claude Code draws itself, such as whether to trust a folder.
+
+| Key | What it does |
+|---|---|
+| `1`-`9` | pick that option |
+| `g` | go to the session's window |
+
 ## Message card
 
 | Key | What it does |
