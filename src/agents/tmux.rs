@@ -184,9 +184,42 @@ fn join(
             permission_mode: None,
             suggestion: None,
             last_prompt: None,
+            menu: None,
         });
     }
     agents
+}
+
+/// Panes running `claude` that no listed session is in.
+fn unlisted_claude<'a>(panes: &'a [Pane], agents: &[Agent]) -> Vec<&'a Pane> {
+    panes
+        .iter()
+        .filter(|p| p.command == "claude")
+        .filter(|p| !agents.iter().any(|a| a.id.pane == p.pane_id))
+        .collect()
+}
+
+/// A session Claude Code does not list yet, showing `menu` in `pane`.
+fn asking_agent(pane: &Pane, menu: super::ScreenMenu) -> Agent {
+    Agent {
+        id: AgentId {
+            pane: pane.pane_id.clone(),
+            claude_pid: pane.pane_pid,
+        },
+        session: pane.session.clone(),
+        window_index: pane.window_index,
+        window_name: pane.window_name.clone(),
+        cwd: pane.cwd.clone(),
+        checkout: checkout_of(&pane.cwd),
+        session_id: String::new(),
+        status: super::AgentStatus::Unknown,
+        waiting: false,
+        input: super::InputBox::Unseen,
+        permission_mode: None,
+        suggestion: None,
+        last_prompt: None,
+        menu: Some(menu),
+    }
 }
 
 /// How often, and (times `SENT_CHECKS`) how long, the input box is read
@@ -259,10 +292,21 @@ impl AgentConn for TmuxConn {
             .as_deref()
             .map(|s| vec!["-L", s])
             .unwrap_or_default();
+        // Claude Code lists a session only once its folder is trusted, so
+        // one still asking is found from its pane, and listed while it asks.
+        for pane in unlisted_claude(&panes, &agents) {
+            if let Some(menu) = capture_pane(&pane.pane_id, &server)
+                .ok()
+                .and_then(|s| super::read_menu(&s))
+            {
+                agents.push(asking_agent(pane, menu));
+            }
+        }
         // Every session's footer, for the permission mode on its tab.
         for a in &mut agents {
             if let Ok(screen) = capture_pane(&a.id.pane, &server) {
                 a.permission_mode = permission_mode_on(&screen);
+                a.menu = super::read_menu(&screen);
             }
         }
         // Only an agent at its prompt can take a message, so only its screen
@@ -793,6 +837,29 @@ fn press(pane: &str, key: &str, server: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Picks option `choice` of `menu` in `pane`: moves the cursor there and
+/// presses Enter. Nothing is pressed unless the screen still shows the
+/// same menu, so a key never lands in something else.
+pub fn pick_menu(pane: &str, menu: &super::ScreenMenu, choice: usize) -> Result<()> {
+    let now = super::read_menu(&capture_pane(pane, &[])?);
+    let Some(now) = now.filter(|m| m.question == menu.question && m.options == menu.options) else {
+        anyhow::bail!("the menu is no longer on its screen");
+    };
+    anyhow::ensure!(choice < now.options.len(), "no option {}", choice + 1);
+    let key = if choice > now.cursor { "Down" } else { "Up" };
+    let moves = choice.abs_diff(now.cursor);
+    let mut cmd = Command::new("tmux");
+    cmd.args(["send-keys", "-t", pane]);
+    for _ in 0..moves {
+        cmd.arg(key);
+    }
+    cmd.arg("Enter");
+    let (status, _, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux send-keys")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
 /// The heading of the menu Claude Code shows when `/model` is sent to a
 /// session with history: the new model has to re-read it.
 const SWITCH_MODEL_MENU: &str = "Switch model?";
@@ -909,6 +976,27 @@ pub fn capture_pane(pane: &str, server: &[&str]) -> Result<String> {
 mod tests {
     use super::super::{AgentStatus, parse_agents_json};
     use super::*;
+
+    #[test]
+    fn claude_panes_no_session_is_in_are_found() {
+        let panes = parse_list_panes(
+            "main|1|api|%1|10|claude|/w/api|\nmain|2|new|%2|20|claude|/w/new|\nmain|3|sh|%3|30|zsh|/w|\n",
+        );
+        let menu = crate::agents::ScreenMenu {
+            question: vec!["Accessing workspace:".into()],
+            options: vec!["No, exit".into(), "Yes, I trust this folder".into()],
+            cursor: 0,
+        };
+        let listed = vec![asking_agent(&panes[0], menu.clone())];
+        let found: Vec<&str> = unlisted_claude(&panes, &listed)
+            .iter()
+            .map(|p| p.pane_id.as_str())
+            .collect();
+        assert_eq!(found, ["%2"]);
+        let agent = asking_agent(&panes[1], menu);
+        assert_eq!(agent.id.claude_pid, 20);
+        assert!(agent.session_id.is_empty() && !agent.waiting);
+    }
 
     #[test]
     fn a_new_session_is_seen_asking_for_trust_or_past_it() {

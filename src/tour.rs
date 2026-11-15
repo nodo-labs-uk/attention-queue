@@ -435,6 +435,7 @@ fn practice_agents() -> Vec<Agent> {
                 permission_mode: None,
                 suggestion: None,
                 last_prompt: None,
+                menu: None,
             }
         })
         .collect()

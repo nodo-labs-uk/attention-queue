@@ -8,6 +8,7 @@ pub mod fold;
 pub mod help;
 pub mod input;
 mod keys;
+mod menu;
 mod new_session;
 mod permission;
 mod question;
@@ -308,6 +309,7 @@ pub fn kind_label(kind: &CardKind) -> &'static str {
         CardKind::Permission(_) => "permission",
         CardKind::Question(_) | CardKind::Choice(_) => "question",
         CardKind::Tell(_) => "message",
+        CardKind::Menu(_) => "menu",
         CardKind::Step(_) => "step",
         CardKind::ShellChange(_) => "shell change",
         CardKind::Review(_) => "review",
@@ -368,6 +370,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
         CardKind::Question(qc) => question::render(frame, area, app, card, qc),
         CardKind::Tell(tc) => question::render_tell(frame, area, app, card, tc),
+        CardKind::Menu(mc) => menu::render(frame, area, app, card, mc),
         CardKind::Choice(cc) => choice::render(frame, area, app, card, cc),
         CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }

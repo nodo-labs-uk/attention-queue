@@ -9,6 +9,7 @@ pub mod highlight;
 pub mod hook;
 pub mod ipc;
 pub mod llm;
+pub mod menu;
 pub mod model;
 pub mod new_session;
 pub mod permission;

@@ -498,6 +498,7 @@ fn apply(
             Effect::ClosePane { pane } => Job::Close(pane),
             Effect::TrustFolder { pane } => Job::Trust(pane),
             Effect::Interrupt { pane } => Job::Interrupt(pane),
+            Effect::PickMenu { pane, menu, choice } => Job::PickMenu(pane, menu, choice),
             Effect::Redraw { pane } => Job::Redraw(pane),
             Effect::SwitchModel { agent, model } => Job::SwitchModel(agent, model),
             Effect::SetPermissionMode { agent, mode } => Job::SetPermissionMode(agent, mode),
@@ -679,6 +680,7 @@ enum Job {
     Close(String),
     Trust(String),
     Interrupt(String),
+    PickMenu(String, crate::agents::ScreenMenu, usize),
     Redraw(String),
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
@@ -970,6 +972,14 @@ fn spawn_effect_worker(
                 Job::Interrupt(pane) => crate::agents::tmux::press_escape(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not stop {pane}: {e:#}"))),
+                Job::PickMenu(pane, menu, choice) => {
+                    crate::agents::tmux::pick_menu(&pane, &menu, choice)
+                        .err()
+                        .map(|e| Msg::MenuPickFailed {
+                            pane,
+                            error: format!("{e:#}"),
+                        })
+                }
                 Job::Redraw(pane) => crate::agents::tmux::press_redraw(&pane, &[])
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not redraw {pane}: {e:#}"))),

@@ -290,6 +290,11 @@ pub fn context_for(card: &Card) -> String {
             "The agent ended its turn by asking the developer this:\n\n{}",
             cap_text(&qc.text, CONTEXT_CAP)
         ),
+        CardKind::Menu(mc) => format!(
+            "Claude Code shows this menu in the session and waits for a pick:\n\n{}\n\n{}",
+            mc.menu.question.join("\n"),
+            mc.menu.options.join("\n")
+        ),
         CardKind::Tell(tc) => format!(
             "The {} session asks to send this message to this session, for the developer to approve:\n\n{}",
             tc.from_name,
