@@ -433,7 +433,13 @@ pub fn kill_pane(pane: &str, server: &[&str]) -> Result<()> {
 /// `typed` is copied (to the tmux buffer, and so the clipboard), and with
 /// zsh it is also typed in at the prompt, not run. `zsh_dir` holds the
 /// startup files that do the typing.
-pub fn popup_shell(dir: &Path, title: &str, typed: Option<&str>, zsh_dir: &Path) -> Result<()> {
+pub fn popup_shell(
+    dir: &Path,
+    title: &str,
+    typed: Option<&str>,
+    zsh_dir: &Path,
+    look: &PopupLook,
+) -> Result<()> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
     let mut title = title.to_string();
     let mut command = None;
@@ -455,12 +461,12 @@ pub fn popup_shell(dir: &Path, title: &str, typed: Option<&str>, zsh_dir: &Path)
             title.push_str("· Claude's last ! command is copied ");
         }
     }
-    popup(dir, &title, command.as_deref())
+    popup(dir, &title, command.as_deref(), look)
 }
 
 /// `path` (under `dir`) opened at `line` in $VISUAL or $EDITOR, else vi,
 /// in a popup over aq that closes with the editor.
-pub fn popup_editor(dir: &Path, path: &Path, line: u32) -> Result<()> {
+pub fn popup_editor(dir: &Path, path: &Path, line: u32, look: &PopupLook) -> Result<()> {
     let editor = ["VISUAL", "EDITOR"]
         .iter()
         .filter_map(|v| std::env::var(v).ok())
@@ -481,7 +487,7 @@ pub fn popup_editor(dir: &Path, path: &Path, line: u32) -> Result<()> {
         " {} · quit the editor to go back ",
         crate::visible::visible_code(&shown)
     );
-    popup(dir, &title, Some(&command))
+    popup(dir, &title, Some(&command), look)
 }
 
 /// The key table the `/btw` popup's session uses: Ctrl-Q in it closes the
@@ -498,6 +504,7 @@ pub fn popup_btw(
     pane: &str,
     title: &str,
     type_btw: bool,
+    look: &PopupLook,
 ) -> Result<()> {
     let tmux = |args: &[&str]| -> Result<()> {
         let mut cmd = Command::new("tmux");
@@ -541,23 +548,9 @@ pub fn popup_btw(
             shell_quote(socket),
             shell_quote(&exact)
         );
-        // As wide as the box ? opens, centred over aq.
-        let width = std::env::var("TMUX_PANE")
-            .ok()
-            .and_then(|p| display(&p, "#{window_width}"))
-            .and_then(|w| w.parse::<u16>().ok())
-            .map_or(100, |w| (w * 4 / 5).min(100).max(w.min(20)));
         let mut cmd = Command::new("tmux");
-        cmd.args([
-            "display-popup",
-            "-E",
-            "-w",
-            &width.to_string(),
-            "-h",
-            "60%",
-            "-T",
-            &format_literal(title),
-        ]);
+        cmd.args(["display-popup", "-E", "-T", &format_literal(title)])
+            .args(look.args(aq_origin()));
         if let Ok(pane) = std::env::var("TMUX_PANE") {
             cmd.args(["-t", &pane]);
         }
@@ -581,24 +574,68 @@ pub fn popup_btw(
     shown
 }
 
+/// Where a popup goes over aq's pane, and its colours: those of the box
+/// `W` and `?` open, so every box over aq looks the same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PopupLook {
+    /// Column and row in aq's pane, width and height, border included.
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// `#rrggbb`, or tmux's `default`.
+    pub border: String,
+    pub bg: String,
+    pub fg: String,
+}
+
+impl PopupLook {
+    /// `display-popup` flags for this look, over aq's pane whose top-left
+    /// corner is at `origin` on the screen. tmux takes `-y` as the row
+    /// below the popup.
+    fn args(&self, origin: (u16, u16)) -> Vec<String> {
+        let (left, top) = origin;
+        vec![
+            "-b".into(),
+            "rounded".into(),
+            "-S".into(),
+            format!("fg={},bg={}", self.border, self.bg),
+            "-s".into(),
+            format!("bg={},fg={}", self.bg, self.fg),
+            "-x".into(),
+            (left + self.x).to_string(),
+            "-y".into(),
+            (top + self.y + self.height).to_string(),
+            "-w".into(),
+            self.width.to_string(),
+            "-h".into(),
+            self.height.to_string(),
+        ]
+    }
+}
+
+/// Where aq's own pane starts on the screen.
+fn aq_origin() -> (u16, u16) {
+    std::env::var("TMUX_PANE")
+        .ok()
+        .and_then(|p| display(&p, "#{pane_left} #{pane_top}"))
+        .and_then(|s| {
+            let (x, y) = s.split_once(' ')?;
+            Some((x.parse().ok()?, y.parse().ok()?))
+        })
+        .unwrap_or((0, 0))
+}
+
 /// A tmux popup over aq in `dir`, running `command` or else the shell.
-fn popup(dir: &Path, title: &str, command: Option<&str>) -> Result<()> {
+fn popup(dir: &Path, title: &str, command: Option<&str>, look: &PopupLook) -> Result<()> {
     let title = format_literal(title);
     let mut cmd = Command::new("tmux");
-    cmd.args([
-        "display-popup",
-        "-E",
-        "-w",
-        "90%",
-        "-h",
-        "85%",
-        "-T",
-        &title,
-        "-d",
-    ])
-    // tmux expands formats in the start directory too, and a folder name
-    // is not ours to trust.
-    .arg(format_literal(&dir.to_string_lossy()));
+    cmd.args(["display-popup", "-E", "-T", &title])
+        .args(look.args(aq_origin()))
+        .arg("-d")
+        // tmux expands formats in the start directory too, and a folder name
+        // is not ours to trust.
+        .arg(format_literal(&dir.to_string_lossy()));
     if let Ok(pane) = std::env::var("TMUX_PANE") {
         cmd.args(["-t", &pane]);
     }
@@ -996,6 +1033,38 @@ mod tests {
         let agent = asking_agent(&panes[1], menu);
         assert_eq!(agent.id.claude_pid, 20);
         assert!(agent.session_id.is_empty() && !agent.waiting);
+    }
+
+    #[test]
+    fn popup_flags_place_it_over_aqs_pane_with_tmux_counting_y_from_below() {
+        let look = PopupLook {
+            x: 10,
+            y: 2,
+            width: 80,
+            height: 20,
+            border: "#45475a".into(),
+            bg: "#181825".into(),
+            fg: "#cdd6f4".into(),
+        };
+        assert_eq!(
+            look.args((5, 1)),
+            [
+                "-b",
+                "rounded",
+                "-S",
+                "fg=#45475a,bg=#181825",
+                "-s",
+                "bg=#181825,fg=#cdd6f4",
+                "-x",
+                "15",
+                "-y",
+                "23",
+                "-w",
+                "80",
+                "-h",
+                "20"
+            ]
+        );
     }
 
     #[test]

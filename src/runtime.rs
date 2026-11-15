@@ -17,6 +17,7 @@ use tokio::sync::mpsc::{UnboundedSender, channel, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use crate::agents::tmux::PopupLook;
 use crate::agents::{self, AgentConn};
 use crate::app::{App, Effect, MouseKind, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
@@ -528,7 +529,7 @@ fn apply(
                 dir,
                 title,
                 session_id,
-            } => Job::Shell(dir, title, session_id),
+            } => Job::Shell(dir, title, session_id, crate::ui::popup_look(app)),
             Effect::Btw {
                 session,
                 window,
@@ -541,8 +542,11 @@ fn apply(
                 pane,
                 title,
                 type_btw,
+                look: crate::ui::popup_look(app),
             },
-            Effect::Edit { dir, path, line } => Job::Edit(dir, path, line),
+            Effect::Edit { dir, path, line } => {
+                Job::Edit(dir, path, line, crate::ui::popup_look(app))
+            }
             Effect::ComputeQuiz {
                 checkout,
                 agent,
@@ -684,15 +688,16 @@ enum Job {
     Redraw(String),
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
-    Shell(PathBuf, String, Option<String>),
+    Shell(PathBuf, String, Option<String>, PopupLook),
     Btw {
         session: String,
         window: u32,
         pane: String,
         title: String,
         type_btw: bool,
+        look: PopupLook,
     },
-    Edit(PathBuf, PathBuf, u32),
+    Edit(PathBuf, PathBuf, u32, PopupLook),
     Copy(String),
     NewSession(PathBuf, Option<String>, bool),
     Reopen(Vec<crate::persist::OpenSession>),
@@ -875,7 +880,7 @@ fn spawn_effect_worker(
                     .map(|e| Msg::EffectFailed(format!("Could not copy: {e:#}"))),
                 // The popup lasts as long as the shell, so it is waited on
                 // apart from the other jobs.
-                Job::Shell(dir, title, session_id) => {
+                Job::Shell(dir, title, session_id, look) => {
                     let tx = tx.clone();
                     let zsh_dir = paths.socket.with_file_name("aq-shell");
                     std::thread::spawn(move || {
@@ -888,6 +893,7 @@ fn spawn_effect_worker(
                             &title,
                             typed.as_deref(),
                             &zsh_dir,
+                            &look,
                         );
                         if let Err(e) = r {
                             let _ = tx
@@ -903,11 +909,12 @@ fn spawn_effect_worker(
                     pane,
                     title,
                     type_btw,
+                    look,
                 } => {
                     let tx = tx.clone();
                     std::thread::spawn(move || {
                         let r = crate::agents::tmux::popup_btw(
-                            &session, window, &pane, &title, type_btw,
+                            &session, window, &pane, &title, type_btw, &look,
                         );
                         if let Err(e) = r {
                             let _ =
@@ -916,10 +923,11 @@ fn spawn_effect_worker(
                     });
                     None
                 }
-                Job::Edit(dir, path, line) => {
+                Job::Edit(dir, path, line, look) => {
                     let tx = tx.clone();
                     std::thread::spawn(move || {
-                        if let Err(e) = crate::agents::tmux::popup_editor(&dir, &path, line) {
+                        if let Err(e) = crate::agents::tmux::popup_editor(&dir, &path, line, &look)
+                        {
                             let _ = tx.send(Msg::EffectFailed(format!(
                                 "Could not open an editor: {e:#}"
                             )));
