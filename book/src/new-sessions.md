@@ -2,7 +2,7 @@
 
 ## Reopened after a restart
 
-aq keeps a list of the Claude sessions open in tmux. When it starts and finds none open, as after the machine restarts, it reopens each one with `claude --resume`, in its old tmux session (made again if it is gone) and under its old window name. A session whose folder is gone, such as a removed worktree, is left out. If you close every session while aq is running, there is nothing to reopen next time.
+aq keeps a list of the Claude sessions open in tmux. When it starts and finds none open, as after the machine restarts, it reopens each one with `claude --resume`, in its old tmux session (made again if it is gone) and under its old window name. A session whose folder is gone, such as a removed worktree, is left out. If you close every session while aq is running, there is nothing to reopen next time. Sessions that all end at once, as at a shutdown, stay on the list for 10 seconds: if aq goes down with them, they are reopened next time.
 
 ## A new session: N
 
