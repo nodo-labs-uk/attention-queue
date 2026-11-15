@@ -463,6 +463,9 @@ pub struct App {
     pub(crate) agents_seen: bool,
     /// Sessions are being reopened: the list saved stays until one shows.
     pub(crate) reopening: bool,
+    /// When several sessions ended in one look, as at a shutdown: the
+    /// list saved stays as it was until `SHUTDOWN_GRACE` has passed.
+    pub(crate) sessions_held: Option<Instant>,
     /// The idle agent picked on the empty screen, to go to with Enter.
     pub(crate) picked: Option<AgentId>,
     /// The sessions you sent a message to, the latest first, for Tab.
@@ -547,6 +550,10 @@ pub const PERMISSION_KEYS: [(char, &str); 4] = [
     ('p', "plan"),
 ];
 
+/// How long the saved sessions are kept after several end at once, in case
+/// aq is about to be stopped too.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
 /// How long a status message stays on screen.
 pub const STATUS_FOR: Duration = Duration::from_secs(5);
 
@@ -591,6 +598,7 @@ impl App {
             open_sessions: Vec::new(),
             agents_seen: false,
             reopening: false,
+            sessions_held: None,
             picked: None,
             messaged: Vec::new(),
             stashed: Vec::new(),
@@ -1832,7 +1840,7 @@ impl App {
         open.sort_by(|a, b| (&a.session, a.window_index).cmp(&(&b.session, b.window_index)));
         let mut seen = BTreeSet::new();
         open.retain(|a| seen.insert(a.session_id.clone()));
-        self.open_sessions = open
+        let live: Vec<crate::persist::OpenSession> = open
             .into_iter()
             .map(|a| crate::persist::OpenSession {
                 tmux_session: a.session.clone(),
@@ -1841,6 +1849,32 @@ impl App {
                 session_id: a.session_id.clone(),
             })
             .collect();
+        let is_live =
+            |s: &crate::persist::OpenSession| live.iter().any(|l| l.session_id == s.session_id);
+        // At a shutdown every session is stopped at once, and some can end
+        // a moment before aq does. Several ending in one look keeps the old
+        // list for a while: if aq is still here after that, they were closed.
+        let ended = self.open_sessions.iter().filter(|s| !is_live(s)).count();
+        if ended >= 2 && self.sessions_held.is_none() {
+            self.sessions_held = self.now;
+        }
+        if let (Some(since), Some(now)) = (self.sessions_held, self.now) {
+            if now.duration_since(since) < SHUTDOWN_GRACE {
+                let new: Vec<_> = live
+                    .into_iter()
+                    .filter(|l| {
+                        !self
+                            .open_sessions
+                            .iter()
+                            .any(|k| k.session_id == l.session_id)
+                    })
+                    .collect();
+                self.open_sessions.extend(new);
+                return None;
+            }
+            self.sessions_held = None;
+        }
+        self.open_sessions = live;
         None
     }
 
@@ -3096,6 +3130,28 @@ pub(crate) mod tests {
         assert_eq!(b.saved_state().sessions, saved);
         b.update(Msg::Agents(vec![agent("%9", 1, "api", "/w/api", true)]));
         assert_eq!(b.saved_state().sessions.len(), 1);
+    }
+
+    #[test]
+    fn sessions_ending_together_are_kept_unless_aq_outlives_them() {
+        let t0 = Instant::now();
+        let mut a = app();
+        a.update(Msg::Tick(t0));
+        a.update(Msg::Agents(vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", true),
+            agent("%3", 3, "docs", "/w/docs", true),
+        ]));
+        // A shutdown stops two sessions a moment before aq.
+        a.update(Msg::Agents(vec![agent("%3", 3, "docs", "/w/docs", true)]));
+        assert_eq!(a.saved_state().sessions.len(), 3);
+        a.update(Msg::Tick(t0 + SHUTDOWN_GRACE / 2));
+        a.update(Msg::Agents(vec![]));
+        assert_eq!(a.saved_state().sessions.len(), 3, "still kept");
+        // aq is still running long after: they were closed.
+        a.update(Msg::Tick(t0 + SHUTDOWN_GRACE));
+        a.update(Msg::Agents(vec![]));
+        assert!(a.saved_state().sessions.is_empty());
     }
 
     #[test]
