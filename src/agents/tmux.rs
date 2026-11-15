@@ -571,6 +571,18 @@ pub fn popup_btw(
             let _ = tmux(&["set-option", "-wu", "-t", pane, "window-size"]);
         }
     }
+    // The popup showed the session's own pane, so /btw ran in the session.
+    // Its panel takes the place of the input box until closed, so it is
+    // closed here; a `/btw ` aq typed and nobody used is taken out again.
+    match capture_pane(pane, &[]).map(|s| btw_left(&s)) {
+        Ok(BtwLeft::Panel) => {
+            let _ = press(pane, "Escape", &[]);
+        }
+        Ok(BtwLeft::Typed) => {
+            let _ = tmux(&["send-keys", "-t", pane, "-N", "5", "BSpace"]);
+        }
+        _ => {}
+    }
     shown
 }
 
@@ -624,6 +636,34 @@ fn aq_origin() -> (u16, u16) {
             Some((x.parse().ok()?, y.parse().ok()?))
         })
         .unwrap_or((0, 0))
+}
+
+/// What a `/btw` popup left in its session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtwLeft {
+    /// Claude Code's /btw panel, open or still answering.
+    Panel,
+    /// The `/btw ` aq typed, still alone in the input box.
+    Typed,
+    Nothing,
+}
+
+fn btw_left(screen: &str) -> BtwLeft {
+    let rows: Vec<&str> = screen.lines().collect();
+    if let Some(p) = super::input_row(&rows) {
+        let typed = rows[p].trim_start_matches('❯').replace('\u{a0}', " ");
+        return match typed.trim() {
+            "/btw" | "/btw [question]" => BtwLeft::Typed,
+            _ => BtwLeft::Nothing,
+        };
+    }
+    let footer = rows.iter().rev().find(|r| !r.trim().is_empty());
+    let asked = rows.iter().any(|r| r.trim_start().starts_with("/btw "));
+    if asked && footer.is_some_and(|f| f.contains("Esc to close")) {
+        BtwLeft::Panel
+    } else {
+        BtwLeft::Nothing
+    }
 }
 
 /// A tmux popup over aq in `dir`, running `command` or else the shell.
@@ -1065,6 +1105,25 @@ mod tests {
                 "20"
             ]
         );
+    }
+
+    #[test]
+    fn what_a_btw_popup_left_behind_is_seen() {
+        let rule = "─".repeat(20);
+        let panel = "▔▔▔▔\n    /btw what is 2+2?\n      Four\n    ↑/↓ to scroll · c to copy · f to fork · Esc to close\n";
+        let answering = "▔▔▔▔\n    /btw explain ownership\n      ✽ Answering…\n    ⇧←/→ to browse · x to clear history · Esc to close\n\n";
+        let typed = format!("{rule}\n❯\u{a0}/btw [question]\n{rule}\n  -- INSERT --\n");
+        let own = format!("{rule}\n❯ /btw why is the build slow?\n{rule}\n");
+        let idle = format!("{rule}\n❯ \n{rule}\n  Esc to close is not a footer here\n");
+        assert_eq!(btw_left(panel), BtwLeft::Panel);
+        assert_eq!(btw_left(answering), BtwLeft::Panel);
+        assert_eq!(btw_left(&typed), BtwLeft::Typed);
+        assert_eq!(
+            btw_left(&own),
+            BtwLeft::Nothing,
+            "a question you typed stays"
+        );
+        assert_eq!(btw_left(&idle), BtwLeft::Nothing);
     }
 
     #[test]
