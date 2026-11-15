@@ -92,6 +92,11 @@ pub enum Msg {
         pane: String,
         dir: PathBuf,
     },
+    /// A pick on a menu card could not be pressed in `pane`.
+    MenuPickFailed {
+        pane: String,
+        error: String,
+    },
     /// The message a session ended its turn with, from its transcript.
     LastMessage {
         agent: AgentId,
@@ -293,6 +298,13 @@ pub enum Effect {
     SetPermissionMode {
         agent: AgentId,
         mode: &'static str,
+    },
+    /// Pick option `choice` of the menu on `pane`'s screen, if the screen
+    /// still shows `menu`.
+    PickMenu {
+        pane: String,
+        menu: crate::agents::ScreenMenu,
+        choice: usize,
     },
     /// Press Escape in a pane, stopping the agent's turn.
     Interrupt {
@@ -1289,6 +1301,10 @@ impl App {
                 self.on_trust_asked(pane, dir);
                 Vec::new()
             }
+            Msg::MenuPickFailed { pane, error } => {
+                self.on_menu_pick_failed(&pane, error);
+                Vec::new()
+            }
             Msg::LastMessage {
                 agent,
                 checkout,
@@ -1661,6 +1677,7 @@ impl App {
                 Some(CardKind::Permission(_)) => self.on_permission_key(key),
                 Some(CardKind::Question(_)) => self.on_question_key(key),
                 Some(CardKind::Tell(_)) => self.on_tell_key(key),
+                Some(CardKind::Menu(_)) => self.on_menu_key(key),
                 Some(CardKind::Choice(_)) => self.on_choice_key(key),
                 Some(CardKind::Quiz(_)) => self.on_quiz_key(key),
                 Some(CardKind::Review(_)) => self.on_review_key(key),
@@ -1855,6 +1872,7 @@ impl App {
                 .and_then(|p| p.permission_mode);
         }
         self.note_typed_in(&agents);
+        self.note_menus(&agents);
         let reopen = self.note_open_sessions(&agents);
         let mut started: Vec<Agent> = became_waiting(&self.agents, &agents)
             .into_iter()
@@ -2427,6 +2445,7 @@ pub(crate) mod tests {
             permission_mode: None,
             suggestion: None,
             last_prompt: None,
+            menu: None,
             input: InputBox::Unseen,
         }
     }

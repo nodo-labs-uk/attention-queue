@@ -126,9 +126,12 @@ impl Queue {
             (e.skipped, e.card.created, e.card.id)
         });
         let card = |i: usize| &self.entries[i].card;
-        let (mut out, mut rest): (Vec<usize>, Vec<usize>) = by_age
-            .into_iter()
-            .partition(|&i| matches!(card(i).kind, CardKind::Permission(_) | CardKind::Choice(_)));
+        let (mut out, mut rest): (Vec<usize>, Vec<usize>) = by_age.into_iter().partition(|&i| {
+            matches!(
+                card(i).kind,
+                CardKind::Permission(_) | CardKind::Choice(_) | CardKind::Menu(_)
+            )
+        });
         while let Some(&first) = rest
             .iter()
             .find(|&&i| matches!(card(i).kind, CardKind::Step(_) | CardKind::ShellChange(_)))

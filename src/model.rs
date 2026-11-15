@@ -55,6 +55,8 @@ pub enum CardKind {
     Choice(ChoiceCard),
     /// `aq tell`: a session's message to another, for you to approve.
     Tell(TellCard),
+    /// A menu of Claude Code's own on a session's screen.
+    Menu(crate::menu::MenuCard),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

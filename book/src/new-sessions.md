@@ -30,6 +30,19 @@ The first time Claude Code starts in a folder, it asks whether you trust it. aq 
 
 When several sessions ask at once, they are asked about in turn.
 
+A session aq did not start (one reopened after a restart, or one you started yourself) asks the same question on a menu card instead, as below.
+
+## Claude Code's own menus
+
+When Claude Code draws a menu in a session and waits, such as whether to trust a folder or whether to use a new MCP server, aq shows it as a menu card at the front of the queue. The card shows the question and the options, numbered:
+
+| Key | What it does |
+|---|---|
+| `1`-`9` | pick that option |
+| `g` | go to the session's window |
+
+Before aq presses anything in the pane, it checks that the same menu is still on its screen. The card goes once the menu leaves the screen, whether you answered it in aq or in the window.
+
 ## Workspaces: O
 
 A workspace is a set of git repos in one folder, for work that spans them. `O` opens one:

@@ -40,6 +40,91 @@ pub struct Agent {
     pub suggestion: Option<String>,
     /// When it was last sent a prompt, from its transcript.
     pub last_prompt: Option<String>,
+    /// A menu of Claude Code's own on its screen, waiting for a pick.
+    pub menu: Option<ScreenMenu>,
+}
+
+/// A menu Claude Code draws in its pane and waits on, such as whether to
+/// trust a folder. It is answered by moving the cursor and pressing Enter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenMenu {
+    /// The lines above the options, saying what is asked.
+    pub question: Vec<String>,
+    /// The options as drawn, numbers and all.
+    pub options: Vec<String>,
+    /// The option the cursor is on.
+    pub cursor: usize,
+}
+
+/// How many lines above its options a menu's question may take.
+const MENU_QUESTION_ROWS: usize = 8;
+
+/// The menu on a plain screen, if one is waiting: a `❯` line that is not
+/// the input box, on a screen with no input box (a menu takes its place),
+/// with at least one more option lined up with it.
+pub fn read_menu(screen: &str) -> Option<ScreenMenu> {
+    let rows: Vec<&str> = screen.lines().map(unboxed).collect();
+    if input_row(&rows).is_some() {
+        return None;
+    }
+    let p = rows.iter().rposition(|r| r.trim_start().starts_with('❯'))?;
+    let indent = |r: &str| r.chars().take_while(|c| *c == ' ').count();
+    // The option text starts two columns after the cursor mark.
+    let col = indent(rows[p]) + 2;
+    let is_option = |r: &str| !r.trim().is_empty() && indent(r) == col;
+    let is_detail = |r: &str| !r.trim().is_empty() && indent(r) > col;
+    let mut first = p;
+    while first > 0 && (is_option(rows[first - 1]) || is_detail(rows[first - 1])) {
+        first -= 1;
+    }
+    let mut last = p;
+    while last + 1 < rows.len() && (is_option(rows[last + 1]) || is_detail(rows[last + 1])) {
+        last += 1;
+    }
+    let mut options = Vec::new();
+    let mut cursor = 0;
+    for (i, row) in rows.iter().enumerate().take(last + 1).skip(first) {
+        if i == p {
+            cursor = options.len();
+            options.push(row.trim_start().trim_start_matches('❯').trim().to_string());
+        } else if is_option(row) {
+            options.push(row.trim().to_string());
+        }
+    }
+    if options.len() < 2 {
+        return None;
+    }
+    let mut question: Vec<String> = rows[..first]
+        .iter()
+        .rev()
+        .take_while(|r| !is_rule(r) && !is_box_edge(r))
+        .map(|r| r.trim())
+        .filter(|r| !r.is_empty())
+        .take(MENU_QUESTION_ROWS)
+        .map(str::to_string)
+        .collect();
+    question.reverse();
+    Some(ScreenMenu {
+        question,
+        options,
+        cursor,
+    })
+}
+
+/// The top or bottom edge of a box drawn round a dialog.
+fn is_box_edge(row: &str) -> bool {
+    let r = row.trim();
+    r.starts_with(['╭', '╰']) && r.chars().all(|c| "─╭╮╰╯".contains(c))
+}
+
+/// `row` without the side borders of a box drawn round a dialog.
+fn unboxed(row: &str) -> &str {
+    let row = row.trim_end();
+    let row = row.strip_suffix('│').unwrap_or(row).trim_end();
+    match row.trim_start().strip_prefix('│') {
+        Some(inside) => inside.strip_prefix(' ').unwrap_or(inside),
+        None => row,
+    }
 }
 
 /// Claude Code's input box as last read from the agent's screen.
@@ -226,6 +311,66 @@ pub fn checkout_of(dir: &Path) -> Option<Checkout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TRUST: &str = "\
+────────────────────────────────────────
+ Accessing workspace:
+
+ /home/saman/devel/autobiografia
+
+ Quick safety check: Is this a project you created or one you trust?
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+";
+
+    #[test]
+    fn the_trust_menu_is_read_with_its_question_and_cursor() {
+        let menu = read_menu(TRUST).unwrap();
+        assert_eq!(menu.options, ["No, exit", "Yes, I trust this folder"]);
+        assert_eq!(menu.cursor, 0);
+        assert_eq!(menu.question[0], "Accessing workspace:");
+        assert_eq!(menu.question[1], "/home/saman/devel/autobiografia");
+        assert_eq!(menu.question.last().unwrap(), "Security guide");
+    }
+
+    #[test]
+    fn a_boxed_numbered_menu_skips_option_details() {
+        let screen = "\
+╭──────────────────────────────╮
+│ New MCP server found in .mcp.json: db │
+│                              │
+│   1. Use this server         │
+│ ❯ 2. Use all servers         │
+│      in this project         │
+│   3. Do not use it           │
+╰──────────────────────────────╯
+";
+        let menu = read_menu(screen).unwrap();
+        assert_eq!(
+            menu.options,
+            [
+                "1. Use this server",
+                "2. Use all servers",
+                "3. Do not use it"
+            ]
+        );
+        assert_eq!(menu.cursor, 1);
+        assert_eq!(menu.question, ["New MCP server found in .mcp.json: db"]);
+    }
+
+    #[test]
+    fn no_menu_while_the_input_box_shows_or_with_one_option() {
+        let prompt = "❯ an old prompt\n  more of it\n────\n❯ \n────\n";
+        assert_eq!(read_menu(prompt), None);
+        assert_eq!(read_menu("Something\n ❯ Only one\n\n"), None);
+        assert_eq!(read_menu(""), None);
+    }
 
     #[test]
     fn pane_identity_includes_claude_pid() {

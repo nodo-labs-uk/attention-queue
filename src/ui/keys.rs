@@ -294,6 +294,19 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
                 ..
             }),
         ) => TELL_KEYS.iter().map(|(k, l)| (*k, l.to_string())).collect(),
+        (
+            None,
+            Some(Card {
+                kind: CardKind::Menu(mc),
+                ..
+            }),
+        ) => {
+            let n = mc.menu.options.len().min(9);
+            vec![
+                (if n == 2 { "1 2" } else { "1-9" }, "pick".into()),
+                ("g", "go to window".into()),
+            ]
+        }
         (None, None) => vec![
             ("O", "workspace".into()),
             ("t", "theme".into()),
