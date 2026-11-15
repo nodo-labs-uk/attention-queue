@@ -24,7 +24,7 @@ mod workspace;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
@@ -118,6 +118,32 @@ fn draw_selection(frame: &mut Frame, sel: Selection) {
         for x in first..=last.min(area.right().saturating_sub(1)) {
             buf[(x, y)].modifier.toggle(Modifier::REVERSED);
         }
+    }
+}
+
+/// The body's area on a screen of `size`, between the top bar and the keys.
+fn body_area(app: &App, (width, height): (u16, u16)) -> Rect {
+    let keys = keys::height(app, width, height);
+    Rect::new(0, 1, width, height.saturating_sub(1 + keys))
+}
+
+/// Where a tmux popup over aq goes, and its colours: the box `W` and `?`
+/// open, at its full height, so every box over aq looks the same.
+pub fn popup_look(app: &App) -> crate::agents::tmux::PopupLook {
+    let area = crate::ask::panel(body_area(app, app.screen.unwrap_or((80, 24))));
+    let t = app.theme();
+    let hex = |c: Color| match c {
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        _ => "default".into(),
+    };
+    crate::agents::tmux::PopupLook {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+        border: hex(t.line),
+        bg: hex(t.panel),
+        fg: hex(t.fg),
     }
 }
 
@@ -380,6 +406,21 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
 pub(crate) mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn popups_take_the_place_and_colours_of_the_ask_box() {
+        let mut a = app();
+        a.screen = Some((200, 50));
+        let look = super::popup_look(&a);
+        let keys = super::keys::height(&a, 200, 50);
+        let panel = crate::ask::panel(ratatui::layout::Rect::new(0, 1, 200, 50 - 1 - keys));
+        assert_eq!(
+            (look.x, look.y, look.width, look.height),
+            (panel.x, panel.y, panel.width, panel.height)
+        );
+        assert_eq!(look.width, 100, "as wide as W's box gets");
+        assert!(look.border.starts_with('#') && look.bg.starts_with('#'));
+    }
 
     use super::*;
     use crate::app::tests::agent;
