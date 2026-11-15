@@ -1445,6 +1445,10 @@ impl App {
                         }
                     }
                 }
+                // A selection may now lie off the screen.
+                if self.screen != Some((width, height)) {
+                    self.selection = None;
+                }
                 self.screen = Some((width, height));
                 Vec::new()
             }
@@ -3682,6 +3686,14 @@ pub(crate) mod tests {
         assert_eq!(a.selection, None);
         a.update(mouse(MouseKind::Down, 5, 5));
         assert!(a.update(mouse(MouseKind::Up, 5, 5)).is_empty());
+        assert_eq!(a.selection, None);
+        // A resize drops it: it may lie off the new screen.
+        a.update(mouse(MouseKind::Down, 2, 3));
+        a.update(mouse(MouseKind::Drag, 9, 4));
+        a.update(Msg::Resize {
+            width: 5,
+            height: 2,
+        });
         assert_eq!(a.selection, None);
     }
 

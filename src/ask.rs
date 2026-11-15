@@ -469,13 +469,15 @@ session list."
 
     /// The model's answer to a side question; dropped if the overlay is gone.
     pub(crate) fn on_ask_result(&mut self, ev: LlmEvent) -> Vec<Effect> {
-        let JobKind::Ask { index, .. } = ev.kind else {
+        let JobKind::Ask { index, session_id } = ev.kind else {
             return Vec::new();
         };
         let Some(Overlay::Ask(ask)) = &mut self.overlay else {
             return Vec::new();
         };
-        if ask.card != ev.card {
+        // Every ask from the session list has no card: the session tells
+        // one session's answer from another's.
+        if ask.card != ev.card || ask.session_id != session_id {
             return Vec::new();
         }
         if let Some(e) = ask
@@ -618,7 +620,7 @@ mod tests {
                 card: 1,
                 kind: JobKind::Ask {
                     index,
-                    session_id: None,
+                    session_id: Some("s1".into()),
                 },
                 result: r,
             })
@@ -671,6 +673,30 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_for_one_session_does_not_land_under_another() {
+        let mut a = app();
+        a.agents = vec![
+            agent("%1", 1, "api", "/a", true),
+            agent("%2", 2, "web", "/b", true),
+        ];
+        press(&mut a, KeyCode::Char('W'));
+        press(&mut a, KeyCode::Esc);
+        press(&mut a, KeyCode::Char('l'));
+        let e = press(&mut a, KeyCode::Char('W'));
+        assert!(matches!(&e[..], [Effect::Llm(j)]
+            if matches!(&j.kind, JobKind::Ask { session_id: Some(s), .. } if s == "s2")));
+        a.update(Msg::Llm(LlmEvent {
+            card: NO_CARD,
+            kind: JobKind::Ask {
+                index: 0,
+                session_id: Some("s1".into()),
+            },
+            result: Ok("api is half done".into()),
+        }));
+        assert_eq!(ask_state(&a).entries[0].answer, Answer::Pending);
+    }
+
+    #[test]
     fn w_asks_where_we_are_on_a_card_and_on_the_session_list() {
         let mut a = app();
         a.agents = vec![agent("%1", 1, "api", "/a", true)];
@@ -684,7 +710,7 @@ mod tests {
             card: NO_CARD,
             kind: JobKind::Ask {
                 index: 0,
-                session_id: None,
+                session_id: Some("s1".into()),
             },
             result: Ok("half done".into()),
         }));

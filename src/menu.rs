@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::agents::{Agent, ScreenMenu};
-use crate::app::{App, Effect};
+use crate::app::{App, Effect, Overlay};
 use crate::model::{Card, CardKind, Checkout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,16 @@ impl App {
     /// Makes a card for each menu that showed up, keeps each card's menu as
     /// the screen has it now, and drops the cards whose menu is gone.
     pub(crate) fn note_menus(&mut self, agents: &[Agent]) {
+        // A folder trusted in its own window is no longer asked about: keys
+        // sent for it would land in the session's input box.
+        self.pending_trust.retain(|(pane, _)| {
+            !agents
+                .iter()
+                .any(|a| a.id.pane == *pane && a.menu.is_none())
+        });
+        if self.pending_trust.is_empty() && self.overlay == Some(Overlay::Trust) {
+            self.overlay = None;
+        }
         let gone: Vec<u64> = self
             .queue
             .iter()
@@ -202,5 +212,10 @@ mod tests {
         });
         a.update(Msg::Agents(vec![asking(Some(trust()))]));
         assert_eq!(menu_card(&a), None);
+        // Answered in its own window: the trust box lets it go.
+        a.update(Msg::Agents(vec![asking(None)]));
+        assert!(a.pending_trust.is_empty());
+        assert_eq!(a.overlay, None);
+        assert!(a.update(key('y')).is_empty(), "no keys sent to it");
     }
 }

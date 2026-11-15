@@ -235,12 +235,16 @@ pub fn state_file(paths: &Paths) -> PathBuf {
     paths.state_dir.join("state.json")
 }
 
-/// A missing file means nothing was saved yet.
+/// A missing file means nothing was saved yet. One that does not parse is
+/// moved aside to `<name>.bad`, so the next save does not write over it.
 pub fn load(path: &Path) -> Result<SavedState> {
     match std::fs::read_to_string(path) {
-        Ok(text) => {
-            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-        }
+        Ok(text) => serde_json::from_str(&text).or_else(|e| {
+            let bad = path.with_extension("json.bad");
+            std::fs::rename(path, &bad)
+                .with_context(|| format!("moving {} aside", path.display()))?;
+            Err(e).with_context(|| format!("parsing {}, kept as {}", path.display(), bad.display()))
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SavedState::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
@@ -547,7 +551,11 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["state.json"], "no temp file left behind");
+        // One that does not parse is kept aside, out of the next save's way.
         std::fs::write(&file, "{not json").unwrap();
         assert!(load(&file).is_err());
+        assert!(!file.exists());
+        let bad = file.with_extension("json.bad");
+        assert_eq!(std::fs::read_to_string(bad).unwrap(), "{not json");
     }
 }

@@ -856,6 +856,10 @@ fn pane_holding(panes: &str, pid: u32, is_ancestor: impl Fn(u32, u32) -> bool) -
 /// Answers the trust menu in `pane` with yes. Number keys do not pick in
 /// that menu; the cursor starts on "No, exit".
 pub fn trust_folder(pane: &str) -> Result<()> {
+    anyhow::ensure!(
+        asks_for_trust(&capture_pane(pane, &[])?) == Some(true),
+        "it no longer asks to trust its folder"
+    );
     let mut cmd = Command::new("tmux");
     cmd.args(["send-keys", "-t", pane, "Down", "Enter"]);
     let (status, _, err) =

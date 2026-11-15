@@ -145,6 +145,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_review_card_draws_in_a_pane_a_few_rows_tall() {
+        for view in [DiffView::Unified, DiffView::Split] {
+            for h in 1..=4 {
+                let mut rc = fixture_card(1);
+                rc.view = view;
+                render(&review_app(rc), 40, h);
+            }
+        }
+    }
+
     fn fixture_with_comments(view: DiffView) -> ReviewCard {
         let mut rc = fixture_card(2);
         rc.view = view;
