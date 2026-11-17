@@ -305,6 +305,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             vec![
                 (if n == 2 { "1 2" } else { "1-9" }, "pick".into()),
                 ("g", "go to window".into()),
+                ("x", "answer it there".into()),
             ]
         }
         (None, None) => vec![

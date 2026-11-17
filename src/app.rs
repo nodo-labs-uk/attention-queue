@@ -448,6 +448,9 @@ pub struct App {
     /// New sessions waiting on Claude Code's trust question, by pane and
     /// folder, oldest first; the trust box shows the first.
     pub(crate) pending_trust: VecDeque<(String, PathBuf)>,
+    /// Panes whose menu was let go to the window: it makes no menu card
+    /// until it leaves the screen.
+    pub(crate) menus_in_window: BTreeSet<String>,
     pub steps: Steps,
     /// Terminal size as last reported by the runtime.
     pub(crate) screen: Option<(u16, u16)>,
@@ -597,6 +600,7 @@ impl App {
             sending: BTreeMap::new(),
             held: BTreeMap::new(),
             pending_trust: VecDeque::new(),
+            menus_in_window: BTreeSet::new(),
             steps: Steps::default(),
             screen: None,
             shell: Shell::default(),
