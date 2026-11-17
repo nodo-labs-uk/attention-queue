@@ -235,6 +235,8 @@ impl App {
             (KeyCode::Char('x' | 'g'), _) => {
                 let req_id = cc.req_id;
                 self.queue.remove(id);
+                // The menu now on its screen is answered there, not on a menu card.
+                self.menus_in_window.insert(pane.clone());
                 self.set_status("The question is now a menu in the session's window");
                 let mut effects = vec![Effect::Reply {
                     req_id,
@@ -447,6 +449,15 @@ mod tests {
             }]
         );
         assert!(a.queue.is_empty());
+        // The menu then on the session's screen makes no menu card.
+        let mut showing = agent("%1", 1, "api", "/w/api", false);
+        showing.menu = Some(crate::agents::ScreenMenu {
+            question: vec!["Which first?".into()],
+            options: vec!["1. Menus".into(), "2. Review".into()],
+            cursor: 0,
+        });
+        a.update(Msg::Agents(vec![showing]));
+        assert!(a.queue.is_empty(), "the menu is answered in the window");
         let (mut a, _) = asked(menu());
         a.update(Msg::HookGone { req_id: 7 });
         assert!(a.on_stale());

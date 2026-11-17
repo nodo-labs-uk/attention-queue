@@ -40,8 +40,9 @@ When Claude Code draws a menu in a session and waits, such as whether to trust a
 |---|---|
 | `1`-`9` | pick that option |
 | `g` | go to the session's window |
+| `x` | leave it to be answered in the window, such as a menu where several options can be ticked |
 
-Before aq presses anything in the pane, it checks that the same menu is still on its screen. The card goes once the menu leaves the screen, whether you answered it in aq or in the window.
+Before aq presses anything in the pane, it checks that the same menu is still on its screen. The card goes once the menu leaves the screen, whether you answered it in aq or in the window. A menu left in the window, with `x` here or on a question card, makes no new card until it leaves the screen.
 
 ## Workspaces: O
 

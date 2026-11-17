@@ -33,6 +33,11 @@ impl App {
         if self.pending_trust.is_empty() && self.overlay == Some(Overlay::Trust) {
             self.overlay = None;
         }
+        self.menus_in_window.retain(|pane| {
+            agents
+                .iter()
+                .any(|a| a.id.pane == *pane && a.menu.is_some())
+        });
         let gone: Vec<u64> = self
             .queue
             .iter()
@@ -66,6 +71,9 @@ impl App {
                 // choice) is how this menu is already answered.
                 continue;
             }
+            if self.menus_in_window.contains(&a.id.pane) {
+                continue;
+            }
             // A folder aq started a session in is asked about in the trust box.
             if self
                 .pending_trust
@@ -89,7 +97,8 @@ impl App {
         }
     }
 
-    /// 1 to 9 picks that option; g goes to the session's window.
+    /// 1 to 9 picks that option; g goes to the session's window; x leaves
+    /// the menu to be answered there.
     pub(crate) fn on_menu_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let Some(card) = self.queue.current_mut() else {
             return Vec::new();
@@ -110,6 +119,13 @@ impl App {
                 vec![Effect::PickMenu { pane, menu, choice }]
             }
             KeyCode::Char('g') => vec![Effect::GoToWindow { pane }],
+            KeyCode::Char('x') => {
+                let id = card.id;
+                self.queue.remove(id);
+                self.menus_in_window.insert(pane);
+                self.set_status("Left the menu in the session's window");
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
@@ -174,6 +190,20 @@ mod tests {
         // The menu leaves the screen: the card goes.
         a.update(Msg::Agents(vec![asking(None)]));
         assert_eq!(menu_card(&a), None);
+    }
+
+    #[test]
+    fn x_leaves_a_menu_in_the_window_until_it_goes() {
+        let mut a = app();
+        a.update(Msg::Agents(vec![asking(Some(trust()))]));
+        assert!(a.update(key('x')).is_empty());
+        assert_eq!(menu_card(&a), None);
+        a.update(Msg::Agents(vec![asking(Some(trust()))]));
+        assert_eq!(menu_card(&a), None, "not taken back");
+        // Once it has left the screen, the next menu gets a card again.
+        a.update(Msg::Agents(vec![asking(None)]));
+        a.update(Msg::Agents(vec![asking(Some(trust()))]));
+        assert!(menu_card(&a).is_some());
     }
 
     #[test]

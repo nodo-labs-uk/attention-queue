@@ -115,7 +115,7 @@ The ones worth knowing from day one:
 | `a` `Enter` | question | approve, or reply in your own words, with Claude's suggestion in lighter text (`Tab` fills it in) |
 | `y` `e` `n` | message | send a session's `aq tell` message, edit it first, or drop it |
 | `1`-`9` `o` | option menu | pick an option, or answer in your own words |
-| `1`-`9` `g` | menu card | pick one of Claude Code's own options, such as trusting a folder, or go to the window |
+| `1`-`9` `g` `x` | menu card | pick one of Claude Code's own options, such as trusting a folder, go to the window, or leave it to be answered there |
 | `h` `l` | sessions | pick a session |
 | `Tab` | sessions | the session you last sent a message to; again for the one before |
 | `Enter` | sessions | message it |

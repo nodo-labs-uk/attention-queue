@@ -118,6 +118,7 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 |---|---|
 | `1`-`9` | pick that option |
 | `g` | go to the session's window |
+| `x` | leave the menu to be answered in the window |
 
 ## Message card
 
