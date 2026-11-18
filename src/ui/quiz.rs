@@ -3,7 +3,7 @@
 //! typed in a modal showing that piece again. And the code view `m` opens.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
@@ -122,12 +122,7 @@ pub fn render_answer(
     let Some(q) = qc.questions.get(draft.question) else {
         return;
     };
-    let [h] = Layout::horizontal([Constraint::Length(area.width.min(120))])
-        .flex(Flex::Center)
-        .areas(area);
-    let [panel] = Layout::vertical([Constraint::Percentage(92)])
-        .flex(Flex::Center)
-        .areas(h);
+    let panel = super::input::panel(area, (120, (u32::from(area.height) * 92 / 100) as u16));
     frame.render_widget(Clear, panel);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -421,12 +416,13 @@ pub fn render_code(
     let Some(q) = qc.questions.get(question) else {
         return;
     };
-    let [h] = Layout::horizontal([Constraint::Percentage(90)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [panel] = Layout::vertical([Constraint::Percentage(90)])
-        .flex(Flex::Center)
-        .areas(h);
+    let panel = super::input::panel(
+        area,
+        (
+            (u32::from(area.width) * 9 / 10) as u16,
+            (u32::from(area.height) * 9 / 10) as u16,
+        ),
+    );
     frame.render_widget(Clear, panel);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -451,23 +447,16 @@ pub fn render_code(
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
-/// Word-wraps `text` to `width`, each line starting with `prefix`.
+/// Word-wraps `text` to `width` columns, each line starting with `prefix`.
+/// Runs of spaces and line breaks become one space.
 pub(super) fn wrap(text: &str, width: usize, prefix: &str) -> Vec<String> {
-    let room = width.saturating_sub(prefix.chars().count()).max(10);
+    let room = width
+        .saturating_sub(prefix.chars().map(crate::visible::cols).sum())
+        .max(10);
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let len = line.chars().count();
-        if len > 0 && len + 1 + word.chars().count() > room {
-            out.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    out.push(line);
-    out.into_iter().map(|l| format!("{prefix}{l}")).collect()
+    crate::visible::wrap_words(&flat, room, &mut |l| out.push(format!("{prefix}{l}")));
+    out
 }
 
 fn push_wrapped(

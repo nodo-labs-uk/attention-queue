@@ -447,6 +447,9 @@ pub fn on_key(card: &mut StepCard, key: KeyEvent) -> Action {
     Action::None
 }
 
+/// The most decided steps kept per session.
+const HISTORY_PER_SESSION: usize = 50;
+
 /// A decided step, for the card's "earlier" list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Done {
@@ -457,7 +460,7 @@ pub struct Done {
     /// The edit's identity, to match its PostToolUse report.
     pub key: EditKey,
     /// The file as the allowed edit leaves it, to check what a command or
-    /// the edit itself really wrote. Dropped with the history entry.
+    /// the edit itself really wrote. Dropped once that check is made.
     pub after: Option<String>,
 }
 
@@ -552,13 +555,7 @@ impl App {
             .agents
             .iter()
             .find(|a| a.session_id == e.session_id)
-            .map_or_else(
-                || AgentId {
-                    pane: "?".into(),
-                    claude_pid: 0,
-                },
-                |a| a.id.clone(),
-            );
+            .map_or_else(AgentId::unknown, |a| a.id.clone());
         self.next_card_id += 1;
         let created = e.at;
         let mut card = StepCard::new(req_id, key, step_no, e);
@@ -789,6 +786,22 @@ impl App {
                 _ => None,
             },
         });
+        let session = &sc.session_id;
+        if self
+            .steps
+            .history
+            .iter()
+            .filter(|d| &d.session_id == session)
+            .count()
+            > HISTORY_PER_SESSION
+        {
+            let oldest = self
+                .steps
+                .history
+                .iter()
+                .position(|d| &d.session_id == session);
+            self.steps.history.remove(oldest.expect("counted above"));
+        }
         let effects: Vec<Effect> = sc
             .req_ids
             .iter()
@@ -913,6 +926,17 @@ pub(crate) mod tests {
         assert!(a.queue.is_empty());
         assert_eq!(a.status_text(), Some("Allowed step 1"));
         assert!(a.steps.history[0].allowed);
+    }
+
+    #[test]
+    fn history_keeps_the_last_steps_of_each_session() {
+        let mut a = step_app();
+        for req_id in 1..=HISTORY_PER_SESSION as u64 + 1 {
+            pre_tool(&mut a, req_id, pending("s1", "/a", input()));
+            a.update(key('y'));
+        }
+        assert_eq!(a.steps.history.len(), HISTORY_PER_SESSION);
+        assert_eq!(a.steps.history[0].step_no, 2, "the oldest step went");
     }
 
     #[test]

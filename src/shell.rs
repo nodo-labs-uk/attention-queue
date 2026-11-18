@@ -175,13 +175,7 @@ impl App {
             .agents
             .iter()
             .find(|a| a.session_id == session_id)
-            .map_or_else(
-                || AgentId {
-                    pane: "?".into(),
-                    claude_pid: 0,
-                },
-                |a| a.id.clone(),
-            );
+            .map_or_else(AgentId::unknown, |a| a.id.clone());
         self.request_snapshot(checkout, Some((command, agent)), approved)
     }
 
@@ -200,7 +194,8 @@ impl App {
     }
 
     /// The edited file and its approved text, when the step history holds an
-    /// allowed edit with this identity (which it then forgets).
+    /// allowed edit with this identity. The history keeps the step and
+    /// forgets its text.
     fn approved_edit(
         &mut self,
         session_id: &str,
@@ -215,7 +210,7 @@ impl App {
             .history
             .iter()
             .rposition(|d| d.allowed && d.key == key && d.after.is_some())?;
-        let after = self.steps.history.remove(at).after?;
+        let after = self.steps.history[at].after.take()?;
         let rel = edited?.strip_prefix(&checkout.0).ok()?;
         Some((rel.to_path_buf(), after))
     }
@@ -547,6 +542,9 @@ mod tests {
         snapshot(&mut a, req, "t1", Vec::new());
         assert!(a.queue.is_empty());
         assert_eq!(a.shell.last_tree[&Checkout("/a".into())], "t1");
+        // The step stays in the history; only its stored text goes.
+        assert_eq!(a.steps.history.len(), 1);
+        assert_eq!(a.steps.history[0].after, None);
         // A later command that changes nothing sees the edit as the baseline.
         let req = only_request(post(&mut a, "Bash", bash("ls")));
         assert_eq!(req.from.as_deref(), Some("t1"));

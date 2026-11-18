@@ -674,6 +674,21 @@ impl App {
             .find(|a| &a.id == id)
     }
 
+    /// The session a hook came from: the one in its pane, else the one with
+    /// its session id.
+    pub(crate) fn hook_agent(&self, pane: Option<&str>, session_id: &str) -> Option<&Agent> {
+        self.agents
+            .iter()
+            .find(|a| pane == Some(a.id.pane.as_str()))
+            .or_else(|| self.agents.iter().find(|a| a.session_id == session_id))
+    }
+
+    /// The window name of `id`'s session, or its pane when it has gone.
+    pub fn window_name(&self, id: &AgentId) -> String {
+        self.agent(id)
+            .map_or_else(|| id.pane.clone(), |a| a.window_name.clone())
+    }
+
     /// The agents in window order, as the empty screen lists them.
     pub fn agents_in_order(&self) -> Vec<&Agent> {
         let listed = if self.practice_agents.is_empty() {
@@ -696,12 +711,6 @@ impl App {
             .or(agents.iter().find(|a| a.waiting))
             .or(agents.first())
             .copied()
-    }
-
-    /// Shows `id` on the empty screen, remembering the session shown
-    /// before it for Tab.
-    fn pick(&mut self, id: AgentId) {
-        self.picked = Some(id);
     }
 
     /// Notes that you sent `agent` a message, for Tab. Only the latest few
@@ -728,12 +737,12 @@ impl App {
         let n = ids.len();
         match key.code {
             KeyCode::Char('j' | 'l') | KeyCode::Down | KeyCode::Right => {
-                self.pick(ids[(i + 1) % n].clone());
+                self.picked = Some(ids[(i + 1) % n].clone());
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
             KeyCode::Char('k' | 'h') | KeyCode::Up | KeyCode::Left => {
-                self.pick(ids[(i + n - 1) % n].clone());
+                self.picked = Some(ids[(i + n - 1) % n].clone());
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
@@ -749,7 +758,7 @@ impl App {
                     self.set_status("No other session messaged yet: h/l picks one");
                     return Vec::new();
                 };
-                self.pick(last);
+                self.picked = Some(last);
                 self.live_scroll = 0;
                 return self.capture_picked();
             }
@@ -796,9 +805,7 @@ impl App {
     fn on_empty_esc(&mut self, agent: AgentId) -> Vec<Effect> {
         const DOUBLE_ESC: Duration = Duration::from_millis(800);
         let now = self.now.unwrap_or_else(Instant::now);
-        let name = self
-            .agent(&agent)
-            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let name = self.window_name(&agent);
         let second = self
             .esc_at
             .take()
@@ -833,9 +840,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 self.overlay = None;
-                let name = self
-                    .agent(&agent)
-                    .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+                let name = self.window_name(&agent);
                 self.set_status(format!("Closed {name}"));
                 vec![Effect::ClosePane { pane: agent.pane }]
             }
@@ -915,9 +920,7 @@ impl App {
         self.note_messaged(&agent);
         // Any message to the session answers what it asked.
         self.drop_questions(false, |a| *a == agent);
-        let name = self
-            .agent(&agent)
-            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let name = self.window_name(&agent);
         if let Some(waiting) = self.prompts.get_mut(&agent) {
             waiting.push_str("\n\n");
             waiting.push_str(&text);
@@ -1156,9 +1159,7 @@ impl App {
     /// where the skill shows the draft before pushing. With no card to hold
     /// it, a busy agent gets nothing.
     fn ask_for_pr(&mut self, agent: AgentId) -> Vec<Effect> {
-        let name = self
-            .agent(&agent)
-            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let name = self.window_name(&agent);
         if !self.at_prompt(&agent) {
             self.set_status(format!(
                 "{name} is busy; try p again when it is at its prompt"
@@ -1183,9 +1184,7 @@ impl App {
             self.overlay = Some(Overlay::Model(agent));
             return;
         }
-        let name = self
-            .agent(&agent)
-            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let name = self.window_name(&agent);
         self.set_status(format!(
             "{name} is busy; try m again when it is at its prompt"
         ));
@@ -1209,9 +1208,7 @@ impl App {
         let Some(model) = picked else {
             return Vec::new();
         };
-        let name = self
-            .agent(&agent)
-            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let name = self.window_name(&agent);
         self.set_status(format!("Switched {name} to {model}"));
         vec![Effect::SwitchModel { agent, model }]
     }
@@ -1235,9 +1232,7 @@ impl App {
         let Some(mode) = picked else {
             return Vec::new();
         };
-        let name = self
-            .agent(&agent)
-            .map_or_else(|| agent.pane.clone(), |a| a.window_name.clone());
+        let name = self.window_name(&agent);
         self.set_status(format!("Switching {name} to {mode} mode"));
         vec![Effect::SetPermissionMode { agent, mode }]
     }
@@ -1386,14 +1381,20 @@ impl App {
                         cwd,
                         tool_name,
                         tool_input,
+                        pane,
                         ..
                     },
                 checkout,
                 at,
                 ..
-            } if tool_name == crate::choice::TOOL => {
-                self.on_choice(req_id, at, &session_id, &cwd, checkout, tool_input)
-            }
+            } if tool_name == crate::choice::TOOL => self.on_choice(
+                req_id,
+                at,
+                &session_id,
+                pane.as_deref(),
+                checkout.unwrap_or_else(|| Checkout(cwd.into())),
+                tool_input,
+            ),
             Msg::Ipc {
                 req_id,
                 req: HookRequest::Tell { pane, to, text },
@@ -2121,12 +2122,12 @@ impl App {
             // Once the card closes, the empty screen shows this agent.
             review::Action::Send => {
                 let agent = card.agent.clone();
-                self.pick(agent);
+                self.picked = Some(agent);
                 self.finish_review(false)
             }
             review::Action::Approve => {
                 let agent = card.agent.clone();
-                self.pick(agent);
+                self.picked = Some(agent);
                 self.finish_review(true)
             }
             review::Action::ToggleFullBranch => self.toggle_full_branch(),
@@ -2353,12 +2354,14 @@ impl App {
         else {
             return Vec::new();
         };
+        // Only this round's comments show in the next; older ones go.
+        let comments = rc.current_comments().cloned().collect();
         self.rounds.insert(
             checkout.0,
             LastRound {
                 tree: rc.to_tree,
                 round: rc.round,
-                comments: rc.comments,
+                comments,
             },
         );
         self.set_status(status);
@@ -2968,6 +2971,14 @@ pub(crate) mod tests {
         assert_eq!(rc.comments.len(), 1, "round 1 comment shown as old");
         assert_eq!(rc.comments[0].round, 1);
         assert_eq!(rc.current_comments().count(), 0, "and not resent");
+
+        // Round 2 has no comments of its own: round 3 shows none.
+        let id = a.queue.current().unwrap().id;
+        approve(&mut a);
+        assert!(a.queue.iter().all(|c| c.id != id));
+        let req = finish_round(&mut a);
+        a.update(computed(req, "t2", "t3", fixture_files()));
+        assert!(review(&a).comments.is_empty(), "round 1 comment dropped");
     }
 
     /// `a`, and the send (if any) succeeds.

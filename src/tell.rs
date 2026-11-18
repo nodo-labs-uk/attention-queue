@@ -219,12 +219,13 @@ impl App {
         };
         let (id, agent, tc) = (*id, agent.clone(), tc.clone());
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // A key meant for the card this one just replaced does nothing.
+        if matches!(key.code, KeyCode::Char('y' | 'e' | 'n' | 'x')) && !ctrl && !self.settled(id) {
+            self.too_quick("message");
+            return Vec::new();
+        }
         match key.code {
             KeyCode::Char('y') if !ctrl => {
-                if !self.settled(id) {
-                    self.too_quick("message");
-                    return Vec::new();
-                }
                 self.queue.remove(id);
                 self.send_prompt(agent, framed(&tc.from_name, &tc.message.text))
             }
@@ -325,6 +326,30 @@ mod tests {
             screen.contains("api asks web") && screen.contains("add the field"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn a_message_that_just_took_the_screen_ignores_its_keys() {
+        use crate::app::Shown;
+        use crossterm::event::{KeyCode, KeyEvent};
+        let mut a = app();
+        tell(&mut a, "%1", "web", "add the field");
+        let id = a.queue.current().unwrap().id;
+        let t = Instant::now();
+        a.shown = Some(Shown {
+            id,
+            at: Some(t),
+            preempted: true,
+        });
+        for c in ['y', 'e', 'n', 'x'] {
+            a.update(Msg::Key(KeyEvent::from(KeyCode::Char(c)), t));
+            assert!(a.queue.current().is_some(), "{c} acted too soon");
+        }
+        a.update(Msg::Key(
+            KeyEvent::from(KeyCode::Char('n')),
+            t + crate::step::PREEMPT_FOR,
+        ));
+        assert!(a.queue.current().is_none());
     }
 
     #[test]

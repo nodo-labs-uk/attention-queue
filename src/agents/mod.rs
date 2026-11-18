@@ -2,9 +2,10 @@ pub mod claude;
 pub mod procs;
 pub mod tmux;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -163,7 +164,7 @@ pub fn input_row(lines: &[&str]) -> Option<usize> {
 /// or coloured suggestion in an empty box does not count as typed.
 pub fn read_input_box(screen: &str) -> InputBox {
     let styled: Vec<&str> = screen.lines().collect();
-    let plain: Vec<String> = styled.iter().map(|l| strip_sgr(l)).collect();
+    let plain: Vec<String> = styled.iter().map(|l| strip_escapes(l)).collect();
     let rows: Vec<&str> = plain.iter().map(String::as_str).collect();
     let Some(p) = input_row(&rows) else {
         return InputBox::Unseen;
@@ -193,7 +194,7 @@ pub fn read_suggestion(screen: &str) -> Option<String> {
     if read_input_box(screen) != InputBox::Empty {
         return None;
     }
-    let plain: Vec<String> = screen.lines().map(strip_sgr).collect();
+    let plain: Vec<String> = screen.lines().map(strip_escapes).collect();
     let rows: Vec<&str> = plain.iter().map(String::as_str).collect();
     let line = rows[input_row(&rows)?];
     let text = line
@@ -206,20 +207,46 @@ pub fn read_suggestion(screen: &str) -> Option<String> {
     (!text.is_empty() && !hint).then_some(text)
 }
 
-/// `line` without its colour escapes.
-fn strip_sgr(line: &str) -> String {
+/// A screen read with its colours, as a plain read gives it: no escapes,
+/// and no spaces at the ends of lines.
+pub fn plain_screen(styled: &str) -> String {
+    styled
+        .lines()
+        .map(|l| strip_escapes(l).trim_end().to_string() + "\n")
+        .collect()
+}
+
+/// `line` without its colour escapes and hyperlinks.
+fn strip_escapes(line: &str) -> String {
     let mut out = String::new();
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // ESC [ params final-byte
-            for d in chars.by_ref() {
-                if d.is_ascii_alphabetic() {
-                    break;
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // ESC [ params final-byte: colours and the like.
+            Some('[') => {
+                for d in chars.by_ref() {
+                    if ('@'..='~').contains(&d) {
+                        break;
+                    }
                 }
             }
-        } else {
-            out.push(c);
+            // ESC ] ... BEL or ESC \: a hyperlink's target.
+            Some(']') => {
+                while let Some(d) = chars.next() {
+                    if d == '\x07' {
+                        break;
+                    }
+                    if d == '\x1b' {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -295,6 +322,31 @@ pub fn run_for(
     timeout: Duration,
 ) -> Result<(ExitStatus, String, String)> {
     crate::llm::run_child(cmd, input, timeout, &crate::llm::Children::default())
+}
+
+/// How long a folder's checkout is trusted before git is asked again.
+pub const CHECKOUT_TTL: Duration = Duration::from_secs(30);
+
+/// Folders' checkouts as git last gave them, so a poll or a hook does not
+/// cost a git call each time.
+#[derive(Debug, Default)]
+pub struct Checkouts(HashMap<PathBuf, (Option<Checkout>, Instant)>);
+
+impl Checkouts {
+    pub fn of(&mut self, dir: &Path) -> Option<Checkout> {
+        self.of_at(dir, Instant::now())
+    }
+
+    pub fn of_at(&mut self, dir: &Path, now: Instant) -> Option<Checkout> {
+        if let Some((c, at)) = self.0.get(dir)
+            && now.saturating_duration_since(*at) < CHECKOUT_TTL
+        {
+            return c.clone();
+        }
+        let c = checkout_of(dir);
+        self.0.insert(dir.to_path_buf(), (c.clone(), now));
+        c
+    }
 }
 
 /// Worktree root containing `dir`, if it is inside a git checkout.
@@ -412,6 +464,13 @@ mod input_box_tests {
 
     fn screen(prompt_line: &str) -> String {
         format!("● Done.\n{RULE}\n{prompt_line}\n{RULE}\n  ctx:11% Opus\n")
+    }
+
+    #[test]
+    fn a_screen_read_with_colours_reads_as_plain_text() {
+        // As tmux 3.4 captures a hyperlink, a colour and a coloured space.
+        let styled = "\x1b]8;;http://ex.test/a\x1b\\link\x1b]8;;\x1b\\ \x1b[31mred\x1b[39m plain\x1b[44m  \x1b[49m\n⏵⏵ auto\n";
+        assert_eq!(plain_screen(styled), "link red plain\n⏵⏵ auto\n");
     }
 
     #[test]

@@ -209,9 +209,8 @@ pub fn render(frame: &mut Frame, area: Rect, input: &TextInput, title: &str, t: 
     render_sized(frame, area, input, title, submit, t, (72, height));
 }
 
-/// `render` in a box of `size` (columns, rows), shrunk to fit `area`;
-/// `submit` names what the submitting key does.
-/// Where a box of `size` sits in `area`: centred.
+/// Where a box of `size` (columns, rows) sits in `area`: centred, and
+/// shrunk to fit.
 pub fn panel(area: Rect, size: (u16, u16)) -> Rect {
     let [h] = Layout::horizontal([Constraint::Length(size.0.min(area.width))])
         .flex(Flex::Center)
@@ -234,6 +233,8 @@ pub fn below_first_row(area: Rect, size: (u16, u16)) -> Rect {
     )
 }
 
+/// `render` in a box of `size` (columns, rows), shrunk to fit `area`;
+/// `submit` names what the submitting key does.
 pub fn render_sized(
     frame: &mut Frame,
     area: Rect,
@@ -331,22 +332,36 @@ pub fn render_with_ghost(
 }
 
 impl TextInput {
-    /// The text cut into rows of `width` characters, and the cursor as
-    /// (column, row) among them. Each line takes one row more than it
+    /// The text cut into rows of `width` columns, and the cursor as
+    /// (column, row) among them. A wide character that does not fit at a
+    /// row's end starts the next. Each line takes one row more than it
     /// fills when full, so the cursor at its end has a place.
     fn wrapped(&self, width: usize) -> (Vec<String>, (usize, usize)) {
         let width = width.max(1);
         let mut rows = Vec::new();
         let mut cursor = (0, 0);
         for (i, line) in self.lines.iter().enumerate() {
-            let chars: Vec<char> = line.chars().collect();
-            if i == self.row {
-                cursor = (self.col % width, rows.len() + self.col / width);
+            let (mut row, mut used) = (String::new(), 0);
+            for (k, c) in line.chars().enumerate() {
+                let w = crate::visible::cols(c);
+                if used + w > width && !row.is_empty() {
+                    rows.push(std::mem::take(&mut row));
+                    used = 0;
+                }
+                if i == self.row && k == self.col {
+                    cursor = (used, rows.len());
+                }
+                row.push(c);
+                used += w;
             }
-            for n in 0..=chars.len() / width {
-                let end = ((n + 1) * width).min(chars.len());
-                rows.push(chars[n * width..end].iter().collect());
+            if used >= width {
+                rows.push(std::mem::take(&mut row));
+                used = 0;
             }
+            if i == self.row && self.col >= line.chars().count() {
+                cursor = (used, rows.len());
+            }
+            rows.push(row);
         }
         (rows, cursor)
     }
@@ -393,6 +408,21 @@ mod tests {
         assert_eq!(
             m.wrapped(3),
             (vec!["abc".into(), "d".into(), "x".into()], (1, 2))
+        );
+    }
+
+    #[test]
+    fn wide_characters_wrap_by_columns() {
+        let mut i = TextInput::single_line();
+        typed(&mut i, "字字字");
+        let (rows, cursor) = i.wrapped(5);
+        assert_eq!(rows, ["字字", "字"]);
+        assert_eq!(cursor, (2, 1));
+        i.handle_key(key(KeyCode::Left));
+        assert_eq!(
+            i.wrapped(5).1,
+            (0, 1),
+            "the cursor sits on the wrapped character"
         );
     }
 

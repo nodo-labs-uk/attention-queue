@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 
 use super::claude::{ClaudeProc, list_claude_procs};
 use super::procs::{is_ancestor, pid_alive};
-use super::{Agent, AgentConn, checkout_of};
+use super::{Agent, AgentConn, Checkouts};
 use crate::model::AgentId;
 
 pub const LIST_PANES_FORMAT: &str = "#{session_name}|#{window_index}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{@claude_waiting}";
@@ -65,6 +65,7 @@ pub struct TmuxConn {
     pub socket: Option<String>,
     /// The last `claude agents --json` list and what it was taken for.
     pub procs: Arc<Mutex<Option<ProcsSeen>>>,
+    pub checkouts: Arc<Mutex<Checkouts>>,
 }
 
 /// A `claude agents --json` list, the panes it was taken with and when.
@@ -176,7 +177,7 @@ fn join(
             window_index: pane.window_index,
             window_name: pane.window_name.clone(),
             cwd: pane.cwd.clone(),
-            checkout: checkout_of(&pane.cwd),
+            checkout: None,
             session_id: p.session_id.clone(),
             status: p.status,
             waiting: pane.waiting,
@@ -210,7 +211,7 @@ fn asking_agent(pane: &Pane, menu: super::ScreenMenu) -> Agent {
         window_index: pane.window_index,
         window_name: pane.window_name.clone(),
         cwd: pane.cwd.clone(),
-        checkout: checkout_of(&pane.cwd),
+        checkout: None,
         session_id: String::new(),
         status: super::AgentStatus::Unknown,
         waiting: false,
@@ -302,23 +303,27 @@ impl AgentConn for TmuxConn {
                 agents.push(asking_agent(pane, menu));
             }
         }
-        // Every session's footer, for the permission mode on its tab.
-        for a in &mut agents {
-            if let Ok(screen) = capture_pane(&a.id.pane, &server) {
-                a.permission_mode = permission_mode_on(&screen);
-                a.menu = super::read_menu(&screen);
+        {
+            let mut checkouts = self.checkouts.lock().unwrap_or_else(|e| e.into_inner());
+            for a in &mut agents {
+                a.checkout = checkouts.of(&a.cwd);
             }
         }
-        // Only an agent at its prompt can take a message, so only its screen
-        // is read: one whose turn ended, or an idle one, which is how a
-        // session that has not had a turn yet shows.
-        for a in agents
-            .iter_mut()
-            .filter(|a| a.waiting || a.status == super::AgentStatus::Idle)
-        {
-            if let Ok(screen) = self.capture_styled(&a.id.pane) {
-                a.input = super::read_input_box(&screen);
-                a.suggestion = super::read_suggestion(&screen);
+        // Every session's screen, read once with its colours: its footer
+        // gives the permission mode on its tab. Only an agent at its prompt
+        // can take a message, so only then is its input box read: one whose
+        // turn ended, or an idle one, which is how a session that has not
+        // had a turn yet shows.
+        for a in &mut agents {
+            let Ok(styled) = self.capture_styled(&a.id.pane) else {
+                continue;
+            };
+            let screen = super::plain_screen(&styled);
+            a.permission_mode = permission_mode_on(&screen);
+            a.menu = super::read_menu(&screen);
+            if a.waiting || a.status == super::AgentStatus::Idle {
+                a.input = super::read_input_box(&styled);
+                a.suggestion = super::read_suggestion(&styled);
             }
         }
         for a in &mut agents {
@@ -1328,9 +1333,7 @@ mod tests {
         for (pid, under) in [(7, "x"), (9, "y")] {
             procs.push(ClaudeProc {
                 pid,
-                cwd: "/w".into(),
                 session_id: under.into(),
-                name: String::new(),
                 status: AgentStatus::Idle,
             });
         }

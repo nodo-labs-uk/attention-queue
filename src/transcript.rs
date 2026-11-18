@@ -1,7 +1,7 @@
 //! Reading Claude Code session transcripts (one JSON object per line; each
 //! assistant content block on a line of its own).
 
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -34,22 +34,33 @@ pub fn find(session_id: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// The prompts, replies and tool calls in the last `CONVERSATION_TAIL`
-/// bytes of `transcript`, oldest first. Thinking, tool results and
-/// Claude Code's own notes are left out.
-pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
+/// The whole lines in the last `CONVERSATION_TAIL` bytes of `transcript`.
+fn tail(transcript: &Path) -> std::io::Result<String> {
     let mut file = std::fs::File::open(transcript)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(CONVERSATION_TAIL);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
     BufReader::new(file).read_to_end(&mut bytes)?;
-    // The cut may split a character; it is on the first line, left out below.
-    let text = String::from_utf8_lossy(&bytes);
-    // Cut mid-line: the first line is only a part.
-    let lines = text.lines().skip(usize::from(start > 0));
+    if start > 0 {
+        // Cut mid-line: the first line is only a part, and may start
+        // inside a character.
+        let first = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1);
+        bytes.drain(..first);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The prompts, replies and tool calls in the last `CONVERSATION_TAIL`
+/// bytes of `transcript`, oldest first. Thinking, tool results and
+/// Claude Code's own notes are left out.
+pub fn conversation(transcript: &Path) -> std::io::Result<Vec<Said>> {
+    let text = tail(transcript)?;
     let mut out = Vec::new();
-    for line in lines {
+    for line in text.lines() {
         if !line.starts_with(r#"{"#)
             || !(line.contains(r#""type":"user""#) || line.contains(r#""type":"assistant""#))
         {
@@ -191,18 +202,18 @@ fn tool_summary(block: &Value) -> String {
 
 /// The last assistant text block before the `tool_use` with id
 /// `tool_use_id`, cut to 300 characters. If that `tool_use` is not in the
-/// file yet, the latest text block is the one before it.
+/// file yet, the latest text block is the one before it. Only the end of
+/// the transcript is read, as the edit was just asked for.
 pub fn description_before(transcript: &Path, tool_use_id: &str) -> Option<String> {
-    let file = std::fs::File::open(transcript).ok()?;
+    let text = tail(transcript).ok()?;
     let mut last: Option<String> = None;
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else { break };
+    for line in text.lines() {
         // Transcripts are large; parse only lines that can matter.
         let has_id = !tool_use_id.is_empty() && line.contains(tool_use_id);
         if !has_id && !line.contains(r#""type":"text""#) {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         if v["type"] != "assistant" {
@@ -413,6 +424,23 @@ mod tests {
         assert_eq!(
             description_before(&fixture(), "toolu_later").as_deref(),
             Some("Now the tests.")
+        );
+    }
+
+    #[test]
+    fn description_of_a_long_transcript_comes_from_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("t.jsonl");
+        let old = serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "an old reply"}]}});
+        let filler = "x".repeat(CONVERSATION_TAIL as usize);
+        let now = serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "Fix the limit"},
+                        {"type": "tool_use", "id": "toolu_x", "name": "Edit", "input": {}}]}});
+        std::fs::write(&file, format!("{old}\n{filler}\n{now}\n")).unwrap();
+        assert_eq!(
+            description_before(&file, "toolu_x").as_deref(),
+            Some("Fix the limit")
         );
     }
 

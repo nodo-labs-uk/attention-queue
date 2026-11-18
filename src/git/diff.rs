@@ -6,7 +6,6 @@ pub enum FileStatus {
     Deleted,
     Modified,
     Renamed,
-    Untracked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

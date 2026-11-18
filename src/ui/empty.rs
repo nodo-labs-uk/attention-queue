@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
@@ -23,12 +23,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Line::styled("No Claude agents found in tmux.", Style::new().fg(t.dim)),
         ];
         let w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        let [col] = Layout::horizontal([Constraint::Length(w)])
-            .flex(Flex::Center)
-            .areas(area);
-        let [block] = Layout::vertical([Constraint::Length(2)])
-            .flex(Flex::Center)
-            .areas(col);
+        let block = super::input::panel(area, (w, 2));
         frame.render_widget(Paragraph::new(lines), block);
         return;
     };

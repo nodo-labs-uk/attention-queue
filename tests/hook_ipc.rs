@@ -194,6 +194,7 @@ async fn pre_tool_request_reaches_server() {
             tool_name: "Write".into(),
             tool_use_id: "toolu_1".into(),
             tool_input: json!({"file_path": "/w/api/x.txt", "content": "hi"}),
+            pane: Some("%7".into()),
         }
     );
     ev.reply.send(HookReply::NoDecision).unwrap();

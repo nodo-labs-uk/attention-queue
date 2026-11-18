@@ -24,6 +24,10 @@ pub enum HookRequest {
         tool_name: String,
         tool_use_id: String,
         tool_input: Value,
+        /// `$TMUX_PANE` of the hook, so an option menu's card finds its
+        /// window before aq knows the session.
+        #[serde(default)]
+        pane: Option<String>,
     },
     PostTool {
         session_id: String,

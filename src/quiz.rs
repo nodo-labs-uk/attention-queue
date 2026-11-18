@@ -448,7 +448,7 @@ fn file_header(f: &FileDiff) -> String {
         p.map_or_else(|| "/dev/null".into(), |p| format!("{pre}/{}", p.display()))
     };
     let (old_side, new_side) = match f.status {
-        FileStatus::Added | FileStatus::Untracked => ("/dev/null".into(), side(Some(new), "b")),
+        FileStatus::Added => ("/dev/null".into(), side(Some(new), "b")),
         FileStatus::Deleted => (side(Some(old), "a"), "/dev/null".into()),
         _ => (side(Some(old), "a"), side(Some(new), "b")),
     };

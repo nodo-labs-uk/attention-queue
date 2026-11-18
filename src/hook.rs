@@ -171,6 +171,7 @@ fn request(event: HookEvent, input: &Value, pane: Option<String>) -> HookRequest
             tool_name: s("tool_name"),
             tool_use_id: s("tool_use_id"),
             tool_input,
+            pane,
         },
         HookEvent::PostTool => HookRequest::PostTool {
             session_id: s("session_id"),
