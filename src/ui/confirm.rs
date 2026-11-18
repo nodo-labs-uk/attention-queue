@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
@@ -16,13 +16,7 @@ pub fn render(
     hints: &[(&str, &str)],
     t: &Theme,
 ) {
-    let [h] = Layout::horizontal([Constraint::Length(64.min(area.width))])
-        .flex(Flex::Center)
-        .areas(area);
-    let height = (lines.len() as u16 + 2).min(area.height);
-    let [panel] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(h);
+    let panel = super::input::panel(area, (64, lines.len() as u16 + 2));
     frame.render_widget(Clear, panel);
     let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(t.dim);

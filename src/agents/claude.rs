@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::process::Command;
 
 use super::AgentStatus;
@@ -11,9 +10,7 @@ const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeProc {
     pub pid: u32,
-    pub cwd: PathBuf,
     pub session_id: String,
-    pub name: String,
     pub status: AgentStatus,
 }
 
@@ -21,10 +18,7 @@ pub struct ClaudeProc {
 #[serde(rename_all = "camelCase")]
 struct Raw {
     pid: u32,
-    cwd: PathBuf,
     session_id: String,
-    #[serde(default)]
-    name: String,
     #[serde(default)]
     status: String,
 }
@@ -51,9 +45,7 @@ pub fn parse_agents_json(s: &str) -> Result<Vec<ClaudeProc>> {
         };
         procs.push(ClaudeProc {
             pid: r.pid,
-            cwd: r.cwd,
             session_id: r.session_id,
-            name: r.name,
             status: match r.status.as_str() {
                 "busy" => AgentStatus::Busy,
                 "idle" => AgentStatus::Idle,
@@ -97,7 +89,7 @@ mod tests {
         assert_eq!(procs[2].pid, 281000);
         assert_eq!(procs[0].pid, 279801);
         assert_eq!(procs[0].status, AgentStatus::Busy);
-        assert_eq!(procs[0].name, "chezmoi-86");
+        assert_eq!(procs[0].session_id, "f746f93d-45a6-468c-b3f2-19373c3cf46c");
         assert_eq!(procs[1].status, AgentStatus::Idle);
     }
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
@@ -255,12 +255,7 @@ fn render_file(
 
 /// `gd` results, in a box over the card.
 pub fn render_search(frame: &mut Frame, area: Rect, list: &SearchList, t: &Theme) {
-    let [h] = Layout::horizontal([Constraint::Length(90.min(area.width))])
-        .flex(Flex::Center)
-        .areas(area);
-    let [panel] = Layout::vertical([Constraint::Length(14.min(area.height))])
-        .flex(Flex::Center)
-        .areas(h);
+    let panel = super::input::panel(area, (90, 14));
     frame.render_widget(Clear, panel);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)

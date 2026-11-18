@@ -42,6 +42,16 @@ pub struct AgentId {
     pub claude_pid: u32,
 }
 
+impl AgentId {
+    /// A card's agent when no known session matches: its window shows as "?".
+    pub fn unknown() -> Self {
+        AgentId {
+            pane: "?".into(),
+            claude_pid: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CardKind {
     Review(ReviewCard),

@@ -83,7 +83,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
                 }
                 let colour = match f.status {
                     _ if rc.is_done(*i) => t.dim,
-                    FileStatus::Added | FileStatus::Untracked => t.add,
+                    FileStatus::Added => t.add,
                     FileStatus::Deleted => t.del,
                     FileStatus::Modified | FileStatus::Renamed => t.fg,
                 };

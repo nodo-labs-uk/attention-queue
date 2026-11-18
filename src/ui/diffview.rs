@@ -9,7 +9,6 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
 
 use crate::git::{DiffLine, FileDiff, FileStatus};
 use crate::highlight::Highlighter;
@@ -200,10 +199,18 @@ fn divider(buf: &mut Buffer, area: Rect, t: &Theme) {
     }
 }
 
-/// Screen lines `text` needs at `width` columns: at least one.
+/// Screen lines `text` needs at `width` columns: at least one. Wraps as
+/// `draw_wrapped` does, so a wide character that does not fit at a line's
+/// end starts the next.
 fn rows_for(text: &str, width: u16) -> usize {
-    let w = Span::raw(visible_code(text)).width();
-    w.div_ceil(width.max(1) as usize).max(1)
+    let text = visible_code(text);
+    if text.is_ascii() {
+        // One column a character: no wide character to move down a row.
+        return text.len().div_ceil(width.max(1) as usize).max(1);
+    }
+    let mut rows = 0;
+    crate::visible::wrap(&text, width as usize, &mut |_| rows += 1);
+    rows
 }
 
 /// Draws `pieces` from `x` on `area`'s first line, going on at `x` on the
@@ -218,8 +225,8 @@ fn draw_wrapped(
     for (style, text) in pieces {
         for ch in visible_code(&text).chars() {
             let s = ch.to_string();
-            let w = Span::raw(s.as_str()).width() as u16;
-            if x + w > area.right() {
+            let w = crate::visible::cols(ch) as u16;
+            if x + w > area.right() && x > start {
                 (x, y) = (start, y + 1);
                 if y >= area.bottom() {
                     return;
@@ -244,7 +251,6 @@ fn status_label(s: FileStatus) -> &'static str {
     match s {
         FileStatus::Added => "new file",
         FileStatus::Deleted => "deleted",
-        FileStatus::Untracked => "untracked",
         FileStatus::Modified | FileStatus::Renamed => "",
     }
 }
@@ -514,5 +520,22 @@ impl Ctx<'_> {
         let text = c.body.lines().nth(part).unwrap_or("");
         let fg = if old { t.dim } else { t.fg };
         draw_wrapped(buf, area, x, [(Style::new().fg(fg), text.to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_of_wide_characters_gets_every_row_it_draws() {
+        // Two-column characters fit two to a five-column row, not two and a half.
+        assert_eq!(rows_for("字字字字字", 5), 3);
+        let text = "字".repeat(5);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut buf = Buffer::empty(area);
+        draw_wrapped(&mut buf, area, 0, [(Style::new(), text)]);
+        let last: String = (0..5).map(|x| buf[(x, 2)].symbol().to_string()).collect();
+        assert!(last.starts_with('字'), "{last:?}");
     }
 }

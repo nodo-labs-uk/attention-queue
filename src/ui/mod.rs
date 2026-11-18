@@ -199,9 +199,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
         Some(Overlay::Help { scroll }) => help::render(frame, body, *scroll, t),
         Some(Overlay::Tour { page }) => tour::render(frame, body, *page, t),
         Some(Overlay::CloseAgent(id)) => {
-            let name = app
-                .agent(id)
-                .map_or_else(|| id.pane.clone(), |a| a.window_name.clone());
+            let name = app.window_name(id);
             confirm::render(
                 frame,
                 body,
@@ -241,9 +239,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             }
         }
         Some(Overlay::Model(id)) => {
-            let name = app
-                .agent(id)
-                .map_or_else(|| id.pane.clone(), |a| a.window_name.clone());
+            let name = app.window_name(id);
             let keys: Vec<String> = crate::app::MODELS
                 .iter()
                 .map(|(k, _)| k.to_string())
@@ -267,9 +263,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             );
         }
         Some(Overlay::PermissionMode(id)) => {
-            let name = app
-                .agent(id)
-                .map_or_else(|| id.pane.clone(), |a| a.window_name.clone());
+            let name = app.window_name(id);
             let keys: Vec<String> = crate::app::PERMISSION_KEYS
                 .iter()
                 .map(|(k, _)| k.to_string())
@@ -293,9 +287,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
             );
         }
         Some(Overlay::Prompt(d)) => {
-            let name = app
-                .agent(&d.agent)
-                .map_or_else(|| d.agent.pane.clone(), |a| a.window_name.clone());
+            let name = app.window_name(&d.agent);
             let title = match &d.group {
                 Some(group) => format!("Message every session in {}", empty::visible(group)),
                 None => format!("Message to {name}"),
@@ -345,8 +337,7 @@ pub fn kind_label(kind: &CardKind) -> &'static str {
 
 /// Window name of the card's agent, or its pane id if the agent is gone.
 pub fn window_of(app: &App, card: &Card) -> String {
-    app.agent(&card.agent)
-        .map_or_else(|| card.agent.pane.clone(), |a| a.window_name.clone())
+    app.window_name(&card.agent)
 }
 
 /// Card heading shared by every card kind: what, where, which mode, and any

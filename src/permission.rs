@@ -218,22 +218,12 @@ impl App {
         at: SystemTime,
         r: PermissionRequest,
     ) -> Vec<Effect> {
-        let agent = self
-            .agents
-            .iter()
-            .find(|a| r.pane.as_deref() == Some(a.id.pane.as_str()))
-            .or_else(|| self.agents.iter().find(|a| a.session_id == r.session_id));
+        let agent = self.hook_agent(r.pane.as_deref(), &r.session_id);
         let checkout = agent
             .and_then(|a| a.checkout.clone())
             .or(r.checkout)
             .unwrap_or_else(|| Checkout(r.cwd.clone().into()));
-        let agent = agent.map_or_else(
-            || AgentId {
-                pane: "?".into(),
-                claude_pid: 0,
-            },
-            |a| a.id.clone(),
-        );
+        let agent = agent.map_or_else(AgentId::unknown, |a| a.id.clone());
         self.next_card_id += 1;
         self.queue.push(Card {
             id: self.next_card_id,

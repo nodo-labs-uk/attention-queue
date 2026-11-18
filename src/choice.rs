@@ -98,14 +98,15 @@ pub fn questions(input: &Value) -> Vec<ChoiceQuestion> {
 
 impl App {
     /// The hook of an option menu is waiting. A menu aq can show becomes a
-    /// card; any other is let through to the session's window.
+    /// card; any other is let through to the session's window. `checkout`
+    /// is the hook's own, for when no known session matches.
     pub(crate) fn on_choice(
         &mut self,
         req_id: u64,
         at: SystemTime,
         session_id: &str,
-        cwd: &str,
-        checkout: Option<Checkout>,
+        pane: Option<&str>,
+        checkout: Checkout,
         input: Value,
     ) -> Vec<Effect> {
         let questions = questions(&input);
@@ -115,18 +116,9 @@ impl App {
                 decision: HookReply::NoDecision,
             }];
         }
-        let agent = self.agents.iter().find(|a| a.session_id == session_id);
-        let checkout = agent
-            .and_then(|a| a.checkout.clone())
-            .or(checkout)
-            .unwrap_or_else(|| Checkout(cwd.into()));
-        let agent = agent.map_or_else(
-            || AgentId {
-                pane: "?".into(),
-                claude_pid: 0,
-            },
-            |a| a.id.clone(),
-        );
+        let agent = self.hook_agent(pane, session_id);
+        let checkout = agent.and_then(|a| a.checkout.clone()).unwrap_or(checkout);
+        let agent = agent.map_or_else(AgentId::unknown, |a| a.id.clone());
         self.next_card_id += 1;
         self.queue.push(Card {
             id: self.next_card_id,
@@ -356,6 +348,7 @@ mod tests {
                 tool_name: "AskUserQuestion".into(),
                 tool_use_id: "t1".into(),
                 tool_input: input,
+                pane: None,
             },
             checkout: None,
             at: SystemTime::now(),
@@ -378,6 +371,31 @@ mod tests {
             ] => input,
             other => panic!("no answer: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_menu_from_a_session_not_yet_known_finds_its_window_by_pane() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut new = agent("%1", 1, "api", "/w/api", false);
+        // aq has not read this session's id from its window yet.
+        new.session_id = String::new();
+        a.agents = vec![new];
+        a.update(Msg::Ipc {
+            req_id: 7,
+            req: HookRequest::PreTool {
+                session_id: "s1".into(),
+                transcript_path: String::new(),
+                cwd: "/w/api".into(),
+                tool_name: "AskUserQuestion".into(),
+                tool_use_id: "t1".into(),
+                tool_input: menu(),
+                pane: Some("%1".into()),
+            },
+            checkout: None,
+            at: SystemTime::now(),
+            now: Instant::now(),
+        });
+        assert_eq!(a.queue.current().unwrap().agent.pane, "%1");
     }
 
     #[test]

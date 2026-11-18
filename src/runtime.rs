@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::agents::tmux::PopupLook;
-use crate::agents::{self, AgentConn};
+use crate::agents::{AgentConn, Checkouts};
 use crate::app::{App, Effect, MouseKind, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
 use crate::edit::apply_edit;
@@ -347,6 +347,7 @@ fn on_ipc(
             tool_name,
             tool_use_id,
             tool_input,
+            pane: _,
         } => {
             if !may_be_step(&app.config, &cwd, &tool_input) {
                 let _ = reply.send(HookReply::NoDecision);
@@ -446,6 +447,17 @@ fn on_msg(
     };
     // Before: a decision sees which hooks still wait.
     sweep(app, workers, waiting, loading)?;
+    // An `aq tell` whose sender gave up was reported as not sent, so it
+    // must not arrive later.
+    if let Msg::Ipc {
+        req_id,
+        req: HookRequest::Tell { .. },
+        ..
+    } = &msg
+        && !waiting.contains_key(req_id)
+    {
+        return Ok(());
+    }
     apply(app, msg, workers, waiting)?;
     // After: a hook that left while its file was read is reported now that
     // its card exists, so the card keeps its decision for the retry.
@@ -574,31 +586,6 @@ fn apply(
     Ok(())
 }
 
-/// How long the loader trusts a folder's checkout before asking git again.
-const CHECKOUT_TTL: Duration = Duration::from_secs(30);
-
-/// Folders' checkouts as git last gave them, so a hook does not cost a git
-/// call each time.
-#[derive(Default)]
-struct Checkouts(HashMap<PathBuf, (Option<Checkout>, std::time::Instant)>);
-
-impl Checkouts {
-    fn of(&mut self, dir: &Path) -> Option<Checkout> {
-        self.of_at(dir, std::time::Instant::now())
-    }
-
-    fn of_at(&mut self, dir: &Path, now: std::time::Instant) -> Option<Checkout> {
-        if let Some((c, at)) = self.0.get(dir)
-            && now.saturating_duration_since(*at) < CHECKOUT_TTL
-        {
-            return c.clone();
-        }
-        let c = agents::checkout_of(dir);
-        self.0.insert(dir.to_path_buf(), (c.clone(), now));
-        c
-    }
-}
-
 /// Reads for hooks, done in order on the loader thread.
 enum Load {
     /// Read what a step card needs. `config` is a snapshot, used only to
@@ -633,10 +620,10 @@ fn spawn_loader(tx: UnboundedSender<Msg>) -> std::sync::mpsc::Sender<Load> {
                     config,
                 } => Msg::PreTool {
                     req_id,
-                    edit: load_edit(req, &config),
+                    edit: load_edit(req, &config, &mut checkouts),
                     at: std::time::Instant::now(),
                 },
-                Load::Post(req) => load_post(req),
+                Load::Post(req) => load_post(req, &mut checkouts),
                 Load::Permission { req_id, req, at } => {
                     let checkout = match &req {
                         HookRequest::Permission { cwd, .. } | HookRequest::PreTool { cwd, .. } => {
@@ -1091,11 +1078,11 @@ fn read_code(req: CodeRequest) -> Msg {
 
 /// Finds the checkouts of the request's cwd and of the file it edits, and
 /// reads the file and, in step mode, Claude's description of the edit.
-fn load_edit(req: PreToolReq, config: &Config) -> PendingEdit {
+fn load_edit(req: PreToolReq, config: &Config, checkouts: &mut Checkouts) -> PendingEdit {
     let cwd = Path::new(&req.cwd);
-    let checkout = agents::checkout_of(cwd);
+    let checkout = checkouts.of(cwd);
     let path = cwd.join(edited_file(&req.tool_input).unwrap_or(""));
-    let file_checkout = file_dir(&path).and_then(|d| agents::checkout_of(&d));
+    let file_checkout = file_dir(&path).and_then(|d| checkouts.of(&d));
     let current = read_file(&path);
     let step = |c: &Option<Checkout>| c.as_ref().is_some_and(|c| config.mode_for(c) == Mode::Step);
     let step = step(&checkout) || step(&file_checkout);
@@ -1172,7 +1159,7 @@ fn unreadable(preview: crate::edit::EditPreview, why: &str) -> crate::edit::Edit
 
 /// Finds the checkout a finished tool worked in: its file's for an edit,
 /// for Bash the directory a leading `cd` goes to, else the cwd's.
-fn load_post(req: PostToolReq) -> Msg {
+fn load_post(req: PostToolReq, checkouts: &mut Checkouts) -> Msg {
     let cwd = Path::new(&req.cwd);
     let moved_to = req
         .tool_input
@@ -1189,9 +1176,9 @@ fn load_post(req: PostToolReq) -> Msg {
     });
     let checkout = file
         .and_then(|f| file_dir(&f))
-        .and_then(|d| agents::checkout_of(&d))
-        .or_else(|| moved_to.and_then(|d| agents::checkout_of(&d)))
-        .or_else(|| agents::checkout_of(cwd));
+        .and_then(|d| checkouts.of(&d))
+        .or_else(|| moved_to.and_then(|d| checkouts.of(&d)))
+        .or_else(|| checkouts.of(cwd));
     Msg::PostTool {
         session_id: req.session_id,
         checkout,
@@ -1521,6 +1508,7 @@ mod tests {
             tool_name: "Write".into(),
             tool_use_id: "t1".into(),
             tool_input: serde_json::json!({"file_path": file, "content": "x"}),
+            pane: None,
         }
     }
 
@@ -1568,6 +1556,37 @@ mod tests {
                 decision: HookReply::Allow
             }]
         );
+    }
+
+    #[test]
+    fn a_tell_whose_sender_gave_up_is_not_delivered() {
+        use crate::app::tests::agent;
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 2, "web", "/w/web", true),
+        ];
+        let (workers, _jobs, _loads) = wedged();
+        let mut waiting = HashMap::new();
+        let mut loading = Loading::new();
+        let (reply, hook) = oneshot::channel();
+        waiting.insert(1, reply);
+        // `aq tell` stops waiting while aq looks up the sender.
+        drop(hook);
+        let msg = Msg::Ipc {
+            req_id: 1,
+            req: HookRequest::Tell {
+                pane: Some("%1".into()),
+                to: "web".into(),
+                text: "hi".into(),
+            },
+            checkout: None,
+            at: std::time::SystemTime::now(),
+            now: std::time::Instant::now(),
+        };
+        on_msg(&mut app, msg, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(waiting.is_empty());
+        assert!(app.queue.is_empty(), "no card for a tell nobody waits on");
     }
 
     #[test]
@@ -1714,7 +1733,7 @@ mod tests {
             None,
             "cached"
         );
-        let later = t + CHECKOUT_TTL;
+        let later = t + crate::agents::CHECKOUT_TTL;
         assert_eq!(
             seen.of_at(dir.path(), later),
             Some(Checkout::new(dir.path()))
@@ -1823,13 +1842,13 @@ mod tests {
         };
         let checkout = Checkout::new(dir.path());
         let mut config = Config::default();
-        let e = load_edit(req(), &config);
+        let e = load_edit(req(), &config, &mut Checkouts::default());
         assert_eq!(e.checkout.as_ref(), Some(&checkout));
         assert_eq!(e.path, dir.path().join("src/a.rs"));
         assert!(matches!(e.preview, crate::edit::EditPreview::Placed { .. }));
         assert_eq!(e.description, None, "not read outside step mode");
         config.set_mode(&checkout, Mode::Step);
-        let e = load_edit(req(), &config);
+        let e = load_edit(req(), &config, &mut Checkouts::default());
         assert!(e.description.unwrap().starts_with("Return 429"));
     }
 
@@ -1846,7 +1865,7 @@ mod tests {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(load_edit(req, &Config::default()).preview);
+            let _ = tx.send(load_edit(req, &Config::default(), &mut Checkouts::default()).preview);
         });
         rx.recv_timeout(Duration::from_secs(5))
             .expect("reading the file blocked")
@@ -1973,12 +1992,13 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success());
-        let Msg::PostTool { checkout, .. } = load_post(PostToolReq {
+        let req = PostToolReq {
             session_id: "s1".into(),
             cwd: dir.path().display().to_string(),
             tool_name: "Bash".into(),
             tool_input: serde_json::json!({"command": "ls"}),
-        }) else {
+        };
+        let Msg::PostTool { checkout, .. } = load_post(req, &mut Checkouts::default()) else {
             panic!("expected PostTool");
         };
         assert_eq!(checkout, Some(Checkout::new(dir.path())));
