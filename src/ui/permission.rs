@@ -159,6 +159,17 @@ fn band_lines(rows: Vec<(BandRow, String)>, t: &Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The rows `flag_band` takes at most at `width`, for sizing a card.
+pub fn flag_band_height(state: &FlagState, width: usize) -> u16 {
+    match state {
+        FlagState::None => 0,
+        FlagState::Checking => 1,
+        FlagState::Flagged(flag) => {
+            flag_rows(flag, width, usize::from(GIST_ROWS) + 1).len() as u16 + 1
+        }
+    }
+}
+
 /// The top of a question or option-menu card's `body`: one dim row while
 /// it is checked, the band and a blank row once it is flagged. Returns the
 /// rest of `body`.

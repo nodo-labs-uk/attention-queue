@@ -233,5 +233,30 @@ mod tests {
             10,
         ));
         insta::assert_snapshot!(render(&a, 100, 24));
+        // On a phone-width screen the box fills the width and every key
+        // still shows, wrapped onto a second row.
+        let narrow = render(&a, 40, 24);
+        assert!(narrow.contains("╭ Claude is asking"), "{narrow}");
+        assert!(narrow.contains("Fix, then merge"), "{narrow}");
+        assert!(narrow.contains("answer in the"), "{narrow}");
+    }
+
+    #[test]
+    fn claude_codes_own_menu_is_a_box_too() {
+        let mut a = app();
+        a.queue.push(card(
+            1,
+            "/w/socratui",
+            CardKind::Menu(crate::menu::MenuCard {
+                menu: crate::agents::ScreenMenu {
+                    question: vec!["Do you want to proceed?".into()],
+                    options: vec!["1. Yes".into(), "2. No, keep planning".into()],
+                    cursor: 0,
+                },
+                picked: false,
+            }),
+            10,
+        ));
+        insta::assert_snapshot!(render(&a, 100, 16));
     }
 }
