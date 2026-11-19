@@ -4,6 +4,8 @@ In review mode, when a session finishes a turn, its diff becomes a review card. 
 
 ![A finished turn becomes a review card, and the comment goes back to the session](../media/review.svg)
 
+To review a pull request instead, press `R`: see [PR review](pr-review.md).
+
 ## Keys
 
 | Key | What it does |

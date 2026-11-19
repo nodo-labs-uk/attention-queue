@@ -162,7 +162,7 @@ impl App {
     }
 
     /// Opens the reader on `text`, playing.
-    fn read_fast(&mut self, text: &str) {
+    pub(crate) fn read_fast(&mut self, text: &str) {
         let words = words(text);
         if words.is_empty() {
             self.set_status("Nothing to read");

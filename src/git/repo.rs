@@ -287,6 +287,17 @@ pub fn base_tree(c: &Checkout) -> Result<String> {
     Ok(run_ok(cmd).unwrap_or_else(|_| EMPTY_TREE.to_string()))
 }
 
+/// Merge-base of HEAD and `base_ref`, a PR's base branch. Unlike `base_tree`
+/// it fails when there is no merge base, so a wrong ref is not diffed silently.
+pub fn merge_base_tree(c: &Checkout, base_ref: &str) -> Result<String> {
+    if base_ref.starts_with('-') {
+        bail!("invalid base ref {base_ref:?}");
+    }
+    let mut cmd = git_cmd(c)?;
+    cmd.args(["merge-base", "HEAD", base_ref]);
+    run_ok(cmd).with_context(|| format!("no merge base of HEAD and {base_ref}"))
+}
+
 /// Writes a tree of the working directory (tracked, modified and untracked files)
 /// without touching the user's index.
 pub fn snapshot_tree(c: &Checkout) -> Result<String> {

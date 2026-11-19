@@ -209,6 +209,11 @@ pub enum Msg {
         question: usize,
         result: Result<Snippet, String>,
     },
+    /// A `ComputeReview` effect could not make its diff.
+    ReviewFailed {
+        req: ReviewRequest,
+        error: String,
+    },
     /// The diff a `ComputeReview` effect asked for.
     ReviewComputed {
         req: ReviewRequest,
@@ -216,6 +221,38 @@ pub enum Msg {
         to_tree: String,
         files: Vec<FileDiff>,
         at: SystemTime,
+    },
+    /// The open PRs an `Effect::ListPrs` asked for.
+    PrList(Result<crate::pr::PrListing, String>),
+    /// The PR an `Effect::OpenPr` made ready, with GitHub's diff of it.
+    /// `asked` is the request's repo and number.
+    PrOpened {
+        asked: (Option<String>, u64),
+        result: Result<
+            (
+                crate::pr::PrInfo,
+                crate::pr::checkout::PrCheckout,
+                crate::pr::GhDiffRead,
+            ),
+            String,
+        >,
+    },
+    /// What an `Effect::PostReview` for review card `card` did.
+    ReviewPosted {
+        card: u64,
+        result: Result<(), crate::pr::PostError>,
+    },
+    /// The PR on card `card` checked out and read again (`Effect::RefreshPr`).
+    PrRefreshed {
+        card: u64,
+        result: Result<
+            (
+                crate::pr::PrInfo,
+                crate::pr::checkout::PrCheckout,
+                crate::pr::GhDiffRead,
+            ),
+            String,
+        >,
     },
 }
 
@@ -230,6 +267,9 @@ pub struct ReviewRequest {
     /// The card to refresh (`r`). `None` means the agent finished a round:
     /// refresh the checkout's review card, or make one if the diff is not empty.
     pub card: Option<u64>,
+    /// A PR's base branch: the first round diffs from its merge base with HEAD
+    /// instead of the default branch's.
+    pub base_ref: Option<String>,
 }
 
 /// Work for the runtime. `update` never does I/O itself.
@@ -384,6 +424,42 @@ pub enum Effect {
         /// Whose last `! command` to have typed in, if any.
         session_id: Option<String>,
     },
+    /// List the open PRs of the repos `dirs` are checkouts of.
+    ListPrs {
+        dirs: Vec<PathBuf>,
+    },
+    /// Make PR `number` of `repo` (else `dir`'s repo) ready for review.
+    /// `known` holds every known session's checkout.
+    OpenPr {
+        dir: PathBuf,
+        repo: Option<String>,
+        number: u64,
+        known: Vec<PathBuf>,
+    },
+    /// Remove the worktree `dir` that aq made for a PR, from clone `main`.
+    RemovePrWorktree {
+        main: PathBuf,
+        dir: PathBuf,
+    },
+    /// Post `body` as a review of PR `number` of `repo`, if its head on
+    /// GitHub is still `head_sha`; for review card `card`. `earlier`:
+    /// attempts that may have posted it already.
+    PostReview {
+        dir: PathBuf,
+        repo: String,
+        number: u64,
+        head_sha: String,
+        body: serde_json::Value,
+        card: u64,
+        earlier: Option<crate::pr::app::Uncertain>,
+    },
+    /// Check out someone else's PR again at its head, and read it and
+    /// GitHub's diff of it again, for review card `card`.
+    RefreshPr {
+        card: u64,
+        info: crate::pr::PrInfo,
+        main: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,6 +503,14 @@ pub enum Overlay {
     Model(AgentId),
     /// Picking a session's permission mode.
     PermissionMode(AgentId),
+    /// `R`: picking a PR to review.
+    PrFinder(Box<crate::pr::app::PrFinder>),
+    /// `s`, `a` or `X` on someone else's PR card: the review's summary.
+    PrSubmit {
+        card: u64,
+        event: crate::pr::place::Event,
+        input: TextInput,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -554,6 +638,12 @@ pub struct App {
     /// The session whose last reply `r` reads fast, once its conversation
     /// is read.
     pub(crate) read_reply: Option<String>,
+    /// The PRs under review, by the folder each is checked out in.
+    pub(crate) pr_reviews: BTreeMap<PathBuf, crate::pr::app::PrReview>,
+    /// `D` on a PR card: the card whose review is asked about closing.
+    pub(crate) closing_pr: Option<u64>,
+    /// What is under way on someone else's PR cards.
+    pub(crate) pr_cards: crate::pr::app::PrCards,
 }
 
 /// A pane's screen as last read, or why it could not be.
@@ -666,6 +756,9 @@ impl App {
             conversation: None,
             reading_conversation: false,
             read_reply: None,
+            pr_reviews: BTreeMap::new(),
+            closing_pr: None,
+            pr_cards: Default::default(),
         }
     }
 
@@ -1318,6 +1411,10 @@ impl App {
         }
         self.queue.pin();
         let current = self.queue.current().map(|c| c.id);
+        // A close question goes with its card from the front.
+        if self.closing_pr.is_some() && self.closing_pr != current {
+            self.closing_pr = None;
+        }
         if self.shown.map(|s| s.id) != current {
             let preempted = !by_user && self.shown.is_some();
             self.shown = current.map(|id| Shown { id, at, preempted });
@@ -1548,9 +1645,21 @@ impl App {
                 files,
                 at,
             } => {
-                self.on_review_computed(req, from_tree, to_tree, files, at);
+                self.on_review_recomputed(req.card, true);
+                self.on_review_computed(req, from_tree, to_tree, files, at)
+            }
+            Msg::ReviewFailed { req, error } => {
+                self.on_review_recomputed(req.card, false);
+                self.set_status(error);
                 Vec::new()
             }
+            Msg::PrList(prs) => {
+                self.on_pr_list(prs);
+                Vec::new()
+            }
+            Msg::PrOpened { asked, result } => self.on_pr_opened(asked, result),
+            Msg::ReviewPosted { card, result } => self.on_review_posted(card, result),
+            Msg::PrRefreshed { card, result } => self.on_pr_refreshed(card, result),
         }
     }
 
@@ -1668,7 +1777,12 @@ impl App {
                 return Vec::new();
             }
             Some(Overlay::Reader(_)) => return self.on_reader_key(key),
+            Some(Overlay::PrFinder(_)) => return self.on_pr_finder_key(key),
+            Some(Overlay::PrSubmit { .. }) => return self.on_pr_submit_key(key),
             _ => {}
+        }
+        if let Some(effects) = self.on_close_pr_key(key) {
+            return effects;
         }
         if key
             .modifiers
@@ -1704,6 +1818,15 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('O') => self.open_workspace_box(),
+            // Not as the second key of `zR` on a step card.
+            KeyCode::Char('R')
+                if !matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(CardKind::Step(sc)) if sc.view.pending.is_some()
+                ) =>
+            {
+                self.open_pr_finder()
+            }
             KeyCode::Char('S') => {
                 self.open_stash();
                 Vec::new()
@@ -2044,13 +2167,20 @@ impl App {
     /// What `agent`'s finished turn asks for in `checkout`, by its mode.
     fn on_turn_end_in(&mut self, checkout: &Checkout, agent: &Agent) -> Vec<Effect> {
         let from_tree = self.rounds.get(&checkout.0).map(|r| r.tree.clone());
-        match self.config.mode_for(checkout) {
+        // A PR's checkout is there to be reviewed, whatever its mode.
+        let base_ref = self.pr_base(checkout);
+        let mode = match base_ref {
+            Some(_) => Mode::Review,
+            None => self.config.mode_for(checkout),
+        };
+        match mode {
             Mode::Review => vec![Effect::ComputeReview(ReviewRequest {
                 checkout: checkout.clone(),
                 agent: agent.id.clone(),
                 from_tree,
                 full_branch: false,
                 card: None,
+                base_ref,
             })],
             Mode::Quiz => vec![Effect::ComputeQuiz {
                 checkout: checkout.clone(),
@@ -2069,7 +2199,7 @@ impl App {
         to_tree: String,
         files: Vec<FileDiff>,
         at: SystemTime,
-    ) {
+    ) -> Vec<Effect> {
         // A finished round claims its checkout's saved draft. Whatever
         // happens next (a card there already, nothing to review), older
         // saves for the checkout are done with.
@@ -2088,17 +2218,20 @@ impl App {
             // the round it closes must be the tree the user reviewed.
             // Anything newer shows in the next round.
             if self.sending.contains_key(&card.id) {
-                return;
+                return Vec::new();
             }
             if let CardKind::Review(rc) = &mut card.kind {
                 rc.replace_diff(from_tree, to_tree, files, req.full_branch);
             }
             card.agent = req.agent;
-            return;
+            return Vec::new();
         }
         // A refreshed card that has gone since, or nothing to review.
         if req.card.is_some() || files.is_empty() {
-            return;
+            if files.is_empty() {
+                return self.on_empty_pr(&req);
+            }
+            return Vec::new();
         }
         let last = self.rounds.get(&req.checkout.0);
         let round = last.map_or(1, |l| l.round + 1);
@@ -2136,6 +2269,7 @@ impl App {
                 req.full_branch,
             )),
         });
+        Vec::new()
     }
 
     fn on_review_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -2143,12 +2277,15 @@ impl App {
             return Vec::new();
         };
         let id = card.id;
+        if let Some(effects) = self.on_pr_card_key(key) {
+            return effects;
+        }
         if matches!(key.code, KeyCode::Char('s' | 'a')) && !self.settled(id) {
             self.too_quick("review");
             return Vec::new();
         }
         // What is sent is what the card holds when the send lands.
-        if matches!(key.code, KeyCode::Char('c' | 'x' | 'R')) && self.sending.contains_key(&id) {
+        if matches!(key.code, KeyCode::Char('c' | 'x' | 'r')) && self.sending.contains_key(&id) {
             self.set_status(if self.held.contains_key(&id) {
                 QUEUED_STATUS
             } else {
@@ -2237,13 +2374,31 @@ impl App {
         let Some(card) = self.queue.current() else {
             return Vec::new();
         };
-        let CardKind::Review(rc) = &card.kind else {
+        if !matches!(card.kind, CardKind::Review(_)) {
             return Vec::new();
-        };
+        }
         let id = card.id;
         if self.sending.contains_key(&id) {
             self.set_status("Still sending");
             return Vec::new();
+        }
+        if approve {
+            let dir = card.checkout.0.clone();
+            self.approving(id, &dir);
+        }
+        let Some(card) = self.queue.current() else {
+            return Vec::new();
+        };
+        let CardKind::Review(rc) = &card.kind else {
+            return Vec::new();
+        };
+        if !approve
+            && self
+                .pr_reviews
+                .get(&card.checkout.0)
+                .is_some_and(|pr| pr.info.mine)
+        {
+            return self.send_my_pr(id);
         }
         let agent = self.agent(&card.agent);
         let (text, done) = if approve {
@@ -2402,7 +2557,7 @@ impl App {
     }
 
     /// Removes review card `id` and records its round.
-    fn close_review(&mut self, id: u64, status: String) -> Vec<Effect> {
+    pub(crate) fn close_review(&mut self, id: u64, status: String) -> Vec<Effect> {
         let Some(Card {
             checkout,
             kind: CardKind::Review(rc),
@@ -2414,15 +2569,15 @@ impl App {
         // Only this round's comments show in the next; older ones go.
         let comments = rc.current_comments().cloned().collect();
         self.rounds.insert(
-            checkout.0,
+            checkout.0.clone(),
             LastRound {
                 tree: rc.to_tree,
                 round: rc.round,
                 comments,
             },
         );
-        self.set_status(status);
-        Vec::new()
+        self.set_status(status.clone());
+        self.on_review_closed(id, &checkout.0, &status)
     }
 
     fn toggle_full_branch(&mut self) -> Vec<Effect> {
@@ -2443,6 +2598,7 @@ impl App {
             from_tree: (!full_branch).then(|| last.tree.clone()),
             full_branch,
             card: Some(card.id),
+            base_ref: self.pr_base(&card.checkout),
         };
         self.set_status(if full_branch {
             "Loading the whole branch diff"
@@ -2827,6 +2983,7 @@ pub(crate) mod tests {
                 from_tree: None,
                 full_branch: false,
                 card: None,
+                base_ref: None,
             }
         );
         assert!(a.queue.is_empty(), "no card until the diff is in");
@@ -4117,7 +4274,7 @@ pub(crate) mod tests {
             a.update(key('s')).as_slice(),
             [Effect::Send { .. }]
         ));
-        for k in ['c', 'x', 'R'] {
+        for k in ['c', 'x', 'r'] {
             a.status_msg = None;
             assert!(a.update(key(k)).is_empty(), "{k}");
             assert_eq!(a.overlay, None, "{k}");

@@ -47,7 +47,8 @@ finished turn; the card on screen stays as it is.
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. It closes when the shell exits
-  M    next mode for this project         t    next theme
+  R    review a pull request              M    next mode for this project
+  t    next theme
   F1   this help                          Q    quit aq
   F2   the tour again                     F3   show or hide the keys row
 
@@ -66,6 +67,31 @@ finished turn; the card on screen stays as it is.
   m  Markdown as written, or as read (the default)
   f  hide or show the file list (remembered)
   e  open the file at this line in $VISUAL or $EDITOR, in a popup
+
+# PR review
+R opens a pull request as a review card: the list of open PRs, a number
+or a pasted link. aq never switches a branch in a session's folder. Your
+own PR is reviewed in the folder that has its branch, else in a worktree
+aq makes. Someone else's (a teammate's too) is checked out on its head
+commit, with no branch.
+  c  comment as on any review card   i  read the PR description
+  ?  ask Claude about the PR
+  D  close the PR review (removes a worktree aq made, if it is clean
+     and no session runs in it)
+Your PR:  s  send the comments to the session in that folder, which fixes
+  and pushes; with none there, a new session starts with them
+  a  approve: the PR review ends, and a worktree goes as with D
+Someone else's PR:
+  r  check it out again, for new commits
+  s  comment   a  approve   X  request changes
+  Each opens a summary box: Enter posts one review to GitHub, Esc cancels.
+  A comment GitHub cannot take on a line goes in the review's main text
+  with its path and lines, tagged file (GitHub's diff has the file, not
+  the lines) or top (it has not the file). If GitHub's diff could not be
+  read, every comment goes there.
+  Posting is refused if the PR moved on GitHub: press r, then check
+  where your comments sit. After a post that may have reached GitHub,
+  aq checks GitHub before it posts again.
 
 # Step card
   y  allow   n  reject with a reason   e  ask for a different change

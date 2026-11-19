@@ -55,6 +55,20 @@ This is the same list as aq's help page (`F1`).
 | `f` | hide or show the file list |
 | `e` | open the file at this line in your editor |
 
+## PR review
+
+`R` opens the list of PRs from anywhere. On a PR's card, the review card keys work, and these:
+
+| Key | What it does |
+|---|---|
+| `R` | list open PRs, or open one by number or link |
+| `i` | read the PR's description |
+| `D` | close the PR review |
+| `?` | ask Claude about the PR |
+| `s` | on someone else's PR, post the comments as a review |
+| `a` `X` | on someone else's PR, post and approve, or post and request changes |
+| `r` | on someone else's PR, check it out again |
+
 ## Step card
 
 | Key | What it does |

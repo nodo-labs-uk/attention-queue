@@ -6,13 +6,17 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{card_header, diffview, tree};
+use super::{card_header, confirm, diffview, tree};
 use crate::app::App;
 use crate::git::DiffLine;
 use crate::highlight::Highlighter;
 use crate::model::Card;
+use crate::pr::PrInfo;
+use crate::pr::app::PrReview;
+use crate::pr::place::{Placement, placement};
 use crate::review::{ReviewCard, lines};
 use crate::theme::Theme;
+use crate::visible::visible_code;
 
 pub fn render(
     frame: &mut Frame,
@@ -28,6 +32,10 @@ pub fn render(
         format!("  round {}", rc.round),
         Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
     ));
+    let pr = app.pr_reviews.get(&card.checkout.0);
+    if let Some(pr) = pr {
+        head.insert(1, pr_line(&pr.info, t));
+    }
     head.push(stats(rc, t));
     let [head_area, body] =
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
@@ -55,8 +63,72 @@ pub fn render(
         ];
         frame.render_widget(Paragraph::new(note), diff_area.inner(Margin::new(2, 1)));
     } else {
-        diffview::render(frame, diff_area, rc, t, hl);
+        diffview::render(frame, diff_area, rc, &tags(pr, rc), t, hl);
     }
+    if let Some(pr) = pr.filter(|_| app.closing_pr == Some(card.id)) {
+        let folder = if pr.made {
+            "Its worktree is removed if it is clean and no session runs in it."
+        } else {
+            "Its folder is kept."
+        };
+        confirm::render(
+            frame,
+            area,
+            "Close PR review",
+            &[
+                format!(
+                    "Close the review of PR #{}? Its comments go.",
+                    pr.info.number
+                ),
+                folder.into(),
+            ],
+            &[("y", "yes"), ("n", "no")],
+            t,
+        );
+    }
+}
+
+/// "PR #5 · Fix the parser · by alice", and for someone else's PR where
+/// the comments go.
+fn pr_line(info: &PrInfo, t: &Theme) -> Line<'static> {
+    let dim = Style::new().fg(t.dim);
+    let mut spans = vec![
+        Span::styled(
+            format!("PR #{}", info.number),
+            Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", dim),
+        Span::styled(visible_code(&info.title), Style::new().fg(t.fg)),
+        Span::styled(format!(" · by {}", visible_code(&info.author)), dim),
+    ];
+    if !info.mine {
+        spans.push(Span::styled(
+            "  (not yours: comments go to GitHub)",
+            Style::new().fg(t.hi),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// On someone else's PR, this round's comments that GitHub cannot take on
+/// their lines: they go in the review's main text with their lines. `file`
+/// when GitHub's diff has the file but not the lines, `top` when it has
+/// not the file, or could not be read. Older rounds' comments are not
+/// posted.
+fn tags(pr: Option<&PrReview>, rc: &ReviewCard) -> Vec<Option<&'static str>> {
+    let Some(pr) = pr.filter(|pr| !pr.info.mine) else {
+        return Vec::new();
+    };
+    let gh = pr.gh_diff.as_ref().ok();
+    rc.comments
+        .iter()
+        .map(|c| match placement(gh, c) {
+            _ if c.round != rc.round => None,
+            Placement::Line => None,
+            Placement::File => Some("file"),
+            Placement::Body => Some("top"),
+        })
+        .collect()
 }
 
 /// "3 files · +12 −4 · 1 comment", and which changes are shown.
@@ -112,6 +184,9 @@ mod tests {
     use crate::git::{DiffLine, FileDiff, FileStatus, Hunk};
     use crate::highlight::Highlighter;
     use crate::model::CardKind;
+    use crate::pr::PrInfo;
+    use crate::pr::app::PrReview;
+    use crate::pr::place::parse_gh_diff;
     use crate::queue::tests::card;
     use crate::review::tests::{comment, fixture_card};
     use crate::review::{DiffView, ReviewCard};
@@ -339,5 +414,120 @@ mod tests {
             println!("{view:?}: mean {mean:.2} ms, worst {worst:.2} ms per frame");
             assert!(mean < 5.0, "{view:?} mean frame {mean:.2} ms");
         }
+    }
+
+    /// GitHub's diff of the PR shows new lines 38-41 of src/limit.rs only.
+    const GH_DIFF: &str = "\
+diff --git a/src/limit.rs b/src/limit.rs
+--- a/src/limit.rs
++++ b/src/limit.rs
+@@ -38,3 +38,4 @@
+ pub fn check(store: &Store, key: &str)
+     -> Result<(), LimitError> {
+-    // TODO: real limits
++    let b = store.get(key).unwrap_or_default();
++    if b.tokens == 0 { return Err(TooMany) }
+";
+
+    /// The comments card, as PR 5 of o/api by alice or (`mine`) the user.
+    fn pr_app(mine: bool, gh: Option<&str>) -> App {
+        let mut a = review_app(fixture_with_comments(DiffView::Unified));
+        let info = PrInfo {
+            repo: "o/api".into(),
+            number: 5,
+            title: "Fix the parser".into(),
+            body: "Body".into(),
+            author: if mine { "smnai" } else { "alice" }.into(),
+            head_ref: "fix".into(),
+            base_ref: "dev".into(),
+            head_sha: "abc".into(),
+            url: "https://github.com/o/api/pull/5".into(),
+            mine,
+        };
+        a.pr_reviews.insert(
+            "/w/api".into(),
+            PrReview {
+                info,
+                main: "/m".into(),
+                made: !mine,
+                base_ref: "origin/dev".into(),
+                gh_diff: gh.map(parse_gh_diff).ok_or_else(|| "HTTP 502".to_string()),
+            },
+        );
+        a
+    }
+
+    #[test]
+    fn a_pr_card_names_the_pr() {
+        let screen = render(&pr_app(false, None), 100, 30);
+        assert!(
+            screen
+                .contains("PR #5 · Fix the parser · by alice  (not yours: comments go to GitHub)"),
+            "{screen}"
+        );
+        let screen = render(&pr_app(true, None), 100, 30);
+        assert!(
+            screen.contains("PR #5 · Fix the parser · by smnai"),
+            "{screen}"
+        );
+        assert!(!screen.contains("not yours"), "{screen}");
+    }
+
+    #[test]
+    fn a_comment_outside_githubs_diff_is_tagged_file() {
+        // Last round's comment is not posted, so it has no tag.
+        let screen = render(&pr_app(false, Some(GH_DIFF)), 100, 30);
+        assert!(screen.contains("old ✎ 43 closing brace moved"), "{screen}");
+        let mut a = pr_app(false, Some(GH_DIFF));
+        if let Some(c) = a.queue.current_mut()
+            && let CardKind::Review(rc) = &mut c.kind
+        {
+            rc.comments[1].round = rc.round;
+        }
+        let screen = render(&a, 100, 30);
+        let row = |text: &str| {
+            screen
+                .lines()
+                .find(|l| l.contains(text))
+                .unwrap_or_else(|| panic!("{text} in\n{screen}"))
+                .to_string()
+        };
+        assert!(
+            row("closing brace moved").contains("you ✎ file closing"),
+            "{screen}"
+        );
+        assert!(!row("what if the store").contains("file"), "{screen}");
+        // A file GitHub's diff does not have goes in the review's main text.
+        let other = GH_DIFF.replace("src/limit.rs", "src/other.rs");
+        let screen = render(&pr_app(false, Some(&other)), 100, 30);
+        assert!(screen.contains("you ✎ top what if"), "{screen}");
+        // Without GitHub's diff every comment goes in the main text.
+        let screen = render(&pr_app(false, None), 100, 30);
+        assert!(screen.contains("you ✎ top what if"), "{screen}");
+        // No tag on the user's own PR.
+        let screen = render(&pr_app(true, Some(GH_DIFF)), 100, 30);
+        assert!(!screen.contains("✎ file"), "{screen}");
+        assert!(!screen.contains("✎ top"), "{screen}");
+    }
+
+    #[test]
+    fn a_session_card_has_no_pr_line_or_tags() {
+        let screen = render(
+            &review_app(fixture_with_comments(DiffView::Unified)),
+            100,
+            30,
+        );
+        assert!(!screen.contains("PR #"), "{screen}");
+        assert!(screen.contains("old ✎ 43 closing brace moved"), "{screen}");
+    }
+
+    #[test]
+    fn pr_card_not_mine() {
+        insta::assert_snapshot!(render(&pr_app(false, Some(GH_DIFF)), 100, 30));
+    }
+
+    #[test]
+    fn pr_card_mine() {
+        insta::assert_snapshot!(render(&pr_app(true, Some(GH_DIFF)), 100, 30));
     }
 }

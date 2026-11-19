@@ -52,7 +52,7 @@ pub fn render(
     if let Some(tree_area) = tree_area {
         tree::render(frame, tree_area, &sc.diff, t);
     }
-    diffview::render(frame, diff_area, &sc.diff, t, hl);
+    diffview::render(frame, diff_area, &sc.diff, &[], t, hl);
 }
 
 #[cfg(test)]

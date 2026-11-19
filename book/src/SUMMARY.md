@@ -13,6 +13,7 @@
 - [Modes](modes.md)
 - [Cards](cards/README.md)
   - [Review](cards/review.md)
+  - [PR review](cards/pr-review.md)
   - [Step](cards/step.md)
   - [Shell change](cards/shell-change.md)
   - [Permission](cards/permission.md)

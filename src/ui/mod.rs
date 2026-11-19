@@ -11,6 +11,7 @@ mod keys;
 mod menu;
 mod new_session;
 mod permission;
+mod pr;
 mod question;
 mod quiz;
 mod reader;
@@ -312,6 +313,10 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
         }
         Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
         Some(Overlay::Workspace(d)) => workspace::render(frame, body, d, &app.config.workspaces, t),
+        Some(Overlay::PrFinder(f)) => pr::render(frame, body, f, t),
+        Some(Overlay::PrSubmit { card, event, input }) => {
+            pr::render_submit(frame, body, app, *card, *event, input, t)
+        }
         None => {}
     }
     if let Some(step) = app.practice_step() {

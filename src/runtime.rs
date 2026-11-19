@@ -612,6 +612,37 @@ fn apply(
             Effect::Llm(job) => Job::Llm(job),
             Effect::FlagFacts { card, cwd, action } => Job::FlagFacts { card, cwd, action },
             Effect::LogFlag(entry) => Job::LogFlag(entry),
+            Effect::ListPrs { dirs } => Job::ListPrs(dirs),
+            Effect::OpenPr {
+                dir,
+                repo,
+                number,
+                known,
+            } => Job::OpenPr {
+                dir,
+                repo,
+                number,
+                known,
+            },
+            Effect::RemovePrWorktree { main, dir } => Job::RemovePrWorktree { main, dir },
+            Effect::PostReview {
+                dir,
+                repo,
+                number,
+                head_sha,
+                body,
+                card,
+                earlier,
+            } => Job::PostReview {
+                dir,
+                repo,
+                number,
+                head_sha,
+                body,
+                card,
+                earlier,
+            },
+            Effect::RefreshPr { card, info, main } => Job::RefreshPr { card, info, main },
             Effect::Reply { req_id, decision } => {
                 // The hook may have gone; then nobody is listening.
                 if let Some(reply) = waiting.remove(&req_id) {
@@ -782,6 +813,36 @@ enum Job {
         action: Action,
     },
     LogFlag(serde_json::Value),
+    /// Started on its own thread: `gh` can take a while.
+    ListPrs(Vec<PathBuf>),
+    /// Started on its own thread: a checkout can take minutes.
+    OpenPr {
+        dir: PathBuf,
+        repo: Option<String>,
+        number: u64,
+        known: Vec<PathBuf>,
+    },
+    /// Started on its own thread: `git status` reads the whole worktree.
+    RemovePrWorktree {
+        main: PathBuf,
+        dir: PathBuf,
+    },
+    /// Started on its own thread: `gh` can take a while.
+    PostReview {
+        dir: PathBuf,
+        repo: String,
+        number: u64,
+        head_sha: String,
+        body: serde_json::Value,
+        card: u64,
+        earlier: Option<crate::pr::app::Uncertain>,
+    },
+    /// Started on its own thread: a checkout can take minutes.
+    RefreshPr {
+        card: u64,
+        info: crate::pr::PrInfo,
+        main: PathBuf,
+    },
 }
 
 /// Checks a candidate's actions and logs the decision. A failed write to the
@@ -1038,6 +1099,114 @@ fn spawn_effect_worker(
                     });
                     None
                 }
+                Job::ListPrs(dirs) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let result =
+                            crate::flag::me(&ME, &Cli, dirs.first().map_or(Path::new("."), |d| d))
+                                .map_err(|e| format!("Could not look up your GitHub login: {e:#}"))
+                                .and_then(|me| {
+                                    crate::pr::list_all(&Cli, &dirs, &me)
+                                        .map_err(|e| format!("{e:#}"))
+                                });
+                        let _ = tx.send(Msg::PrList(result));
+                    });
+                    None
+                }
+                Job::OpenPr {
+                    dir,
+                    repo,
+                    number,
+                    known,
+                } => {
+                    let tx = tx.clone();
+                    let state_dir = paths.state_dir.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::flag::me(&ME, &Cli, &dir)
+                            .and_then(|me| {
+                                crate::pr::open(
+                                    &Cli,
+                                    &dir,
+                                    repo.as_deref(),
+                                    number,
+                                    &known,
+                                    &me,
+                                    &state_dir,
+                                )
+                            })
+                            .map_err(|e| format!("Could not open PR #{number}: {e:#}"));
+                        let _ = tx.send(Msg::PrOpened {
+                            asked: (repo, number),
+                            result,
+                        });
+                    });
+                    None
+                }
+                Job::RemovePrWorktree { main, dir } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = crate::pr::checkout::remove(&Cli, &main, &dir) {
+                            let _ =
+                                tx.send(Msg::EffectFailed(format!("The worktree is kept: {e:#}")));
+                        }
+                    });
+                    None
+                }
+                Job::PostReview {
+                    dir,
+                    repo,
+                    number,
+                    head_sha,
+                    body,
+                    card,
+                    earlier,
+                } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        use crate::pr::PostError;
+                        let started = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs());
+                        let result = match earlier {
+                            None => crate::pr::post_review(
+                                &Cli, &dir, &repo, number, &head_sha, &body, None, started,
+                            ),
+                            Some(earlier) => match crate::flag::me(&ME, &Cli, &dir) {
+                                Ok(me) => crate::pr::post_review(
+                                    &Cli,
+                                    &dir,
+                                    &repo,
+                                    number,
+                                    &head_sha,
+                                    &body,
+                                    Some(crate::pr::Earlier {
+                                        login: &me.login,
+                                        since: earlier.started,
+                                        heads: &earlier.heads,
+                                    }),
+                                    started,
+                                ),
+                                Err(e) => Err(PostError::NotPosted(format!(
+                                    "Could not look up your GitHub login: {e:#}"
+                                ))),
+                            },
+                        };
+                        let _ = tx.send(Msg::ReviewPosted { card, result });
+                    });
+                    None
+                }
+                Job::RefreshPr { card, info, main } => {
+                    let tx = tx.clone();
+                    let state_dir = paths.state_dir.clone();
+                    std::thread::spawn(move || {
+                        let number = info.number;
+                        let result = crate::flag::me(&ME, &Cli, &main)
+                            .and_then(|me| crate::pr::refresh(&Cli, &info, &main, &me, &state_dir))
+                            .map_err(|e| format!("Could not refresh PR #{number}: {e:#}"));
+                        let _ = tx.send(Msg::PrRefreshed { card, result });
+                    });
+                    None
+                }
                 // A failed write is ignored, as when the runtime logs.
                 Job::LogFlag(entry) => {
                     let log = crate::flag::log::log_path(&paths.state_dir);
@@ -1125,10 +1294,17 @@ fn spawn_effect_worker(
 
 /// Diff from `from` (or the branch base) to a fresh snapshot: the from
 /// tree, the snapshot, and the files.
-fn diff_since(c: &Checkout, from: Option<&str>) -> Result<(String, String, Vec<git::FileDiff>)> {
-    let from = match from {
-        Some(t) => t.to_string(),
-        None => git::base_tree(c)?,
+/// With a `base_ref` (a PR's base branch) the first round starts at its merge
+/// base with HEAD instead of the default branch.
+fn diff_since(
+    c: &Checkout,
+    from: Option<&str>,
+    base_ref: Option<&str>,
+) -> Result<(String, String, Vec<git::FileDiff>)> {
+    let from = match (from, base_ref) {
+        (Some(t), _) => t.to_string(),
+        (None, Some(b)) => git::merge_base_tree(c, b)?,
+        (None, None) => git::base_tree(c)?,
     };
     let to = git::snapshot_tree(c)?;
     let files = git::diff_trees(c, &from, &to)?;
@@ -1138,7 +1314,7 @@ fn diff_since(c: &Checkout, from: Option<&str>) -> Result<(String, String, Vec<g
 /// Diff from the request's tree (or the branch base) to a fresh snapshot.
 fn compute_review(req: ReviewRequest) -> Msg {
     let c = &req.checkout;
-    match diff_since(c, req.from_tree.as_deref()) {
+    match diff_since(c, req.from_tree.as_deref(), req.base_ref.as_deref()) {
         Ok((from_tree, to_tree, files)) => Msg::ReviewComputed {
             req,
             from_tree,
@@ -1146,16 +1322,16 @@ fn compute_review(req: ReviewRequest) -> Msg {
             files,
             at: std::time::SystemTime::now(),
         },
-        Err(e) => Msg::EffectFailed(format!(
-            "Could not diff {}: {e:#}",
-            crate::app::project_name(c)
-        )),
+        Err(e) => {
+            let error = format!("Could not diff {}: {e:#}", crate::app::project_name(c));
+            Msg::ReviewFailed { req, error }
+        }
     }
 }
 
 /// The diff a quiz is about.
 fn compute_quiz(checkout: Checkout, agent: AgentId, from_tree: Option<String>) -> Msg {
-    match diff_since(&checkout, from_tree.as_deref()) {
+    match diff_since(&checkout, from_tree.as_deref(), None) {
         Ok((from_tree, to_tree, files)) => Msg::QuizDiff {
             checkout,
             agent,
@@ -2340,6 +2516,7 @@ mod tests {
             from_tree: None,
             full_branch: false,
             card: None,
+            base_ref: None,
         };
         let Msg::ReviewComputed { files, to_tree, .. } = compute_review(req) else {
             panic!("expected a diff");
@@ -2347,5 +2524,58 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].hunks[0].lines.len(), 2);
         assert_eq!(to_tree.len(), 40);
+    }
+
+    #[test]
+    fn compute_review_with_a_base_ref_diffs_from_its_merge_base() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let commit = |name: &str| {
+            std::fs::write(dir.path().join(name), "x\n").unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", name]);
+        };
+        git(&["init", "-q", "-b", "main"]);
+        commit("init.txt");
+        git(&["checkout", "-qb", "base2"]);
+        commit("base2.txt");
+        git(&["checkout", "-qb", "feat"]);
+        commit("feat.txt");
+        let diff_paths = |base_ref: Option<&str>| {
+            let req = ReviewRequest {
+                checkout: crate::model::Checkout::new(dir.path()),
+                agent: AgentId {
+                    pane: "%1".into(),
+                    claude_pid: 1,
+                },
+                from_tree: None,
+                full_branch: false,
+                card: None,
+                base_ref: base_ref.map(str::to_string),
+            };
+            let Msg::ReviewComputed { files, .. } = compute_review(req) else {
+                panic!("expected a diff");
+            };
+            files.len()
+        };
+        assert_eq!(diff_paths(Some("base2")), 1);
+        assert_eq!(diff_paths(None), 2);
     }
 }

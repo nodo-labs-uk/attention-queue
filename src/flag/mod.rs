@@ -238,6 +238,16 @@ mod tests {
                 _ => anyhow::bail!("offline"),
             }
         }
+
+        fn run_with(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _opts: facts::RunOpts,
+        ) -> anyhow::Result<String> {
+            self.run(cwd, program, args)
+        }
     }
 
     fn actions(command: &str) -> Vec<Action> {

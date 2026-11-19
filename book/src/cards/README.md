@@ -30,6 +30,7 @@ Moving around works as in vim, on every card that scrolls:
 The kinds of card:
 
 - [Review](review.md): a finished turn's diff.
+- [PR review](pr-review.md): a pull request opened with `R`.
 - [Step](step.md): one edit, waiting to be applied.
 - [Shell change](shell-change.md): what a shell command changed, in step mode.
 - [Permission](permission.md): Claude asks to run a tool.

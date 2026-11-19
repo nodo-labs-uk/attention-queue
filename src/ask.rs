@@ -11,6 +11,7 @@ use crate::app::{App, Effect, Overlay};
 use crate::edit::EditPreview;
 use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, valid_session_id};
 use crate::model::{Card, CardKind, Checkout};
+use crate::pr::PrInfo;
 use crate::quiz::{QuizState, diff_text, fenced};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::visible::{visible_lines, wrap_words};
@@ -235,7 +236,25 @@ fn changed_window(after: &str, changed: &[Range<u32>], cap: usize) -> String {
 /// edit, the permission's tool input, or the quiz question. About
 /// `CONTEXT_CAP` bytes at most.
 pub fn context_for(card: &Card) -> String {
+    context_with_pr(card, None)
+}
+
+/// `context_for`, with the PR's title, number, author and description
+/// before the diff when the card reviews a PR.
+pub fn context_with_pr(card: &Card, pr: Option<&PrInfo>) -> String {
     match &card.kind {
+        CardKind::Review(rc) if let Some(pr) = pr => {
+            let head = format!(
+                "A review of PR #{} of {}, \"{}\" by {}. Its description:\n\n{}\n\nDiff:\n\n",
+                pr.number,
+                pr.repo,
+                pr.title,
+                pr.author,
+                cap_text(&pr.body, 4096)
+            );
+            let room = CONTEXT_CAP.saturating_sub(head.len());
+            format!("{head}{}", diff_text(&rc.files, room))
+        }
         CardKind::Review(rc) => format!(
             "A review of the agent's changes. Diff:\n\n{}",
             diff_text(&rc.files, CONTEXT_CAP)
@@ -353,7 +372,10 @@ impl App {
             card: card.id,
             checkout: card.checkout.clone(),
             session_id,
-            context: context_for(card),
+            context: context_with_pr(
+                card,
+                self.pr_reviews.get(&card.checkout.0).map(|pr| &pr.info),
+            ),
             entries: Vec::new(),
             input: Some(TextInput::single_line()),
             scroll: 0,

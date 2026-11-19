@@ -16,6 +16,7 @@ pub mod model;
 pub mod new_session;
 pub mod permission;
 pub mod persist;
+pub mod pr;
 pub mod question;
 pub mod queue;
 pub mod quiz;

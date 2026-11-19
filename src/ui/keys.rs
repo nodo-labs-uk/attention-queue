@@ -8,6 +8,37 @@ use super::question::TELL_KEYS;
 use crate::app::{App, Overlay};
 use crate::model::{Card, CardKind};
 use crate::quiz::{QuizCard, QuizState, Verdict};
+use crate::review::ReviewCard;
+
+/// The review card's keys.
+fn review_keys(rc: &ReviewCard) -> Vec<(&'static str, String)> {
+    vec![
+        ("c", "comment".into()),
+        ("s", format!("send {}", rc.current_comments().count())),
+        ("a", "approve".into()),
+        ("v", "view".into()),
+        ("]c", "change".into()),
+        ("H/L", "file".into()),
+        ("d", "done".into()),
+        ("V", "range".into()),
+        ("x", "delete".into()),
+        ("e", "edit".into()),
+        ("f", "files".into()),
+        (
+            "r",
+            if rc.show_full_branch {
+                "this round"
+            } else {
+                "whole branch"
+            }
+            .into(),
+        ),
+        ("j/k", "line".into()),
+        ("Space", "skip".into()),
+        ("B", "move to back".into()),
+        ("?", "ask".into()),
+    ]
+}
 
 /// The keys that work right now, the likeliest first.
 fn keys_for(app: &App) -> Vec<(&str, String)> {
@@ -79,6 +110,9 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
         ) => {
             vec![("Enter", "send".into()), ("Esc", "cancel".into())]
         }
+        (Some(Overlay::PrSubmit { .. }), _) => {
+            vec![("Enter", "post".into()), ("Esc", "cancel".into())]
+        }
         (Some(Overlay::QuizAnswer(_)), _) => vec![
             ("Ctrl-S", "submit".into()),
             ("Enter Enter", "submit".into()),
@@ -128,6 +162,10 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("x", "drop".into()),
             ("Esc", "close".into()),
         ],
+        (Some(Overlay::PrFinder(_)), _) => super::pr::KEYS
+            .iter()
+            .map(|(k, what)| (*k, what.to_string()))
+            .collect(),
         (Some(Overlay::Search(_)), _) => vec![
             ("j/k", "move".into()),
             ("Enter", "show".into()),
@@ -156,38 +194,31 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("Space", "skip".into()),
             ("B", "move to back".into()),
         ],
+        (None, Some(card)) if app.closing_pr == Some(card.id) => {
+            vec![("y", "close it".into()), ("n", "keep it".into())]
+        }
         (
             None,
             Some(Card {
                 kind: CardKind::Review(rc),
+                checkout,
                 ..
             }),
-        ) => vec![
-            ("c", "comment".into()),
-            ("s", format!("send {}", rc.current_comments().count())),
-            ("a", "approve".into()),
-            ("v", "view".into()),
-            ("]c", "change".into()),
-            ("H/L", "file".into()),
-            ("d", "done".into()),
-            ("V", "range".into()),
-            ("x", "delete".into()),
-            ("e", "edit".into()),
-            ("f", "files".into()),
-            (
-                "r",
-                if rc.show_full_branch {
-                    "this round"
-                } else {
-                    "whole branch"
+        ) => {
+            let mut keys = review_keys(rc);
+            if let Some(pr) = app.pr_reviews.get(&checkout.0) {
+                keys.insert(3, ("i", "description".into()));
+                keys.insert(4, ("D", "close PR".into()));
+                if !pr.info.mine {
+                    keys[1] = ("s", "post".into());
+                    keys.insert(3, ("X", "request changes".into()));
+                    if let Some(r) = keys.iter_mut().find(|k| k.0 == "r") {
+                        r.1 = "refresh".into();
+                    }
                 }
-                .into(),
-            ),
-            ("j/k", "line".into()),
-            ("Space", "skip".into()),
-            ("B", "move to back".into()),
-            ("?", "ask".into()),
-        ],
+            }
+            keys
+        }
         (
             None,
             Some(Card {
@@ -283,6 +314,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("Esc Esc", "stop".into()),
             ("x", "close".into()),
             ("N", "new session".into()),
+            ("R", "review PR".into()),
             ("O", "workspace".into()),
             ("!", "shell".into()),
             ("t", "theme".into()),

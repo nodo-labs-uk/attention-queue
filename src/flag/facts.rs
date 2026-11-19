@@ -1,7 +1,8 @@
 //! Facts about the repo, PR or issue that an action touches. The rules read
 //! them; they are gathered elsewhere.
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -141,10 +142,25 @@ pub enum Facts {
 /// How long one `git` or `gh` call may run.
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long `git fetch`, `git worktree add` and `gh pr checkout` may run.
+pub const LONG_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long `gh pr diff`, `gh pr list` and posting may run.
+pub const SLOW_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How one call runs: how long it may take and what it reads on stdin.
+pub struct RunOpts<'a> {
+    pub timeout: Duration,
+    pub stdin: Option<&'a str>,
+}
+
 /// Runs `git` and `gh`. Tests replace it with canned answers.
 pub trait Runner: Send + Sync {
     /// stdout of `program args` run in `cwd`, failing past 10 s or on a non-zero exit.
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<String>;
+
+    /// Like `run`, with its own timeout and optional stdin.
+    fn run_with(&self, cwd: &Path, program: &str, args: &[&str], opts: RunOpts) -> Result<String>;
 }
 
 /// The real runner.
@@ -152,6 +168,14 @@ pub struct Cli;
 
 impl Runner for Cli {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> Result<String> {
+        let opts = RunOpts {
+            timeout: LOOKUP_TIMEOUT,
+            stdin: None,
+        };
+        self.run_with(cwd, program, args, opts)
+    }
+
+    fn run_with(&self, cwd: &Path, program: &str, args: &[&str], opts: RunOpts) -> Result<String> {
         let mut cmd = if program == "git" {
             git_in(cwd)?
         } else {
@@ -159,36 +183,123 @@ impl Runner for Cli {
             c.current_dir(cwd);
             c
         };
+        cmd.envs(no_prompts(program));
+        // In a session of its own the child has no controlling terminal, so
+        // ssh cannot open /dev/tty to ask for a passphrase: it fails instead
+        // of drawing over aq. The user's ssh settings are left alone.
+        // SAFETY: setsid is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
         cmd.args(args)
-            .stdin(Stdio::null())
+            .stdin(if opts.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         let mut child = cmd.spawn().with_context(|| format!("starting {program}"))?;
-        let mut stdout = child.stdout.take().context("no stdout")?;
-        let reader = std::thread::spawn(move || {
-            let mut out = String::new();
-            stdout.read_to_string(&mut out).map(|_| out)
-        });
-        let deadline = Instant::now() + LOOKUP_TIMEOUT;
+        let stdout = read_in_background(child.stdout.take().context("no stdout")?);
+        let stderr = read_in_background(child.stderr.take().context("no stderr")?);
+        // A separate thread, so a child that does not read cannot block the
+        // timeout. Dropping stdin at the end of the thread closes the pipe.
+        if let (Some(text), Some(mut stdin)) = (opts.stdin, child.stdin.take()) {
+            let text = text.to_string();
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+            });
+        }
+        let deadline = Instant::now() + opts.timeout;
         let status = loop {
             if let Some(status) = child.try_wait()? {
                 break status;
             }
             if Instant::now() >= deadline {
-                // Killing the child closes its stdout, so the reader ends.
+                // Killing the child closes its pipes, so the readers end.
                 let _ = child.kill();
                 let _ = child.wait();
-                bail!("{program} took longer than {} s", LOOKUP_TIMEOUT.as_secs());
+                bail!("{program} took longer than {} s", opts.timeout.as_secs());
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        let out = reader
-            .join()
-            .map_err(|_| anyhow!("reader thread panicked"))??;
+        // A process the child started (an SSH master, say) can hold the pipes
+        // open after the child exits. The child itself has exited, so all it
+        // wrote is already in the pipes: the readers get a short grace, not
+        // the rest of the deadline.
+        let grace = deadline.min(Instant::now() + PIPE_GRACE);
+        let out = stdout.wait_until(grace);
+        let err = stderr.wait_until(grace);
         if !status.success() {
-            bail!("{program} exited with {status}");
+            let err = String::from_utf8_lossy(&err);
+            let err = err.trim();
+            if err.is_empty() {
+                bail!("{program} exited with {status}");
+            }
+            bail!("{}", err.chars().take(500).collect::<String>());
         }
-        Ok(out)
+        String::from_utf8(out).map_err(|_| anyhow!("{program} printed text that is not UTF-8"))
+    }
+}
+
+/// How long the pipes are read after the child exits, for output a process
+/// it started still holds open.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+/// The environment that stops `program` asking anything: git fails instead
+/// of prompting for a password, ssh opens no graphical askpass, and gh asks
+/// nothing. The terminal itself is out of reach (`run_with` gives the child
+/// a session of its own), so the user's ssh settings need no change.
+fn no_prompts(program: &str) -> Vec<(&'static str, String)> {
+    let mut env = vec![
+        ("GIT_TERMINAL_PROMPT", "0".to_string()),
+        ("SSH_ASKPASS_REQUIRE", "never".to_string()),
+    ];
+    if program == "gh" {
+        env.push(("GH_PROMPT_DISABLED", "1".into()));
+    }
+    env
+}
+
+/// A pipe being read on its own thread.
+struct Reading {
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+fn read_in_background(mut pipe: impl Read + Send + 'static) -> Reading {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (tx, done) = std::sync::mpsc::channel();
+    let into = buf.clone();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(mut b) = into.lock() {
+                        b.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(());
+    });
+    Reading { buf, done }
+}
+
+impl Reading {
+    /// What was read by the end of the pipe, or by `deadline` if that comes first.
+    fn wait_until(self, deadline: Instant) -> Vec<u8> {
+        let _ = self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        self.buf.lock().map(|b| b.clone()).unwrap_or_default()
     }
 }
 
@@ -612,6 +723,91 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("unexpected command: {key}"))
         }
+
+        fn run_with(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _opts: RunOpts,
+        ) -> Result<String> {
+            self.run(cwd, program, args)
+        }
+    }
+
+    #[test]
+    fn run_with_passes_stdin() {
+        let opts = RunOpts {
+            timeout: LOOKUP_TIMEOUT,
+            stdin: Some("hello there"),
+        };
+        let out = Cli.run_with(Path::new("."), "cat", &[], opts).unwrap();
+        assert_eq!(out, "hello there");
+    }
+
+    #[test]
+    fn a_failure_carries_stderr() {
+        let err = Cli
+            .run(Path::new("."), "sh", &["-c", "echo nope >&2; exit 1"])
+            .unwrap_err();
+        assert!(err.to_string().contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn run_with_kills_past_its_timeout() {
+        let opts = RunOpts {
+            timeout: Duration::from_millis(200),
+            stdin: None,
+        };
+        let start = Instant::now();
+        let r = Cli.run_with(Path::new("."), "sleep", &["5"], opts);
+        assert!(r.is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_process_left_holding_the_pipe_does_not_hold_up_the_call() {
+        let opts = RunOpts {
+            timeout: Duration::from_secs(1),
+            stdin: None,
+        };
+        let start = Instant::now();
+        let out = Cli
+            .run_with(Path::new("."), "sh", &["-c", "sleep 30 & echo hi"], opts)
+            .unwrap();
+        assert_eq!(out, "hi\n");
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn network_calls_never_prompt() {
+        let git = no_prompts("git");
+        assert_eq!(
+            git,
+            [
+                ("GIT_TERMINAL_PROMPT", "0".to_string()),
+                ("SSH_ASKPASS_REQUIRE", "never".to_string()),
+            ]
+        );
+        assert_eq!(no_prompts("gh")[2], ("GH_PROMPT_DISABLED", "1".to_string()));
+        // The user's ssh command is left as it is.
+        assert!(!git.iter().any(|(k, _)| *k == "GIT_SSH_COMMAND"));
+        let out = Cli
+            .run(Path::new("."), "sh", &["-c", "echo $GIT_TERMINAL_PROMPT"])
+            .unwrap();
+        assert_eq!(out, "0\n");
+        // No controlling terminal: /dev/tty cannot be opened.
+        let out = Cli
+            .run(
+                Path::new("."),
+                "sh",
+                &[
+                    "-c",
+                    "(exec 3</dev/tty) 2>/dev/null && echo tty || echo none",
+                ],
+            )
+            .unwrap();
+        assert_eq!(out, "none\n");
     }
 
     fn me() -> Me {
@@ -992,6 +1188,16 @@ mod tests {
             fn run(&self, cwd: &Path, _: &str, _: &[&str]) -> Result<String> {
                 self.0.lock().unwrap().push(cwd.to_path_buf());
                 anyhow::bail!("no answer")
+            }
+
+            fn run_with(
+                &self,
+                cwd: &Path,
+                program: &str,
+                args: &[&str],
+                _opts: RunOpts,
+            ) -> Result<String> {
+                self.run(cwd, program, args)
             }
         }
         let a = Action::Push {
