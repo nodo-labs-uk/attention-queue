@@ -1,4 +1,5 @@
-//! Background `claude -p` work: quiz questions and judging answers.
+//! Background `claude -p` work: quiz questions, judging answers, side
+//! questions and the summary on a permission card.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Write};
@@ -12,6 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 pub const QUIZ_PROMPT: &str = include_str!("../prompts/quiz.md");
 pub const JUDGE_PROMPT: &str = include_str!("../prompts/judge.md");
+pub const GIST_PROMPT: &str = include_str!("../prompts/gist.md");
 pub const QUIZ_SCHEMA: &str = include_str!("../schemas/quiz.json");
 pub const JUDGE_SCHEMA: &str = include_str!("../schemas/judge.json");
 
@@ -31,6 +33,31 @@ pub enum JobKind {
         index: usize,
         session_id: Option<String>,
     },
+    /// Say what a permission card's tool call does and what it is for, on the
+    /// small model. With a session it is a fork of that live session.
+    Gist { session_id: Option<String> },
+}
+
+impl JobKind {
+    /// The session this job forks.
+    fn session(&self) -> Option<&str> {
+        match self {
+            JobKind::Ask { session_id, .. } | JobKind::Gist { session_id } => session_id.as_deref(),
+            JobKind::Quiz | JobKind::Judge { .. } => None,
+        }
+    }
+
+    /// The same job as a plain call.
+    fn without_session(&self) -> JobKind {
+        match self {
+            JobKind::Ask { index, .. } => JobKind::Ask {
+                index: *index,
+                session_id: None,
+            },
+            JobKind::Gist { .. } => JobKind::Gist { session_id: None },
+            kind => kind.clone(),
+        }
+    }
 }
 
 /// One `claude -p` call: the prompt goes on stdin, run in `cwd`.
@@ -43,12 +70,13 @@ pub struct LlmJob {
 }
 
 impl LlmJob {
-    /// The JSON schema the answer must follow; side questions answer in text.
+    /// The JSON schema the answer must follow; side questions and summaries
+    /// answer in text.
     pub fn schema(&self) -> Option<&'static str> {
         match self.kind {
             JobKind::Quiz => Some(QUIZ_SCHEMA),
             JobKind::Judge { .. } => Some(JUDGE_SCHEMA),
-            JobKind::Ask { .. } => None,
+            JobKind::Ask { .. } | JobKind::Gist { .. } => None,
         }
     }
 }
@@ -121,7 +149,7 @@ pub struct ClaudeCli {
 
 impl Llm for ClaudeCli {
     fn run(&self, job: &LlmJob) -> Result<String> {
-        if matches!(job.kind, JobKind::Ask { .. }) {
+        if job.schema().is_none() {
             return ask_with_fallback(job, |j| self.once(j, ask_output));
         }
         self.once(job, structured_output)
@@ -171,17 +199,14 @@ impl ClaudeCli {
     }
 }
 
-/// Runs a side question as a fork of its session; if the session cannot be
+/// Runs a side question or summary as a fork of its session; if the session cannot be
 /// resumed, once more as a plain call in the checkout, and the answer says so.
 /// Timeouts, login and other failures are errors, not a reason to fall back.
 pub fn ask_with_fallback(
     job: &LlmJob,
     mut attempt: impl FnMut(&LlmJob) -> Result<String>,
 ) -> Result<String> {
-    let JobKind::Ask { index, session_id } = &job.kind else {
-        return attempt(job);
-    };
-    if session_id.is_none() {
+    if job.kind.session().is_none() {
         return attempt(job);
     }
     attempt(job).or_else(|fork_err| {
@@ -189,10 +214,7 @@ pub fn ask_with_fallback(
             return Err(fork_err);
         }
         let plain = LlmJob {
-            kind: JobKind::Ask {
-                index: *index,
-                session_id: None,
-            },
+            kind: job.kind.without_session(),
             ..job.clone()
         };
         attempt(&plain)
@@ -203,6 +225,7 @@ pub fn ask_with_fallback(
 
 /// `claude -p` for `job`: read-only tools, no MCP servers, slash commands,
 /// skills or hooks, so text in the diff cannot make it change anything.
+/// A summary runs on Haiku with no tools at all.
 pub fn claude_command(job: &LlmJob) -> Command {
     let mut cmd = Command::new("claude");
     cmd.args(["-p", "--output-format", "json"]);
@@ -211,20 +234,19 @@ pub fn claude_command(job: &LlmJob) -> Command {
     }
     // A fork of the live session. That session may allow writes, but the
     // flags below still apply to the fork.
-    if let JobKind::Ask {
-        session_id: Some(id),
-        ..
-    } = &job.kind
+    if let Some(id) = job.kind.session()
         && valid_session_id(id)
     {
         cmd.args(["--resume", id, "--fork-session"]);
     }
+    if matches!(job.kind, JobKind::Gist { .. }) {
+        // Not plan mode: in it Claude Code runs Sonnet in place of Haiku.
+        cmd.args(["--model", "haiku", "--tools", ""]);
+    } else {
+        cmd.args(["--permission-mode", "plan", "--tools", "Read,Grep,Glob"]);
+    }
     cmd.args([
         "--no-session-persistence",
-        "--permission-mode",
-        "plan",
-        "--tools",
-        "Read,Grep,Glob",
         "--strict-mcp-config",
         "--disable-slash-commands",
         "--settings",
@@ -452,6 +474,45 @@ mod tests {
         for k in ["ANTHROPIC_API_KEY", "TMUX", "TMUX_PANE"] {
             assert!(removed.iter().any(|r| r == k), "{k} removed: {removed:?}");
         }
+    }
+
+    #[test]
+    fn a_summary_runs_on_haiku_with_no_tools_as_a_fork() {
+        let job = LlmJob {
+            card: 1,
+            kind: JobKind::Gist {
+                session_id: Some("abc-123".into()),
+            },
+            cwd: "/tmp".into(),
+            prompt: String::new(),
+        };
+        let args: Vec<String> = claude_command(&job)
+            .get_args()
+            .map(|a| a.to_string_lossy().into())
+            .collect();
+        for pair in [
+            ["--model", "haiku"],
+            ["--tools", ""],
+            ["--resume", "abc-123"],
+            ["--settings", r#"{"disableAllHooks":true}"#],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+        }
+        for flag in ["--fork-session", "--no-session-persistence"] {
+            assert!(args.iter().any(|a| a == flag), "{flag} in {args:?}");
+        }
+        assert!(!args.iter().any(|a| a == "plan" || a == "--json-schema"));
+        // Without the session it is asked again as a plain call.
+        let mut seen = Vec::new();
+        let out = ask_with_fallback(&job, |j| {
+            seen.push(j.kind.clone());
+            match j.kind.session() {
+                Some(_) => Err(SessionGone("No conversation found".into()).into()),
+                None => Ok("Lists files.".into()),
+            }
+        });
+        assert_eq!(out.unwrap(), format!("Lists files.{FALLBACK_NOTE}"));
+        assert_eq!(seen[1], JobKind::Gist { session_id: None });
     }
 
     fn ask_args(session_id: Option<&str>) -> Vec<String> {

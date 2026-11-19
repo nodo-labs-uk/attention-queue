@@ -162,6 +162,7 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `g` | go to its window |
 | `Tab` | the session you last typed in; again for the one before |
 | `Enter` | message it |
+| `a` | approve: sends "Approved, carry on." |
 | `A` | message every session in its tmux session |
 | `p` | ask it to open a PR |
 | `m` | switch its model |

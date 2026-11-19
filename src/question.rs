@@ -37,8 +37,9 @@ pub enum Kind {
 pub type Row = Vec<(Kind, String)>;
 
 impl QuestionCard {
-    /// Whether a yes answers the question: it asks for a go-ahead in its
-    /// last lines. "How long did it take?" does not, and has no approve.
+    /// Whether a yes answers the question: it asks for a go-ahead, or
+    /// names its own pick, in its last lines. "How long did it take?"
+    /// does not, and has no approve.
     pub fn approvable(&self) -> bool {
         spoken(&self.text)
             .iter()
@@ -281,10 +282,19 @@ fn is_asking(line: &str) -> bool {
     line.contains('?') || GO_AHEAD.iter().chain(&OPEN).any(|w| has_words(&line, w))
 }
 
+/// Words that name the session's own pick: a yes means "go with it".
+const PICK: [&str; 5] = [
+    "my pick",
+    "i'd pick",
+    "i'd go with",
+    "i recommend",
+    "recommended",
+];
+
 /// Whether a yes answers `line`.
 fn wants_go_ahead(line: &str) -> bool {
     let line = line.to_lowercase();
-    GO_AHEAD.iter().any(|w| has_words(&line, w))
+    GO_AHEAD.iter().chain(&PICK).any(|w| has_words(&line, w))
 }
 
 /// Whether `words` is in `line` as whole words: "confirm" asks, but
@@ -557,6 +567,25 @@ mod tests {
         );
         assert!(a.update(key('a')).is_empty());
         assert_eq!(a.queue.len(), 1, "the card stays");
+    }
+
+    #[test]
+    fn a_question_with_a_stated_pick_can_be_approved() {
+        let pick = |text: &str| super::QuestionCard {
+            text: text.into(),
+            scroll: 0,
+        };
+        assert!(
+            pick(
+                "Is it held or let through?\n\n- **Held (my pick).** A card shows.\n- **Let through.** Nothing shows."
+            )
+            .approvable()
+        );
+        assert!(pick("Which one? I'd go with B.").approvable());
+        assert!(pick("A or B? I recommend B.").approvable());
+        assert!(pick("Which way?\n\n1. Rules (recommended)\n2. Haiku").approvable());
+        // A pick alone does not make a message ask.
+        assert!(!asks("Went with B, my pick from yesterday."));
     }
 
     #[test]

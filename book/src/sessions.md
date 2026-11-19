@@ -20,6 +20,7 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 | `Tab` | the session you last typed in, here or in its own window; `Tab` again goes back to the one before. Moving with `h` `l` does not count. |
 | `g` | go to its window |
 | `Enter` | message it: sent now, or once it is idle (`Esc` cancels) |
+| `a` | approve: sends "Approved, carry on." now, or once it is idle |
 | `A` | message every session in its tmux session, each once idle |
 | `W` | ask where it is up to |
 | `?` | ask it a [side question](tools.md#side-questions) |

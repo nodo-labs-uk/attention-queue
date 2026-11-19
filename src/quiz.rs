@@ -597,7 +597,7 @@ impl App {
             return Vec::new();
         };
         match ev.kind {
-            JobKind::Ask { .. } => Vec::new(),
+            JobKind::Ask { .. } | JobKind::Gist { .. } => Vec::new(),
             JobKind::Quiz => {
                 if qc.state != QuizState::Generating {
                     return Vec::new();

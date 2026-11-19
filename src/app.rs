@@ -722,8 +722,8 @@ impl App {
     }
 
     /// h/l or j/k pick an agent on the empty screen; Tab goes to the one
-    /// you last sent a message to; Enter or i write it a message;
-    /// g goes to its window; p asks it to open a pull request; m picks its model.
+    /// you last sent a message to; Enter or i write it a message; a sends
+    /// it the approve message; g goes to its window; p asks it to open a pull request; m picks its model.
     fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ids: Vec<AgentId> = self
             .agents_in_order()
@@ -785,6 +785,7 @@ impl App {
                     suggestion,
                 }));
             }
+            KeyCode::Char('a') => return self.send_prompt(current, APPROVE_MESSAGE.to_string()),
             KeyCode::Char('A') => {
                 let group = self.picked_agent().map(|a| a.session.clone());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
@@ -1467,6 +1468,10 @@ impl App {
             }
             Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Ask { .. }) => {
                 self.on_ask_result(ev)
+            }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Gist { .. }) => {
+                self.on_gist(ev);
+                Vec::new()
             }
             Msg::Llm(ev) => self.on_llm(ev),
             Msg::QuizDiff {
@@ -3528,6 +3533,21 @@ pub(crate) mod tests {
             Instant::now(),
         ));
         assert_eq!(a.picked_agent().unwrap().id.pane, "%1");
+    }
+
+    #[test]
+    fn a_on_the_empty_screen_approves_the_picked_session() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let idle = agent("%1", 1, "api", "/w/api", true);
+        a.agents = vec![idle.clone()];
+        assert_eq!(
+            a.update(key('a')),
+            [Effect::Send {
+                agent: idle.id,
+                text: APPROVE_MESSAGE.into(),
+                card: None,
+            }]
+        );
     }
 
     #[test]

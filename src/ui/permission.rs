@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 use super::window_of;
 use crate::app::{App, project_name};
 use crate::model::Card;
-use crate::permission::{LineKind, PermissionCard};
+use crate::permission::{Gist, LineKind, PermissionCard};
 use crate::visible::visible_code;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, pc: &PermissionCard) {
@@ -28,8 +28,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, pc: &Permis
             ),
         ]),
     ];
-    let [head_area, body, more, keys] = crate::permission::areas(area);
+    let [head_area, gist, body, more, keys] = crate::permission::card_areas(area);
     frame.render_widget(Paragraph::new(head), head_area);
+    let gist_style = match pc.gist {
+        Gist::Done(_) => Style::new().fg(t.fg).add_modifier(Modifier::ITALIC),
+        Gist::Pending | Gist::Failed(_) => Style::new().fg(t.dim),
+    };
+    let gist_rows: Vec<Line> = pc
+        .gist_rows(gist.width as usize)
+        .into_iter()
+        .map(Line::from)
+        .collect();
+    frame.render_widget(Paragraph::new(gist_rows).style(gist_style), gist);
     let rows = pc.body_rows(body.width as usize);
     let top = pc
         .scroll

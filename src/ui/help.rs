@@ -85,7 +85,7 @@ When a session ends its turn by asking you something (to approve a
 draft, to choose between two ways), its message becomes a card.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words;
      Claude's suggestion shows in lighter text, Tab or Ctrl-F fills it in
-     a is there only when the question asks for a go-ahead
+     a is there only when it asks for a go-ahead or names its pick
   x  stash the card      g  go to the session's window   j/k scroll
   S  the stashed questions: Enter brings one back, x drops it
   r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
@@ -123,6 +123,7 @@ session is the one picked.
   Enter  message it: sent now, or once it is idle (Esc cancels); what
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in
+  a      approve: sends Approved, carry on. now, or once it is idle
   A      message every session in its tmux session, each once idle
   r      read its last reply fast, as r on a question card
   b      /btw: the session's own window in a popup the size of ?'s box,
