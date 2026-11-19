@@ -33,6 +33,7 @@ The kinds of card:
 - [Step](step.md): one edit, waiting to be applied.
 - [Shell change](shell-change.md): what a shell command changed, in step mode.
 - [Permission](permission.md): Claude asks to run a tool.
+- [Flagged action](flagged.md): a risky action Claude runs, held in every mode.
 - [Question and option menu](question.md): a session asks you something.
 - [Message between sessions](message.md): one session asks another to do something.
 - [Quiz](quiz.md): explain a piece of the diff.

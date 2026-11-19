@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "flag": { "type": "string", "enum": ["none", "someone_else", "high_stakes"] },
+    "who": { "type": "string" },
+    "happens": { "type": "string" },
+    "as_you": { "type": "string" },
+    "conflict": { "type": "string" }
+  },
+  "required": ["flag", "who", "happens", "as_you", "conflict"],
+  "additionalProperties": false
+}

@@ -776,7 +776,7 @@ mod tests {
     fn fork_failure_falls_back() {
         let job = ask_job(Some("sid"));
         let mut seen = Vec::new();
-        let r = crate::llm::ask_with_fallback(&job, |j| {
+        let r = crate::llm::ask_with_fallback(&job, crate::llm::FALLBACK_NOTE, |j| {
             seen.push(j.kind.clone());
             match &j.kind {
                 JobKind::Ask {
@@ -801,7 +801,7 @@ mod tests {
             ]
         );
         // Both failing reports both.
-        let e = crate::llm::ask_with_fallback(&job, |j| match &j.kind {
+        let e = crate::llm::ask_with_fallback(&job, crate::llm::FALLBACK_NOTE, |j| match &j.kind {
             JobKind::Ask {
                 session_id: Some(_),
                 ..
@@ -816,7 +816,7 @@ mod tests {
         );
         // No session: one plain attempt only.
         let mut n = 0;
-        let _ = crate::llm::ask_with_fallback(&ask_job(None), |_| {
+        let _ = crate::llm::ask_with_fallback(&ask_job(None), crate::llm::FALLBACK_NOTE, |_| {
             n += 1;
             Err(anyhow!("x"))
         });
@@ -831,10 +831,14 @@ mod tests {
             "rate limit reached",
         ] {
             let mut n = 0;
-            let r = crate::llm::ask_with_fallback(&ask_job(Some("sid")), |_| {
-                n += 1;
-                Err(anyhow!(why))
-            });
+            let r = crate::llm::ask_with_fallback(
+                &ask_job(Some("sid")),
+                crate::llm::FALLBACK_NOTE,
+                |_| {
+                    n += 1;
+                    Err(anyhow!(why))
+                },
+            );
             assert_eq!(r.unwrap_err().to_string(), why);
             assert_eq!(n, 1, "{why}");
         }

@@ -6,7 +6,9 @@ use ratatui::widgets::Paragraph;
 
 use super::{kind_label, window_of};
 use crate::app::{App, project_name};
+use crate::flag::{FlagKind, FlagState};
 use crate::model::{Card, CardKind};
+use crate::permission::Held;
 
 /// Kinds in the order the queue serves them.
 const KIND_ORDER: [fn(&CardKind) -> bool; 9] = [
@@ -33,6 +35,33 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     )];
     match app.queue.current() {
         Some(card) => {
+            let flag = match &card.kind {
+                CardKind::Permission(pc) => match &pc.held {
+                    Some(Held::Flagged(f)) => Some(f),
+                    _ => None,
+                },
+                CardKind::Question(q) => match &q.flag {
+                    FlagState::Flagged(f) => Some(f),
+                    _ => None,
+                },
+                CardKind::Choice(c) => match &c.flag {
+                    FlagState::Flagged(f) => Some(f),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(f) = flag {
+                let mark = match f.kind {
+                    FlagKind::SomeoneElse => " ▌▌",
+                    FlagKind::HighStakes => " ▲",
+                };
+                left.push(Span::styled(
+                    mark,
+                    Style::new()
+                        .fg(t.flag_colour(f.kind))
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             left.push(Span::styled(
                 format!(" {} ", kind_label(&card.kind)),
                 Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
@@ -127,5 +156,42 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .alignment(align),
             gap,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::flag::{Flag, FlagKind};
+    use crate::model::CardKind;
+    use crate::permission::{Held, PermissionCard};
+    use crate::queue::tests::card;
+    use crate::ui::tests::{app, render};
+
+    #[test]
+    fn queue_bar_marks_a_flagged_card() {
+        let mut a = app();
+        let flag = Flag {
+            kind: FlagKind::HighStakes,
+            label: "MAIN BRANCH".into(),
+            target: "o/r main".into(),
+            who: String::new(),
+            happens: String::new(),
+            as_you: String::new(),
+            conflict: String::new(),
+            pending: false,
+        };
+        a.queue.push(card(
+            1,
+            "/w/api",
+            CardKind::Permission(PermissionCard {
+                tool_name: "Bash".into(),
+                held: Some(Held::Flagged(flag)),
+                ..Default::default()
+            }),
+            5,
+        ));
+        let text = render(&a, 60, 6);
+        assert!(text.lines().next().unwrap().contains("▲ permission"));
+        insta::assert_snapshot!(text);
     }
 }

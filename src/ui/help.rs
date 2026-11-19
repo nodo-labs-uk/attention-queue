@@ -80,6 +80,16 @@ finished turn; the card on screen stays as it is.
   y  allow (once you have scrolled to the end)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
 
+# Flagged action card
+A risky action Claude runs (a push, a merge, a PR comment, a release) is
+held in every mode on a permission card with a band: ▌▌ SOMEONE ELSE or
+AS YOU, or ▲ MAIN BRANCH, TAG, RELEASE, FORCE PUSH, DELETE BRANCH...
+  y  allow (once you have scrolled to the end)   n  deny with a reason
+  j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
+A card whose band reads aq could not check this is held too.
+An unanswered call is refused, never allowed. The log is flags.jsonl
+in aq's state folder.
+
 # Question card
 When a session ends its turn by asking you something (to approve a
 draft, to choose between two ways), its message becomes a card.
@@ -97,6 +107,8 @@ When Claude asks with its own menu of options, the card lists them:
   o  answer in your own words   u  back a question
   x  let the menu show in the session's window instead   g  and go there
 This needs AskUserQuestion in the PreToolUse hook's matcher.
+A question or menu that leads to a flagged action shows the same band.
+Answering never approves the action: each one is held on its own card.
 
 # Message card
 A session ran aq tell to ask another session to do something. Nothing

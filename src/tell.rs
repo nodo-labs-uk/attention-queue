@@ -149,6 +149,7 @@ impl App {
                 message: QuestionCard {
                     text: text.to_string(),
                     scroll: 0,
+                    flag: Default::default(),
                 },
             }),
         });

@@ -43,3 +43,9 @@ When Claude asks with its own menu of options (its `AskUserQuestion` tool), the 
 | `g` | the same, and go there |
 
 This needs `AskUserQuestion` in the `PreToolUse` hook's matcher. The hooks in `contrib/settings-hooks.json` have it.
+
+## Flagged questions and menus
+
+A question or menu that leads to a [flagged action](flagged.md), such as merging a PR or pushing, carries a band too, so you see the stakes before you choose. When the text mentions a PR, an issue, a merge, a push or the like, the card keeps one row, `Checking whether this involves others…`, while Haiku and `gh` look. If it is flagged, the row becomes the band above the text; if not, the row goes.
+
+You can answer while the check runs, and an answer never approves the action. Each action that follows is held on its own card.

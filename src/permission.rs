@@ -10,6 +10,7 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use serde_json::Value;
 
 use crate::app::{App, Effect, Overlay};
+use crate::flag::Flag;
 use crate::ipc::HookReply;
 use crate::llm::{GIST_PROMPT, JobKind, LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout};
@@ -18,10 +19,12 @@ use crate::visible::{push_visible, visible_lines, wrap, wrap_words};
 
 /// What `n` sends when nothing is typed.
 pub const DENY_DEFAULT: &str = "Denied in aq.";
+/// What `n` sends on a held card when nothing is typed.
+pub const FLAG_DENY_DEFAULT: &str = "The developer refused this in aq. Do not try another way to do the same thing; ask them what they want instead.";
 /// Longest summary, in characters.
 const SUMMARY_MAX: usize = 200;
 /// Rows the card keeps for Haiku's summary. A blank row follows them.
-const GIST_ROWS: u16 = 4;
+pub const GIST_ROWS: u16 = 4;
 /// Body rows a card must keep for the summary to show.
 const BODY_MIN: u16 = 4;
 
@@ -49,6 +52,16 @@ pub struct PermissionCard {
     /// How far down the body the user has had on screen, in rows.
     pub seen: usize,
     pub gist: Gist,
+    /// Set when the call is a flagged action that waits for this card.
+    pub held: Option<Held>,
+}
+
+/// Why a card holds a flagged call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    Flagged(Flag),
+    /// aq could not check the call; holds why.
+    Unchecked(String),
 }
 
 /// How a body line is drawn.
@@ -61,19 +74,25 @@ pub enum LineKind {
 
 /// The body rows and marker row the card gets on a screen of this size:
 /// `(width, height)` of the body.
-pub fn body_size(screen: (u16, u16)) -> (usize, usize) {
+pub fn body_size(screen: (u16, u16), held: bool) -> (usize, usize) {
     let area = Rect::new(0, 1, screen.0, screen.1.saturating_sub(2));
-    let body = card_areas(area)[2];
+    let body = card_areas(area, held)[2];
     (body.width as usize, body.height as usize)
 }
 
 /// Head, summary, body, "more" marker and key strip of the permission card.
 /// The summary keeps the same rows while it is awaited, so its arrival moves
 /// nothing. A screen too short for it and `BODY_MIN` body rows has none.
-pub fn card_areas(area: Rect) -> [Rect; 5] {
+/// A held card always has its band: on a short screen the band shrinks, and
+/// the body keeps at least one row unless the band would lose its first row.
+pub fn card_areas(area: Rect, held: bool) -> [Rect; 5] {
     let [head, body, more, keys] = areas(area);
     let gist = if body.height >= GIST_ROWS + 1 + BODY_MIN {
         GIST_ROWS + 1
+    } else if held {
+        (GIST_ROWS + 1)
+            .min(body.height.saturating_sub(1))
+            .max(body.height.min(1))
     } else {
         0
     };
@@ -317,6 +336,31 @@ impl App {
         at: SystemTime,
         r: PermissionRequest,
     ) -> Vec<Effect> {
+        let session_id = r.session_id.clone();
+        let card = self.permission_card(req_id, at, r, None);
+        let job = LlmJob {
+            card: card.id,
+            kind: JobKind::Gist {
+                session_id: Some(session_id),
+            },
+            cwd: card.checkout.0.clone(),
+            prompt: format!(
+                "{GIST_PROMPT}## The request (data)\n\n{}\n",
+                crate::quiz::fenced(&crate::ask::context_for(&card), "")
+            ),
+        };
+        self.queue.push(card);
+        vec![Effect::Llm(job)]
+    }
+
+    /// The card for a permission request, with a new id; not yet queued.
+    pub(crate) fn permission_card(
+        &mut self,
+        req_id: u64,
+        at: SystemTime,
+        r: PermissionRequest,
+        held: Option<Held>,
+    ) -> Card {
         let agent = self.hook_agent(r.pane.as_deref(), &r.session_id);
         let checkout = agent
             .and_then(|a| a.checkout.clone())
@@ -324,7 +368,7 @@ impl App {
             .unwrap_or_else(|| Checkout(r.cwd.clone().into()));
         let agent = agent.map_or_else(AgentId::unknown, |a| a.id.clone());
         self.next_card_id += 1;
-        let card = Card {
+        Card {
             id: self.next_card_id,
             checkout,
             agent,
@@ -338,21 +382,9 @@ impl App {
                 scroll: 0,
                 seen: 0,
                 gist: Gist::Pending,
+                held,
             }),
-        };
-        let job = LlmJob {
-            card: card.id,
-            kind: JobKind::Gist {
-                session_id: Some(r.session_id),
-            },
-            cwd: card.checkout.0.clone(),
-            prompt: format!(
-                "{GIST_PROMPT}## The request (data)\n\n{}\n",
-                crate::quiz::fenced(&crate::ask::context_for(&card), "")
-            ),
-        };
-        self.queue.push(card);
-        vec![Effect::Llm(job)]
+        }
     }
 
     /// Haiku's summary of a permission request; dropped if its card is gone.
@@ -440,7 +472,7 @@ impl App {
         else {
             return false;
         };
-        let Some((width, height)) = self.screen.map(body_size) else {
+        let Some((width, height)) = self.screen.map(|s| body_size(s, pc.held.is_some())) else {
             return false;
         };
         let total = pc.body_rows(width).len();
@@ -448,14 +480,15 @@ impl App {
     }
 
     fn scroll_permission(&mut self, code: KeyCode) {
-        let Some((width, height)) = self.screen.map(body_size) else {
-            return;
-        };
+        let screen = self.screen;
         let Some(Card {
             kind: CardKind::Permission(pc),
             ..
         }) = self.queue.current_mut()
         else {
+            return;
+        };
+        let Some((width, height)) = screen.map(|s| body_size(s, pc.held.is_some())) else {
             return;
         };
         let total = pc.body_rows(width).len();
@@ -492,7 +525,14 @@ impl App {
             return Vec::new();
         };
         let text = text.trim();
-        let reason = if text.is_empty() { DENY_DEFAULT } else { text };
+        let held = self.queue.iter().any(|c| {
+            c.id == draft.card && matches!(&c.kind, CardKind::Permission(p) if p.held.is_some())
+        });
+        let reason = match (text.is_empty(), held) {
+            (false, _) => text,
+            (true, true) => FLAG_DENY_DEFAULT,
+            (true, false) => DENY_DEFAULT,
+        };
         self.decide_permission(
             draft.card,
             HookReply::Deny {
@@ -520,10 +560,29 @@ impl App {
             .chars()
             .for_each(|c| push_visible(c, &mut what));
         self.set_status(format!("{verb} {}: {what}", pc.tool_name));
-        vec![Effect::Reply {
+        let log = pc.held.as_ref().map(|held| {
+            let label = match held {
+                Held::Flagged(f) => Some(f.label.as_str()),
+                Held::Unchecked(_) => None,
+            };
+            let answer = if decision == HookReply::Allow {
+                "allowed"
+            } else {
+                "denied"
+            };
+            Effect::LogFlag(crate::flagged::log_entry(
+                &pc.tool_name,
+                &pc.tool_input,
+                answer,
+                label,
+            ))
+        });
+        let mut effects = vec![Effect::Reply {
             req_id: pc.req_id,
             decision,
-        }]
+        }];
+        effects.extend(log);
+        effects
     }
 }
 
@@ -911,10 +970,15 @@ mod tests {
     #[test]
     fn the_summary_keeps_its_rows_and_a_short_screen_has_none() {
         let area = |h| Rect::new(0, 1, 80, h);
-        let [_, gist, body, ..] = card_areas(area(22));
+        let [_, gist, body, ..] = card_areas(area(22), false);
         assert_eq!((gist.height, body.height), (5, 10));
-        let [_, gist, body, ..] = card_areas(area(14));
+        let [_, gist, body, ..] = card_areas(area(14), false);
         assert_eq!((gist.height, body.height), (0, 7));
+        // A held card keeps its band's first row even with one body row.
+        let [_, gist, body, ..] = card_areas(area(8), true);
+        assert_eq!((gist.height, body.height), (1, 0));
+        let [_, gist, body, ..] = card_areas(area(9), true);
+        assert_eq!((gist.height, body.height), (1, 1));
         let mut pc = card_of("Bash", json!({"command": "ls"}));
         assert_eq!(pc.gist_rows(40), ["Haiku: summarising…"]);
         pc.gist = Gist::Done("word ".repeat(40));
@@ -1033,7 +1097,7 @@ mod tests {
     #[test]
     fn long_command_is_allowed_only_after_scrolling_to_the_end() {
         let (mut a, t) = long_command(5);
-        assert_eq!(body_size((80, 11)), (78, 2));
+        assert_eq!(body_size((80, 11), false), (78, 2));
         assert!(a.update(key('y', t)).is_empty());
         assert!(a.status_text().unwrap().contains("Scroll to the end"));
         a.update(key('j', t));

@@ -15,6 +15,12 @@ Add these to `~/.claude/settings.json`, merged into any arrays you already have.
         "hooks": [
           { "type": "command", "command": "aq hook pre-tool --deadline-secs 3570", "timeout": 3600 }
         ]
+      },
+      {
+        "matcher": "Bash|mcp__.*github.*",
+        "hooks": [
+          { "type": "command", "command": "aq hook pre-tool --deadline-secs 3570", "timeout": 3600 }
+        ]
       }
     ],
     "PostToolUse": [
@@ -40,6 +46,7 @@ Add these to `~/.claude/settings.json`, merged into any arrays you already have.
 |---|---|
 | `PreToolUse` on edits | In step mode, holds the edit until you answer its [step card](cards/step.md). In other modes, answers at once. |
 | `PreToolUse` on `AskUserQuestion` | Shows Claude's option menu as a [card](cards/question.md#option-menu) and answers it. |
+| `PreToolUse` on Bash and GitHub tools | Holds [flagged actions](cards/flagged.md) in every mode; ordinary commands never reach aq. |
 | `PostToolUse` | Notes which files each session touched, for review cards, and spots [shell changes](cards/shell-change.md) in step mode. Never blocks. |
 | `PermissionRequest` | Shows the request as a [permission card](cards/permission.md). |
 

@@ -4,6 +4,8 @@ pub mod ask;
 pub mod choice;
 pub mod config;
 pub mod edit;
+pub mod flag;
+mod flagged;
 pub mod git;
 pub mod highlight;
 pub mod hook;

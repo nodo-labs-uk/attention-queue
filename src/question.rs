@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, Effect, Overlay, PromptDraft};
+use crate::flag::FlagState;
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::review::APPROVE_MESSAGE;
 use crate::ui::input::TextInput;
@@ -18,6 +19,8 @@ pub struct QuestionCard {
     pub text: String,
     /// First row on screen.
     pub scroll: usize,
+    /// Whether answering may lead to a flagged action.
+    pub flag: FlagState,
 }
 
 /// How a piece of a question's text is drawn. Claude writes Markdown, so
@@ -316,14 +319,18 @@ impl App {
         checkout: Checkout,
         text: String,
         at: SystemTime,
-    ) {
+    ) -> Vec<Effect> {
         // The session has moved on, or has gone, since it was read.
-        if !self.agent(&agent).is_some_and(|a| a.waiting) {
-            return;
-        }
+        let Some(session_id) = self
+            .agent(&agent)
+            .filter(|a| a.waiting)
+            .map(|a| a.session_id.clone())
+        else {
+            return Vec::new();
+        };
         self.drop_questions(true, |a| *a == agent);
         if !asks(&text) {
-            return;
+            return Vec::new();
         }
         self.next_card_id += 1;
         self.queue.push(Card {
@@ -334,8 +341,13 @@ impl App {
             // moment later and says in its heading what was asked:
             // answering there answers this too.
             created: at + AFTER_ITS_REVIEW,
-            kind: CardKind::Question(QuestionCard { text, scroll: 0 }),
+            kind: CardKind::Question(QuestionCard {
+                text,
+                scroll: 0,
+                flag: FlagState::None,
+            }),
         });
+        self.check_question(self.next_card_id, Some(session_id))
     }
 
     /// What `agent` asked at the end of its turn, while that is unanswered.
@@ -508,7 +520,14 @@ mod tests {
             text: text.into(),
             at: SystemTime::now(),
         });
-        assert!(effects.is_empty());
+        // A question that mentions an action is only checked for a flag.
+        assert!(
+            effects.iter().all(|e| matches!(
+                e,
+                Effect::Llm(job) if matches!(job.kind, crate::llm::JobKind::FlagQuestion { .. })
+            )),
+            "{effects:?}"
+        );
     }
 
     fn question(a: &App) -> Option<&str> {
@@ -574,6 +593,7 @@ mod tests {
         let pick = |text: &str| super::QuestionCard {
             text: text.into(),
             scroll: 0,
+            flag: Default::default(),
         };
         assert!(
             pick(
@@ -779,6 +799,7 @@ mod tests {
                    ```\nlet x = a ** b;\n```\n2 * 3 and a lone ` stay\n\nApprove **this**?"
                 .into(),
             scroll: 0,
+            flag: Default::default(),
         };
         let rows = q.rows(20);
         let text = |r: &super::Row| r.iter().map(|(_, t)| t.as_str()).collect::<String>();

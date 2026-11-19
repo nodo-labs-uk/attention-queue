@@ -6,6 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::agents::{Agent, AgentStatus, InputBox};
 use crate::config::Config;
+use crate::flag::Verdict;
+use crate::flag::candidate::Action;
+use crate::flag::facts::{Facts, Me};
 use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
@@ -145,6 +148,23 @@ pub enum Msg {
         result: Snapshot,
         at: SystemTime,
     },
+    /// A forwarded candidate, checked by the runtime: a hook is waiting for
+    /// `Effect::Reply` with this `req_id`.
+    Flag {
+        req_id: u64,
+        req: HookRequest,
+        /// The checkout of the request's cwd, found by the runtime.
+        checkout: Option<Checkout>,
+        verdict: Verdict,
+        /// When the runtime received it.
+        at: SystemTime,
+    },
+    /// The facts an `Effect::FlagFacts` asked for, with the user they were
+    /// judged against.
+    FlagFacts {
+        card: u64,
+        result: Result<(Facts, Me), String>,
+    },
     /// The hook waiting on `req_id` went away without an answer.
     HookGone {
         req_id: u64,
@@ -226,6 +246,14 @@ pub enum Effect {
         decision: HookReply,
     },
     Llm(LlmJob),
+    /// Look up the user and the facts for `action`, for a question card.
+    FlagFacts {
+        card: u64,
+        cwd: PathBuf,
+        action: Action,
+    },
+    /// Append a line to the flag log.
+    LogFlag(serde_json::Value),
     /// Write the config to disk. (Saved state is written by the runtime
     /// whenever `App::state_to_save` has something.)
     SaveConfig,
@@ -463,6 +491,11 @@ pub struct App {
     /// timed out): it stays until a key moves on, and sends nothing.
     pub(crate) stale: Option<u64>,
     pub(crate) next_card_id: u64,
+    /// Grey calls waiting for Haiku, by the id of their Haiku job.
+    pub(crate) pending_flags: std::collections::HashMap<u64, crate::flagged::PendingFlag>,
+    /// Haiku's answer on a question or option-menu card, kept while its
+    /// target's facts are looked up.
+    pub(crate) question_flags: std::collections::HashMap<u64, crate::flagged::QuestionSaid>,
     /// When Esc was last pressed on the empty screen; a second one soon
     /// after stops the picked agent.
     esc_at: Option<Instant>,
@@ -608,6 +641,8 @@ impl App {
             shown: None,
             stale: None,
             next_card_id: 0,
+            pending_flags: Default::default(),
+            question_flags: Default::default(),
             esc_at: None,
             unclaimed: Default::default(),
             saved: Some(Default::default()),
@@ -979,7 +1014,13 @@ impl App {
         }
         let rows = self
             .screen
-            .map_or(20, |s| crate::permission::body_size(s).1)
+            .map_or(20, |s| {
+                let held = matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(CardKind::Permission(pc)) if pc.held.is_some()
+                );
+                crate::permission::body_size(s, held).1
+            })
             .max(2);
         let n = if matches!(c, 'd' | 'u') {
             rows / 2
@@ -1318,10 +1359,7 @@ impl App {
                 checkout,
                 text,
                 at,
-            } => {
-                self.on_last_message(agent, checkout, text, at);
-                Vec::new()
-            }
+            } => self.on_last_message(agent, checkout, text, at),
             Msg::Conversation { session_id, said } => {
                 self.reading_conversation = false;
                 self.conversation = Some((session_id, said));
@@ -1418,6 +1456,14 @@ impl App {
                 req_id,
                 decision: HookReply::NoDecision,
             }],
+            Msg::Flag {
+                req_id,
+                req,
+                checkout,
+                verdict,
+                at,
+            } => self.on_flag(req_id, at, req, checkout, verdict),
+            Msg::FlagFacts { card, result } => self.on_flag_facts(card, result),
             Msg::PreTool { req_id, edit, .. } => self.on_pre_tool(req_id, edit),
             Msg::PostTool {
                 session_id,
@@ -1472,6 +1518,12 @@ impl App {
             Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Gist { .. }) => {
                 self.on_gist(ev);
                 Vec::new()
+            }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Flag { .. }) => {
+                self.on_flag_llm(ev)
+            }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::FlagQuestion { .. }) => {
+                self.on_flag_question_llm(ev)
             }
             Msg::Llm(ev) => self.on_llm(ev),
             Msg::QuizDiff {
@@ -2699,6 +2751,7 @@ pub(crate) mod tests {
             CardKind::Question(crate::question::QuestionCard {
                 text: "ok?".into(),
                 scroll: 0,
+                flag: Default::default(),
             }),
             20,
         ));
@@ -3498,7 +3551,7 @@ pub(crate) mod tests {
             _ => panic!("help is not open: {:?}", a.overlay),
         };
         a.screen = Some((80, 30));
-        let half = (crate::permission::body_size((80, 30)).1 / 2) as u16;
+        let half = (crate::permission::body_size((80, 30), false).1 / 2) as u16;
         a.update(press(KeyCode::F(1), KeyModifiers::NONE));
         assert_eq!(help(&a), 0);
         a.update(press(KeyCode::Char('d'), KeyModifiers::CONTROL));

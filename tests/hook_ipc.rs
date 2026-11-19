@@ -55,7 +55,7 @@ async fn hook(
     tokio::task::spawn_blocking(move || {
         run_hook_with(
             &socket,
-            Some("%7".to_string()),
+            || Some("%7".to_string()),
             event,
             input.as_bytes(),
             deadline,

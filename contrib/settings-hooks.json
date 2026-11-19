@@ -10,6 +10,16 @@
             "timeout": 3600
           }
         ]
+      },
+      {
+        "matcher": "Bash|mcp__.*github.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "aq hook pre-tool --deadline-secs 3570",
+            "timeout": 3600
+          }
+        ]
       }
     ],
     "PostToolUse": [

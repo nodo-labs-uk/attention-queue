@@ -1,13 +1,16 @@
+use crate::flag::FlagState;
 use crate::model::{Card, CardKind};
 
 /// Cards waiting for the user, in the order they will be shown.
 ///
 /// Order (spec call 11): permission cards and option menus first, since a
-/// session is stopped mid-turn on each, oldest first. Then each
-/// checkout holding a step or shell-change card, one checkout at a time, the
-/// one with the oldest such card first, with all its cards. Then everything
-/// else, oldest first. A skipped card goes behind every card of its group;
-/// one sent to the back goes behind every card, whatever its group.
+/// session is stopped mid-turn on each, and flagged questions with them,
+/// oldest first. Then each checkout holding a step or shell-change card,
+/// one checkout at a time, the one with the oldest such card first, with
+/// all its cards. Then everything else, oldest first. A held flagged call
+/// goes ahead of all of these. A skipped card goes
+/// behind every card of its group; one sent to the back goes behind every
+/// card, whatever its group.
 ///
 /// That order applies only behind the pinned card: once a card is on screen
 /// (`pin`), it stays first until it is removed or skipped, so a new card
@@ -126,12 +129,12 @@ impl Queue {
             (e.skipped, e.card.created, e.card.id)
         });
         let card = |i: usize| &self.entries[i].card;
-        let (mut out, mut rest): (Vec<usize>, Vec<usize>) = by_age.into_iter().partition(|&i| {
-            matches!(
-                card(i).kind,
-                CardKind::Permission(_) | CardKind::Choice(_) | CardKind::Menu(_)
-            )
-        });
+        let (mut out, mut rest): (Vec<usize>, Vec<usize>) =
+            by_age.into_iter().partition(|&i| match &card(i).kind {
+                CardKind::Permission(_) | CardKind::Choice(_) | CardKind::Menu(_) => true,
+                CardKind::Question(q) => matches!(q.flag, FlagState::Flagged(_)),
+                _ => false,
+            });
         while let Some(&first) = rest
             .iter()
             .find(|&&i| matches!(card(i).kind, CardKind::Step(_) | CardKind::ShellChange(_)))
@@ -144,6 +147,12 @@ impl Queue {
             rest = others;
         }
         out.extend(rest);
+        // A held flagged call goes ahead of the other cards unless it was
+        // skipped. A stable sort keeps every other card where it is.
+        out.sort_by_key(|&i| {
+            let held = matches!(&card(i).kind, CardKind::Permission(p) if p.held.is_some());
+            !(held && self.entries[i].skipped == 0)
+        });
         // Cards sent to the back, the latest last. A sort keeps the rest in order.
         out.sort_by_key(|&i| self.entries[i].back);
         if let Some(at) = self
@@ -277,6 +286,61 @@ pub(crate) mod tests {
             10,
         ));
         assert_eq!(ids(&q), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn a_held_permission_card_goes_ahead_of_ordinary_ones_but_not_the_pinned_card() {
+        use crate::permission::Held;
+        let held = PermissionCard {
+            held: Some(Held::Unchecked("offline".into())),
+            ..PermissionCard::default()
+        };
+        let mut q = Queue::new();
+        q.push(card(1, "/a", review(), 50));
+        q.pin();
+        q.push(card(
+            2,
+            "/b",
+            CardKind::Permission(PermissionCard::default()),
+            40,
+        ));
+        q.push(card(3, "/c", CardKind::Permission(held), 5));
+        q.push(card(4, "/d", step(), 60));
+        assert_eq!(ids(&q), [1, 3, 2, 4]);
+        q.remove(1);
+        q.skip();
+        assert_eq!(ids(&q), [2, 3, 4], "a skipped held card waits its turn");
+    }
+
+    #[test]
+    fn a_flagged_question_goes_to_the_front_but_not_over_the_card_on_screen() {
+        use crate::flag::{Flag, FlagKind, FlagState};
+        use crate::model::QuestionCard;
+        let question = |flag| {
+            CardKind::Question(QuestionCard {
+                text: "Merge PR #5?".into(),
+                scroll: 0,
+                flag,
+            })
+        };
+        let flag = Flag {
+            kind: FlagKind::SomeoneElse,
+            label: "SOMEONE ELSE".into(),
+            target: "nodo-labs-uk/socratui PR #5".into(),
+            who: String::new(),
+            happens: String::new(),
+            as_you: String::new(),
+            conflict: String::new(),
+            pending: false,
+        };
+        let mut q = Queue::new();
+        q.push(card(1, "/a", review(), 50));
+        q.pin();
+        q.push(card(2, "/b", review(), 40));
+        q.push(card(3, "/c", step(), 30));
+        q.push(card(4, "/d", question(FlagState::Checking), 60));
+        q.push(card(5, "/e", question(FlagState::Flagged(flag)), 0));
+        assert_eq!(ids(&q), [1, 5, 3, 4, 2]);
     }
 
     #[test]

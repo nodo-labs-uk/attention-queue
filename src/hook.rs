@@ -11,10 +11,14 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::config::current_uid;
+use crate::flag::candidate::{candidates, is_flag_tool};
 use crate::ipc::{HookReply, HookRequest};
 
 /// What a step-mode edit with no answer tells the agent.
 pub const WAITING_REASON: &str = "Waiting for human review in aq. Try this edit again shortly.";
+
+/// What a flagged action with no answer tells the agent.
+pub const FLAG_WAITING_REASON: &str = "Held in aq: this action needs the developer's answer there. Do not try another way to do the same thing; tell them it is waiting in aq.";
 
 /// Seconds the hook waits by default; the hook command's `timeout` is 3600.
 pub const DEFAULT_DEADLINE_SECS: u64 = 3570;
@@ -32,7 +36,7 @@ pub enum HookEvent {
 /// Runs the hook against the configured socket, with `$TMUX_PANE` as the pane.
 pub fn run_hook(event: HookEvent, stdin: impl Read, deadline: Duration) -> Result<Option<String>> {
     let socket = crate::config::paths().socket;
-    run_hook_with(&socket, tmux_pane(), event, stdin, deadline)
+    run_hook_with(&socket, tmux_pane, event, stdin, deadline)
 }
 
 /// The tmux pane this runs in, if any: `$TMUX_PANE`, or else the pane
@@ -61,10 +65,12 @@ pub fn tell(socket: &Path, req: &HookRequest) -> (bool, String) {
     }
 }
 
-/// Returns the JSON to print on stdout, or `None` to print nothing.
+/// Returns the JSON to print on stdout, or `None` to print nothing. `pane`
+/// is called only once the call is known to go to aq, so an ordinary Bash
+/// call never looks for its tmux pane.
 pub fn run_hook_with(
     socket: &Path,
-    pane: Option<String>,
+    pane: impl FnOnce() -> Option<String>,
     event: HookEvent,
     mut stdin: impl Read,
     deadline: Duration,
@@ -74,7 +80,18 @@ pub fn run_hook_with(
         .read_to_string(&mut input)
         .context("reading hook input")?;
     let input: Value = serde_json::from_str(&input).context("parsing hook input")?;
-    let req = request(event, &input, pane);
+    let tool_name = input["tool_name"].as_str().unwrap_or_default();
+    let flag_tool = event == HookEvent::PreTool && is_flag_tool(tool_name);
+    if flag_tool {
+        match is_candidate(|| !candidates(tool_name, &input["tool_input"]).is_empty()) {
+            // Ordinary commands are the common case: leave without contacting aq.
+            Some(false) => return Ok(None),
+            Some(true) => {}
+            // The check itself failed: silence must not let the call through.
+            None => return Ok(output(event, true, None)),
+        }
+    }
+    let req = request(event, &input, pane());
 
     if event == HookEvent::PostTool {
         // The tool already ran: report it and go, so nothing waits on aq.
@@ -92,7 +109,12 @@ pub fn run_hook_with(
     if reply.is_none() && input["tool_name"] == crate::choice::TOOL {
         return Ok(None);
     }
-    Ok(output(event, reply))
+    Ok(output(event, flag_tool, reply))
+}
+
+/// Runs the candidate check, or `None` if it panicked.
+fn is_candidate(check: impl FnOnce() -> bool) -> Option<bool> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).ok()
 }
 
 enum Connect {
@@ -190,7 +212,7 @@ fn request(event: HookEvent, input: &Value, pane: Option<String>) -> HookRequest
 }
 
 /// The hook's stdout for a reply (`None` when no reply came).
-fn output(event: HookEvent, reply: Option<HookReply>) -> Option<String> {
+fn output(event: HookEvent, flag_tool: bool, reply: Option<HookReply>) -> Option<String> {
     let specific = match (event, reply) {
         (HookEvent::PreTool, Some(HookReply::Allow)) => json!({
             "hookEventName": "PreToolUse",
@@ -205,6 +227,8 @@ fn output(event: HookEvent, reply: Option<HookReply>) -> Option<String> {
         (HookEvent::Permission, Some(HookReply::Answer { .. })) => return None,
         (HookEvent::PreTool, Some(HookReply::Deny { reason })) => pre_tool_deny(&reason),
         (HookEvent::PreTool, Some(HookReply::NoDecision)) => return None,
+        // A flagged action with no answer is refused, never let through.
+        (HookEvent::PreTool, None) if flag_tool => pre_tool_deny(FLAG_WAITING_REASON),
         // Step-mode edits with no answer are refused, never let through.
         (HookEvent::PreTool, None) => pre_tool_deny(WAITING_REASON),
         (HookEvent::Permission, Some(HookReply::Allow)) => json!({
@@ -231,4 +255,146 @@ fn pre_tool_deny(reason: &str) -> Value {
         "permissionDecision": "deny",
         "permissionDecisionReason": reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    use super::*;
+
+    fn bash(command: &str) -> String {
+        json!({
+            "session_id": "s1",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        })
+        .to_string()
+    }
+
+    fn private_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    fn run(socket: &Path, input: &str) -> Option<String> {
+        run_hook_with(
+            socket,
+            || None,
+            HookEvent::PreTool,
+            input.as_bytes(),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+    }
+
+    /// A socket that accepts one connection and closes it without replying.
+    fn closing_listener(dir: &Path) -> std::path::PathBuf {
+        let socket = dir.join("aq.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+        socket
+    }
+
+    #[test]
+    fn ordinary_bash_never_connects() {
+        let missing = Path::new("/nonexistent-aq-dir/aq.sock");
+        assert_eq!(run(missing, &bash("ls")), None);
+
+        // A listener that never accepts would stall a connect; ordinary
+        // commands must not even try.
+        let dir = private_dir();
+        let socket = dir.path().join("aq.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let start = Instant::now();
+        assert_eq!(run(&socket, &bash("ls -la && echo hi")), None);
+        assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_candidate_with_no_answer_is_denied_with_the_flag_reason() {
+        let dir = private_dir();
+        let socket = closing_listener(dir.path());
+        let out = run(&socket, &bash("git push origin main")).expect("a deny");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let specific = &v["hookSpecificOutput"];
+        assert_eq!(specific["hookEventName"], "PreToolUse");
+        assert_eq!(specific["permissionDecision"], "deny");
+        assert_eq!(specific["permissionDecisionReason"], FLAG_WAITING_REASON);
+    }
+
+    #[test]
+    fn the_pane_is_looked_up_only_for_a_call_that_goes_to_aq() {
+        let missing = Path::new("/nonexistent-aq-dir/aq.sock");
+        let looked = std::cell::Cell::new(false);
+        let pane = || {
+            looked.set(true);
+            None
+        };
+        let out = run_hook_with(
+            missing,
+            pane,
+            HookEvent::PreTool,
+            bash("ls").as_bytes(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(out, None);
+        assert!(!looked.get());
+        let pane = || {
+            looked.set(true);
+            None
+        };
+        run_hook_with(
+            missing,
+            pane,
+            HookEvent::PreTool,
+            bash("git push").as_bytes(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(looked.get());
+    }
+
+    #[test]
+    fn a_check_that_panics_reads_as_no_answer_and_is_denied() {
+        assert_eq!(is_candidate(|| true), Some(true));
+        assert_eq!(is_candidate(|| false), Some(false));
+        assert_eq!(is_candidate(|| panic!("bad parse")), None);
+        let v: Value =
+            serde_json::from_str(&output(HookEvent::PreTool, true, None).unwrap()).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecisionReason"],
+            FLAG_WAITING_REASON
+        );
+    }
+
+    #[test]
+    fn a_candidate_with_no_aq_prints_nothing() {
+        let missing = Path::new("/nonexistent-aq-dir/aq.sock");
+        assert_eq!(run(missing, &bash("git push")), None);
+    }
+
+    #[test]
+    fn an_edit_with_no_answer_keeps_its_old_reason() {
+        let dir = private_dir();
+        let socket = closing_listener(dir.path());
+        let input = json!({
+            "session_id": "s1",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/w/x", "content": "hi"},
+        })
+        .to_string();
+        let out = run(&socket, &input).expect("a deny");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecisionReason"],
+            WAITING_REASON
+        );
+    }
 }

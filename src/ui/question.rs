@@ -111,6 +111,7 @@ fn render_text(
     // a yes or no.
     let [head_area, body, more, keys] = crate::permission::areas(area);
     frame.render_widget(Paragraph::new(head), head_area);
+    let body = super::permission::flag_band(frame, body, app, &qc.flag);
     let rows = qc.rows(body.width as usize);
     let top = qc
         .scroll
@@ -153,4 +154,84 @@ fn render_text(
         spans.push(Span::styled(format!(" {label}  "), dim));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), keys);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use crate::choice::{Choice, ChoiceCard, ChoiceQuestion};
+    use crate::flag::{Flag, FlagKind, FlagState};
+    use crate::model::{CardKind, QuestionCard};
+    use crate::queue::tests::card;
+    use crate::ui::tests::{app, render};
+
+    fn question(flag: FlagState) -> String {
+        let mut a = app();
+        a.queue.push(card(
+            1,
+            "/w/socratui",
+            CardKind::Question(QuestionCard {
+                text: "PR #5 has changes requested.\n\nShall I fix it, then merge?".into(),
+                scroll: 0,
+                flag,
+            }),
+            10,
+        ));
+        render(&a, 100, 24)
+    }
+
+    #[test]
+    fn a_flagged_question_shows_the_band_above_its_text() {
+        let flag = Flag {
+            kind: FlagKind::SomeoneElse,
+            label: "SOMEONE ELSE".into(),
+            target: "nodo-labs-uk/socratui PR #5 by Timonsc (outside your org)".into(),
+            who: "Timonsc opened PR #5 from their fork".into(),
+            happens: "fixes and merges PR #5 into main".into(),
+            as_you: String::new(),
+            conflict: "You requested changes on 2026-11-17; no commits since".into(),
+            pending: false,
+        };
+        let text = question(FlagState::Flagged(flag));
+        assert!(text.contains(" aq  ▌▌ question"), "{text}");
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_question_being_checked_keeps_one_row_for_it() {
+        let text = question(FlagState::Checking);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_menu_being_checked_keeps_one_row_for_it() {
+        let mut a = app();
+        let options = ["Merge as is", "Fix, then merge", "Wait"]
+            .map(|l| Choice {
+                label: l.into(),
+                description: String::new(),
+            })
+            .to_vec();
+        a.queue.push(card(
+            1,
+            "/w/socratui",
+            CardKind::Choice(ChoiceCard {
+                req_id: 7,
+                input: serde_json::Value::Null,
+                questions: vec![ChoiceQuestion {
+                    question: "How should I merge PR #5?".into(),
+                    header: "Merge".into(),
+                    options,
+                    multi: false,
+                }],
+                answers: Vec::new(),
+                cursor: 0,
+                ticked: BTreeSet::new(),
+                flag: FlagState::Checking,
+            }),
+            10,
+        ));
+        insta::assert_snapshot!(render(&a, 100, 24));
+    }
 }

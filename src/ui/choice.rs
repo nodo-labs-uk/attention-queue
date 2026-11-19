@@ -42,6 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
     ];
     let [head_area, body, _, keys] = crate::permission::areas(area);
     frame.render_widget(Paragraph::new(head), head_area);
+    let body = super::permission::flag_band(frame, body, app, &cc.flag);
 
     // Text this wide reads in one sweep; a wider screen leaves the rest blank.
     let width = usize::from(body.width).min(MEASURE);

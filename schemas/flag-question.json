@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "flag": { "type": "string", "enum": ["none", "someone_else", "high_stakes"] },
+    "repo": { "type": "string" },
+    "number": { "type": "integer" },
+    "kind": { "type": "string", "enum": ["pr", "issue", "none"] },
+    "verb": {
+      "type": "string",
+      "enum": ["none", "merge", "close", "comment", "review", "edit", "push", "delete", "release"]
+    },
+    "who": { "type": "string" },
+    "happens": { "type": "string" },
+    "as_you": { "type": "string" }
+  },
+  "required": ["flag", "repo", "number", "kind", "verb", "who", "happens", "as_you"],
+  "additionalProperties": false
+}

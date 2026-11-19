@@ -40,6 +40,24 @@ Output ([hooks: PreToolUse decision control](https://code.claude.com/docs/en/hoo
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}
 ```
 
+### PreToolUse on Bash (flagged actions)
+
+A second `PreToolUse` entry has the matcher `Bash|mcp__.*github.*`. The hook
+checks the call itself, with no I/O, before it connects:
+
+- An ordinary command (`ls`, `cargo test`) is not a candidate. The hook prints
+  nothing, exits at once and never connects to aq.
+- A candidate (a push, a PR merge or comment, a release, and similar) is sent to
+  aq, and the hook waits for the answer. Commands inside `$(...)` and
+  backticks count. Every GitHub MCP tool is a candidate unless its name
+  (after the last `__`) starts with `get_`, `list_` or `search_`, or ends
+  with `_read`; `create_pull_request` and `create_issue` are not. The hook
+  looks up its tmux pane only for a candidate.
+- If the check itself fails (a panic), the hook prints a deny with
+  `FLAG_WAITING_REASON`. With no answer (aq quits, or the
+  deadline passes) it prints a deny with `FLAG_WAITING_REASON`, never nothing.
+  With no aq listening at all it prints nothing, as for every other hook.
+
 ### Option menus (AskUserQuestion)
 
 The same hook, with `AskUserQuestion` in its matcher, catches Claude's
