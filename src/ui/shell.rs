@@ -45,6 +45,8 @@ pub fn render(
         "Already ran. y keeps the changes; u asks Claude to undo them.",
         Style::new().fg(t.dim),
     ));
+    // A blank row sets the heading apart from the diff, as on a review.
+    head.push(Line::raw(""));
     let [head_area, body] =
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(head), head_area.inner(Margin::new(1, 0)));
