@@ -37,6 +37,8 @@ pub fn render(
         head.insert(1, pr_line(&pr.info, t));
     }
     head.push(stats(rc, t));
+    // A blank row sets the summary apart from the diff.
+    head.push(Line::raw(""));
     let [head_area, body] =
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(head), head_area.inner(Margin::new(1, 0)));
@@ -149,13 +151,20 @@ fn stats(rc: &ReviewCard, t: &Theme) -> Line<'static> {
         }
     };
     let dim = Style::new().fg(t.dim);
+    let comments = rc.current_comments().count();
+    // Comments waiting to be sent are what this line is most read for.
+    let comment_style = if comments > 0 {
+        Style::new().fg(t.hi)
+    } else {
+        dim
+    };
     let mut spans = vec![
         Span::styled(plural(rc.files.len(), "file"), dim),
         Span::styled(" · ", dim),
         Span::styled(format!("+{adds}"), Style::new().fg(t.add)),
         Span::styled(format!(" −{dels}"), Style::new().fg(t.del)),
         Span::styled(" · ", dim),
-        Span::styled(plural(rc.current_comments().count(), "comment"), dim),
+        Span::styled(plural(comments, "comment"), comment_style),
     ];
     let done = (0..rc.files.len()).filter(|&i| rc.is_done(i)).count();
     if done > 0 {
