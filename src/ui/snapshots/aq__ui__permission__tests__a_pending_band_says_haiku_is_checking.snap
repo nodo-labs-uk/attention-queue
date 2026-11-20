@@ -1,19 +1,18 @@
 ---
 source: src/ui/permission.rs
-assertion_line: 294
 expression: "shown(Held::Flagged(flag))"
 ---
 " aq  ▌▌ permission socratui · %1                                     1 permission  F3 keys  F1 help "
 "                                                                                                    "
-" Permission: Bash                                                                                   "
-" socratui  window %1                                                                                "
-"                                                                                                    "
-" ▌▌ SOMEONE ELSE · nodo-labs-uk/socratui PR #5 by Timonsc (outside your org)                        "
+" ▌▌ SOMEONE ELSE  nodo-labs-uk/socratui PR #5 by Timonsc  outside your org                          "
 " Haiku: checking…                                                                                   "
-" Conflict: you requested changes on 17 Nov; no commits since                                        "
+" Conflict  you requested changes on 17 Nov; no commits since                                        "
+"                                                                                                    "
+"  Bash                                                                                              "
+"  gh pr merge 5 --squash                                                                            "
 "                                                                                                    "
 "                                                                                                    "
-" gh pr merge 5 --squash                                                                             "
+"                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "

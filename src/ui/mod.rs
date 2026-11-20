@@ -396,7 +396,7 @@ fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut H
         CardKind::Review(rc) => review::render(frame, area, app, card, rc, hl),
         CardKind::Step(sc) => step::render(frame, area, app, card, sc, hl),
         CardKind::ShellChange(sc) => shell::render(frame, area, app, card, sc, hl),
-        CardKind::Permission(pc) => permission::render(frame, area, app, card, pc),
+        CardKind::Permission(pc) => permission::render(frame, area, app, pc),
         CardKind::Question(qc) => question::render(frame, area, app, card, qc),
         CardKind::Tell(tc) => question::render_tell(frame, area, app, card, tc),
         CardKind::Menu(mc) => menu::render(frame, area, app, card, mc),
