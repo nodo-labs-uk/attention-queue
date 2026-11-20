@@ -1,9 +1,8 @@
 ---
 source: src/ui/question.rs
-assertion_line: 235
 expression: "render(&a, 100, 24)"
 ---
-" aq  question socratui · %1                                            1 question  F3 keys  F1 help "
+" aq   QUESTION  socratui · window %1                                   1 question  F3 keys  F1 help "
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "

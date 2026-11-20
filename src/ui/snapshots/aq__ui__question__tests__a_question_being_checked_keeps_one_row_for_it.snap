@@ -1,9 +1,8 @@
 ---
 source: src/ui/question.rs
-assertion_line: 204
 expression: text
 ---
-" aq  question socratui · %1                                            1 question  F3 keys  F1 help "
+" aq   QUESTION  socratui · window %1                                   1 question  F3 keys  F1 help "
 "                                                                                                    "
 " Claude is asking                                                                                   "
 " socratui  window %1                                                                                "

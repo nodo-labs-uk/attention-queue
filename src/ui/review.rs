@@ -28,13 +28,9 @@ pub fn render(
 ) {
     let t = app.theme();
     let mut head = card_header(app, card);
-    head[0].spans.push(Span::styled(
-        format!("  round {}", rc.round),
-        Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
-    ));
     let pr = app.pr_reviews.get(&card.checkout.0);
     if let Some(pr) = pr {
-        head.insert(1, pr_line(&pr.info, t));
+        head.insert(0, pr_line(&pr.info, t));
     }
     head.push(stats(rc, t));
     let [head_area, body] =

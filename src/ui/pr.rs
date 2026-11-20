@@ -375,12 +375,12 @@ mod tests {
         let mut a = their_pr();
         a.config.show_keys = true;
         let screen = render(&a, 200, 40);
-        assert!(screen.contains("r refresh"), "{screen}");
+        assert!(screen.contains("r  refresh"), "{screen}");
         assert!(!screen.contains("whole branch"), "{screen}");
         let dir = a.queue.current().unwrap().checkout.0.clone();
         a.pr_reviews.get_mut(&dir).unwrap().info.mine = true;
         let screen = render(&a, 200, 40);
-        assert!(screen.contains("r whole branch"), "{screen}");
+        assert!(screen.contains("r  whole branch"), "{screen}");
     }
 
     #[test]

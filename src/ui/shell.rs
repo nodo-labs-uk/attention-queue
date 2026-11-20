@@ -82,9 +82,9 @@ mod tests {
         a.queue.push(c);
         a.config.show_keys = true;
         let screen = render(&a, 80, 20);
-        assert!(screen.contains("shell change"), "{screen}");
+        assert!(screen.contains("SHELL CHANGE"), "{screen}");
         assert!(screen.contains("$ sed -i s/a/b/ src/limit.rs"), "{screen}");
         assert!(screen.contains("limit.rs"), "{screen}");
-        assert!(screen.contains("u undo"), "{screen}");
+        assert!(screen.contains("u  undo"), "{screen}");
     }
 }

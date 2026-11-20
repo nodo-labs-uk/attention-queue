@@ -1,9 +1,8 @@
 ---
 source: src/ui/permission.rs
-assertion_line: 294
 expression: "shown(Held::Flagged(flag))"
 ---
-" aq  ▌▌ permission socratui · %1                                     1 permission  F3 keys  F1 help "
+" aq   ▌▌ PERMISSION  socratui · window %1                            1 permission  F3 keys  F1 help "
 "                                                                                                    "
 " Permission: Bash                                                                                   "
 " socratui  window %1                                                                                "

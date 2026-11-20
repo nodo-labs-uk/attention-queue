@@ -1,9 +1,8 @@
 ---
 source: src/ui/bar.rs
-assertion_line: 182
 expression: text
 ---
-" aq  ▲ permission api · %1   1 permission  F3 keys  F1 help "
+" aq   ▲ PERMISSION  api · window %1           1 permission  "
 "                                                            "
 " Permission: Bash                                           "
 " ▾ 1 more line (j to scroll)                                "

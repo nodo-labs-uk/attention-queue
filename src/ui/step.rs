@@ -31,10 +31,6 @@ pub fn render(
 ) {
     let t = app.theme();
     let mut head = card_header(app, card);
-    head[0].spans.push(Span::styled(
-        format!("  step {}", sc.step_no),
-        Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
-    ));
     let bold = Style::new().fg(t.fg).add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(t.dim);
     match sc.description.as_deref().map(split_description) {

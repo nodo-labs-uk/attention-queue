@@ -1186,7 +1186,7 @@ mod tests {
         );
         let text = crate::ui::tests::render(&a, 100, 30);
         assert!(
-            text.contains(" aq  ▌▌ question"),
+            text.contains("▌▌ QUESTION"),
             "the queue bar marks it: {text}"
         );
         assert!(

@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: "render(&a, 70, 12)"
 ---
-" aq  nothing waiting                                 F3 keys  F1 help "
+" aq  nothing waiting         3 sessions · 2 waiting  F3 keys  F1 help "
 "                                                                      "
 "  ● 1 api   ○ 4 chezmoi   ● 12 web-redesign web                       "
 "                                                                      "

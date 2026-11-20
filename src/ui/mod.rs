@@ -27,12 +27,10 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::Block;
 
-use crate::app::{
-    App, Overlay, Selection, Unit, mode_label, project_name, shared_checkout_warning,
-};
+use crate::app::{App, Overlay, Selection, Unit, shared_checkout_warning};
 use crate::highlight::Highlighter;
 use crate::model::{Card, CardKind};
 
@@ -356,22 +354,7 @@ pub fn window_of(app: &App, card: &Card) -> String {
 /// shared-checkout warning.
 pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
     let t = app.theme();
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            kind_label(&card.kind),
-            Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ", Style::new()),
-        Span::styled(project_name(&card.checkout), Style::new().fg(t.fg)),
-        Span::styled(
-            format!(
-                "  window {}  {}",
-                window_of(app, card),
-                mode_label(app.config.mode_for(&card.checkout))
-            ),
-            Style::new().fg(t.dim),
-        ),
-    ])];
+    let mut lines = Vec::new();
     if let Some((agent, _)) = app.held.get(&card.id) {
         lines.push(Line::styled(
             app.queued_status(agent),
@@ -549,7 +532,12 @@ pub(crate) mod tests {
             a.config.show_keys = true;
             a.queue.push(card(1, "/a", kind, 0));
             let screen = render(&a, 200, 40);
-            for hint in ["? ask", "W where are we", "T sum up last turn", "M mode"] {
+            for hint in [
+                "?  ask",
+                "W  where are we",
+                "T  sum up last turn",
+                "M  mode",
+            ] {
                 assert!(screen.contains(hint), "{hint} missing:\n{screen}");
             }
             assert!(!screen.contains("stashed"), "nothing is stashed");
@@ -565,7 +553,7 @@ pub(crate) mod tests {
         ));
         let screen = render(&a, 80, 3);
         let last = screen.lines().last().unwrap();
-        assert!(last.contains("Q quit"), "{last}");
+        assert!(last.contains("Q  quit"), "{last}");
         assert!(last.contains("Could not list agents"), "{last}");
     }
 
@@ -594,7 +582,7 @@ pub(crate) mod tests {
         );
         let last = screen.lines().last().unwrap();
         assert!(
-            last.contains("Q quit") && last.contains("Sent to api"),
+            last.contains("Q  quit") && last.contains("Sent to api"),
             "{last}"
         );
     }

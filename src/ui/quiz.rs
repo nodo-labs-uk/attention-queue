@@ -51,7 +51,9 @@ pub fn render(
     let inner = area.inner(Margin::new(1, 0));
     let width = inner.width.saturating_sub(2).max(10) as usize;
     let mut lines = card_header(app, card);
-    lines.push(Line::raw(""));
+    if !lines.is_empty() {
+        lines.push(Line::raw(""));
+    }
     let dim = Style::new().fg(t.dim);
     match &qc.state {
         QuizState::Generating => {

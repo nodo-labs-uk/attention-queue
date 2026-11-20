@@ -194,7 +194,7 @@ mod tests {
             pending: false,
         };
         let text = question(FlagState::Flagged(flag));
-        assert!(text.contains(" aq  ▌▌ question"), "{text}");
+        assert!(text.contains("▌▌ QUESTION"), "{text}");
         insta::assert_snapshot!(text);
     }
 

@@ -1,9 +1,8 @@
 ---
 source: src/ui/question.rs
-assertion_line: 260
 expression: "render(&a, 100, 16)"
 ---
-" aq  menu socratui · %1                                                    1 menu  F3 keys  F1 help "
+" aq   MENU  socratui · window %1                                           1 menu  F3 keys  F1 help "
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "

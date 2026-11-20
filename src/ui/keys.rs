@@ -393,12 +393,16 @@ fn rows(app: &App, width: u16) -> Vec<Line<'static>> {
     let t = app.theme();
     let mut rows = vec![Line::raw(" ")];
     for (k, label) in keys_for(app) {
+        // Each key as a small cap, so keys and words don't run together.
         let item = [
             Span::styled(
-                k.to_string(),
-                Style::new().fg(t.key).add_modifier(Modifier::BOLD),
+                format!(" {k} "),
+                Style::new()
+                    .fg(t.key)
+                    .bg(t.line)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!(" {label}   "), Style::new().fg(t.dim)),
+            Span::styled(format!(" {label}  "), Style::new().fg(t.dim)),
         ];
         let w: usize = item.iter().map(Span::width).sum();
         let row = rows.last_mut().expect("a row");

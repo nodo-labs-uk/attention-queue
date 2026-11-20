@@ -2,8 +2,7 @@
 source: src/ui/review.rs
 expression: "render(&a, 80, 30)"
 ---
-" aq  review api · api                                1 review  F3 keys  F1 help "
-" review  api  window api  review board  round 2                                 "
+" aq   REVIEW  api · window api · round 2             1 review  F3 keys  F1 help "
 " 2 files · +5 −3 · 1 comment · changes since round 1                            "
 " src/          src/limit.rs · before             src/limit.rs · after           "
 "   limit.rs ✎1 ⋯ @@ -38,5 +38,6 @@                                              "
@@ -22,6 +21,7 @@ expression: "render(&a, 80, 30)"
 "               42 }                            │ 43 }                           "
 "                                               │     old ✎ 43 closing brace move"
 "                                               │              d                 "
+"                                                                                "
 "                                                                                "
 "                                                                                "
 "                                                                                "

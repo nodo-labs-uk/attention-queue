@@ -1,9 +1,8 @@
 ---
 source: src/ui/permission.rs
-assertion_line: 309
 expression: text
 ---
-" aq  permission socratui · %11 permission  F3 keys  F1 help "
+" aq   PERMISSION  socratui · window %1        1 permission  "
 "                                                            "
 " Permission: Bash                                           "
 " socratui  window %1                                        "
