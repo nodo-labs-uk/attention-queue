@@ -36,45 +36,61 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     .areas(area);
     frame.render_widget(Block::new().style(Style::new().bg(t.panel)), strip);
     frame.render_widget(Paragraph::new(rows), strip.inner(Margin::new(0, 1)));
+    // A caption names the session; the live screen takes the rest, a row
+    // shorter, so its last line stays in view.
+    let [cap, live] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(live);
+    frame.render_widget(Paragraph::new(caption(app, picked, cap.width)), cap);
     // Full width: agents' panes are usually as wide as this one, and their
     // lines are already wrapped to it, so any margin would wrap them again.
     render_live(frame, live, app);
 }
 
 /// One tab per agent in window order, flowed into as many rows of `width`
-/// as they need. Waiting is a filled dot, working a hollow one, so the state
-/// does not rest on colour; the picked tab is a solid block. With agents in
-/// more than one row (a workspace, else a tmux session), each starts a row
-/// of its own, led by its name.
+/// as they need. Each tab is a pill: the picked one filled in the accent
+/// colour, the others on a quiet fill. Waiting is a filled dot, working a
+/// hollow one with the name dimmed, so the state does not rest on colour.
+/// With agents in more than one row (a workspace, else a tmux session),
+/// each starts a row of its own, led by its name in a column of one width,
+/// so the tabs of every row start together.
 fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
     let t = app.theme();
     let agents = app.agents_in_order();
     let one_row = agents.iter().all(|a| a.row() == agents[0].row());
-    let mut rows: Vec<Line> = vec![Line::raw(" ")];
+    // The group column: the widest name, then two spaces.
+    let lead = if one_row {
+        0
+    } else {
+        agents
+            .iter()
+            .map(|a| visible(a.row()).chars().count())
+            .max()
+            .unwrap_or(0)
+            + 2
+    };
+    let mut rows: Vec<Line> = Vec::new();
     let mut group: Option<&str> = None;
     for a in agents {
-        if !one_row && group != Some(a.row()) {
-            if group.is_some() {
-                rows.push(Line::raw(" "));
-            }
+        if group != Some(a.row()) {
             group = Some(a.row());
-            let row = rows.last_mut().expect("a row");
-            row.spans.push(Span::styled(
-                format!("{} ", visible(a.row())),
-                Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
-            ));
+            let name = if one_row {
+                String::new()
+            } else {
+                visible(a.row())
+            };
+            rows.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    format!("{name:<lead$}"),
+                    Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
+                ),
+            ]));
         }
         let on = &a.id == picked;
-        let (dot, dot_fg) = if a.waiting {
-            ("●", t.hi)
-        } else {
-            ("○", t.dim)
-        };
+        let dot = if a.waiting { "●" } else { "○" };
         // A program can name its own window, so names are shown as visible text.
         let name = visible(&a.window_name);
-        let window = format!("{} {}", a.window_index, name);
         let project = visible(&agent_project(a));
-        let mut label = format!(" {dot} {window}");
+        let mut label = format!(" {} {name}", a.window_index);
         if project != name {
             label.push_str(&format!(" {project}"));
         }
@@ -88,14 +104,7 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
                 _ => " · vibe",
             });
         }
-        // Claude Code's permission mode, with the mark its footer uses.
-        label.push_str(match a.permission_mode {
-            Some("auto") => " ⏵⏵ auto",
-            Some("accept edits") => " ⏵⏵ edits",
-            Some("plan") => " ⏸ plan",
-            Some("manual") => " ⏸ manual",
-            _ => "",
-        });
+        label.push_str(permission_mark(a));
         if app.prompt_waiting(&a.id) {
             // Typed text in its box holds the message back: say so.
             label.push_str(if app.prompt_has_text(&a.id) {
@@ -106,28 +115,73 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
         }
         label.push(' ');
         let spans = if on {
-            vec![Span::styled(
-                label,
-                Style::new().fg(t.bg).bg(t.acc).add_modifier(Modifier::BOLD),
-            )]
-        } else {
-            let rest = label[1 + dot.len()..].to_string();
+            let style = Style::new().fg(t.bg).bg(t.acc).add_modifier(Modifier::BOLD);
             vec![
-                Span::raw(" "),
-                Span::styled(dot, Style::new().fg(dot_fg)),
-                Span::styled(rest, Style::new().fg(t.fg)),
+                Span::styled(format!(" {dot}"), style),
+                Span::styled(label, style),
+            ]
+        } else {
+            let pill = Style::new().bg(t.line);
+            let (dot_fg, text_fg) = if a.waiting {
+                (t.hi, t.fg)
+            } else {
+                (t.dim, t.dim)
+            };
+            vec![
+                Span::styled(format!(" {dot}"), pill.fg(dot_fg)),
+                Span::styled(label, pill.fg(text_fg)),
             ]
         };
         let w: usize = spans.iter().map(Span::width).sum();
         let row = rows.last_mut().expect("a row");
-        if row.width() + w > width as usize && row.width() > 1 {
-            rows.push(Line::raw(" "));
+        if row.width() + w > width as usize && row.width() > 1 + lead {
+            rows.push(Line::raw(" ".repeat(1 + lead)));
         }
         let row = rows.last_mut().expect("a row");
         row.spans.extend(spans);
         row.spans.push(Span::raw(" "));
     }
     rows
+}
+
+/// Claude Code's permission mode, with the mark its footer uses, after a
+/// space; empty when it is not known.
+fn permission_mark(a: &Agent) -> &'static str {
+    match a.permission_mode {
+        Some("auto") => " ⏵⏵ auto",
+        Some("accept edits") => " ⏵⏵ edits",
+        Some("plan") => " ⏸ plan",
+        Some("manual") => " ⏸ manual",
+        _ => "",
+    }
+}
+
+/// The dim line over the live screen: which session it is, its window and
+/// permission mode, and whether it waits on you, then a rule to the edge.
+fn caption(app: &App, a: &Agent, width: u16) -> Line<'static> {
+    let t = app.theme();
+    let mut parts = vec![
+        visible(&agent_project(a)),
+        format!("window {}", a.window_index),
+    ];
+    let mark = permission_mark(a).trim_start();
+    if !mark.is_empty() {
+        parts.push(mark.to_string());
+    }
+    parts.push(
+        if a.waiting {
+            "waiting for you"
+        } else {
+            "working"
+        }
+        .to_string(),
+    );
+    let text = format!(" {} ", parts.join(" · "));
+    let rule = (width as usize).saturating_sub(text.chars().count());
+    Line::from(vec![
+        Span::styled(text, Style::new().fg(t.dim)),
+        Span::styled("─".repeat(rule), Style::new().fg(t.dim)),
+    ])
 }
 
 /// The picked agent's screen as last read, its bottom rows, where its
