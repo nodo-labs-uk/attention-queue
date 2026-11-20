@@ -362,8 +362,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
             more,
         );
     }
-    let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(t.dim);
     let mut spans = Vec::new();
     for (k, label) in [
         ("y", "allow"),
@@ -371,8 +369,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         ("g", "go to window"),
         ("?", "ask"),
     ] {
-        spans.push(Span::styled(k, key));
-        spans.push(Span::styled(format!(" {label}  "), dim));
+        spans.extend(super::keys::cap(k, label, t));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), keys);
 }

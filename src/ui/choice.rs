@@ -27,7 +27,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
     let t = app.theme();
     let bold = Style::new().fg(t.fg).add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(t.dim);
-    let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
     if cc.current().is_none() {
         return;
     }
@@ -42,8 +41,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
     ]);
     let mut keys = Vec::new();
     for (k, label) in key_hints(cc) {
-        keys.push(Span::styled(k, key));
-        keys.push(Span::styled(format!(" {label}  "), dim));
+        keys.extend(super::keys::cap(k, label, t));
     }
     let keys = Line::from(keys);
 

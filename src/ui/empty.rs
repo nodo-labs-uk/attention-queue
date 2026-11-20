@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 /// One tab per agent in window order, flowed into as many rows of `width`
 /// as they need. Each tab is a pill: the picked one filled in the accent
 /// colour, the others on a quiet fill. Waiting is a filled dot, working a
-/// hollow one with the name dimmed, so the state does not rest on colour.
+/// hollow dimmed one, so the state does not rest on colour.
 /// With agents in more than one row (a workspace, else a tmux session),
 /// each starts a row of its own, led by its name in a column of one width,
 /// so the tabs of every row start together.
@@ -122,14 +122,12 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
             ]
         } else {
             let pill = Style::new().bg(t.line);
-            let (dot_fg, text_fg) = if a.waiting {
-                (t.hi, t.fg)
-            } else {
-                (t.dim, t.dim)
-            };
+            // The name stays readable on the fill in every theme; the
+            // dot carries the state.
+            let dot_fg = if a.waiting { t.hi } else { t.dim };
             vec![
                 Span::styled(format!(" {dot}"), pill.fg(dot_fg)),
-                Span::styled(label, pill.fg(text_fg)),
+                Span::styled(label, pill.fg(t.fg)),
             ]
         };
         let w: usize = spans.iter().map(Span::width).sum();
