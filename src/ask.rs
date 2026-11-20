@@ -31,8 +31,13 @@ pub const NO_CARD: u64 = 0;
 pub const WHERE_ARE_WE: &str = "Where are we with this? In a few short lines: what is done, \
 what is still left to do, and anything that needs me.";
 /// What `T` asks, on Haiku.
-pub const SUMMARISE: &str = "Summarise our latest exchange in a few short lines: what I \
-last asked for, what you did, and what you told me at the end. Leave out earlier turns.";
+pub const SUMMARISE: &str = "Summarise our latest exchange in exactly three lines, one \
+short sentence each, with no markdown:\nAsked: what I last asked for\nDid: what you did\n\
+Said: what you told me at the end\nLeave out earlier turns.";
+/// The labels that start the lines of a `T` answer.
+const TLDR_LABELS: [&str; 3] = ["Asked", "Did", "Said"];
+/// Columns before a labelled line's text.
+pub const LABEL_WIDTH: usize = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -71,6 +76,8 @@ pub enum LineKind {
     Answer,
     Pending,
     Error,
+    /// A `T` answer's line, its label in the first `LABEL_WIDTH` columns.
+    Labelled,
 }
 
 /// Width and height of the text inside the overlay, for a screen of this
@@ -99,8 +106,19 @@ impl AskState {
                 &visible_text(shown_question(&e.question)),
                 width,
             );
+            out.push((LineKind::Answer, String::new()));
             match &e.answer {
                 Answer::Pending => out.push((LineKind::Pending, "Asking…".into())),
+                Answer::Done(a) if e.question == SUMMARISE && labelled(a).is_some() => {
+                    for (label, text) in labelled(a).unwrap_or_default() {
+                        let mut first = true;
+                        wrap_words(&text, width.saturating_sub(LABEL_WIDTH), &mut |row| {
+                            let head = if first { label } else { "" };
+                            first = false;
+                            out.push((LineKind::Labelled, format!("{head:LABEL_WIDTH$}{row}")));
+                        });
+                    }
+                }
                 Answer::Done(a) => {
                     wrap_into(&mut out, LineKind::Answer, &visible_text(a), width);
                     if e.fallback {
@@ -131,11 +149,33 @@ impl AskState {
     }
 }
 
+/// A `T` answer as its labelled lines, if every line has one of the labels.
+fn labelled(answer: &str) -> Option<Vec<(&'static str, String)>> {
+    let rows: Vec<String> = visible_lines(answer.trim())
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let out: Option<Vec<_>> = rows
+        .iter()
+        .map(|l| {
+            let l = l
+                .trim()
+                .trim_start_matches(['-', '*', ' '])
+                .replace("**", "");
+            TLDR_LABELS.iter().find_map(|&label| {
+                let rest = l.strip_prefix(label)?.strip_prefix(':')?;
+                Some((label, rest.trim().to_string()))
+            })
+        })
+        .collect();
+    out.filter(|o| !o.is_empty())
+}
+
 /// A question as the panel shows it: `W`'s long wording is for the model.
 fn shown_question(question: &str) -> &str {
     match question {
         WHERE_ARE_WE => "Where are we?",
-        SUMMARISE => "The latest turn, in short (Haiku)",
+        SUMMARISE => "The latest turn, summed up by Haiku",
         _ => question,
     }
 }
@@ -740,7 +780,7 @@ mod tests {
         assert!(haiku_fork(&press(&mut a, KeyCode::Char('r'))));
         let screen = crate::ui::tests::render(&a, 100, 30);
         assert!(
-            screen.contains("The latest turn, in short (Haiku)"),
+            screen.contains("The latest turn, summed up by Haiku"),
             "{screen}"
         );
     }
