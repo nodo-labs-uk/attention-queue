@@ -23,7 +23,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Line::styled("No Claude agents found in tmux.", Style::new().fg(t.dim)),
         ];
         let w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        let block = super::input::panel(area, (w, 2));
+        let block = super::input::centred(area, (w, 2));
         frame.render_widget(Paragraph::new(lines), block);
         return;
     };
@@ -44,22 +44,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 /// One tab per agent in window order, flowed into as many rows of `width`
 /// as they need. Waiting is a filled dot, working a hollow one, so the state
 /// does not rest on colour; the picked tab is a solid block. With agents in
-/// more than one tmux session, each session starts a row, led by its name.
+/// more than one row (a workspace, else a tmux session), each starts a row
+/// of its own, led by its name.
 fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
     let t = app.theme();
     let agents = app.agents_in_order();
-    let one_session = agents.iter().all(|a| a.session == agents[0].session);
+    let one_row = agents.iter().all(|a| a.row() == agents[0].row());
     let mut rows: Vec<Line> = vec![Line::raw(" ")];
     let mut group: Option<&str> = None;
     for a in agents {
-        if !one_session && group != Some(a.session.as_str()) {
+        if !one_row && group != Some(a.row()) {
             if group.is_some() {
                 rows.push(Line::raw(" "));
             }
-            group = Some(&a.session);
+            group = Some(a.row());
             let row = rows.last_mut().expect("a row");
             row.spans.push(Span::styled(
-                format!("{} ", visible(&a.session)),
+                format!("{} ", visible(a.row())),
                 Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
             ));
         }

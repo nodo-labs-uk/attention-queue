@@ -5,13 +5,10 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use super::input;
+use super::window::Height;
 use crate::new_session::{FolderPick, NewSessionDraft};
 use crate::theme::Theme;
 use crate::visible::push_visible;
-
-/// The same box for the prompt and for the folder, so nothing moves
-/// between them; the workspace box is this size too.
-pub const SIZE: (u16, u16) = (100, 12);
 
 /// `N`: the prompt box, or after Ctrl-O the folder box with its matches.
 pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
@@ -31,7 +28,16 @@ pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
             "own worktree"
         };
         let more = [("Ctrl-O", "other folder"), ("Tab", tab)];
-        input::render_with_keys(frame, area, &d.input, &title, "start", &more, t, SIZE);
+        input::render_with_keys(
+            frame,
+            area,
+            &d.input,
+            &title,
+            "start",
+            &more,
+            t,
+            Height::Short,
+        );
         return;
     };
     render_folder(
@@ -40,6 +46,7 @@ pub fn render(frame: &mut Frame, area: Rect, d: &NewSessionDraft, t: &Theme) {
         pick,
         "Folder for the new session",
         "Not there yet: Enter names it, and it is made when the session starts",
+        Height::Short,
         t,
     );
 }
@@ -52,11 +59,12 @@ pub fn render_folder(
     pick: &FolderPick,
     title: &str,
     missing: &str,
+    height: Height,
     t: &Theme,
 ) {
     let more = [("Tab", "complete"), ("↑/↓", "choose")];
-    input::render_with_keys(frame, area, &pick.input, title, "use it", &more, t, SIZE);
-    let rows = input::below_first_row(area, SIZE);
+    input::render_with_keys(frame, area, &pick.input, title, "use it", &more, t, height);
+    let rows = input::below_first_row(area, height);
     if rows.height == 0 {
         return;
     }

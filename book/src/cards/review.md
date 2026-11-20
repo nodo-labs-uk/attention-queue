@@ -21,7 +21,7 @@ To review a pull request instead, press `R`: see [PR review](pr-review.md).
 | `r` | the whole branch, or only this round |
 | `m` | Markdown as written, or as read (the default) |
 | `f` | hide or show the file list, for a wider diff (remembered) |
-| `e` | open the file at this line in `$VISUAL` or `$EDITOR`, in a popup |
+| `e` | open the file at this line in `$VISUAL` or `$EDITOR`, in a popup; `Ctrl-Q` or quitting the editor closes it |
 
 Moving: `j` `k` by line, `]c` `[c` by change, `H` `L` or `Tab` by file.
 

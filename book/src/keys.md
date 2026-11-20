@@ -11,9 +11,11 @@ This is the same list as aq's help page (`F1`).
 | `F3` | show or hide the keys row |
 | `M` | next mode for this project |
 | `t` | next theme |
+| `Ctrl-Q` | close any window or popup; `Esc` closes aq's own windows too |
 | `Q` | quit aq |
 | `?` | ask the session a side question; a copy answers |
 | `W` | where are we: a short summary of what is done and what is left |
+| `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a shell in a popup, in this project |
 | `N` | a new Claude session in this project |
 | `O` | open a workspace |

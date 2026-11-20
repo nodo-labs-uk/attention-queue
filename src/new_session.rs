@@ -421,13 +421,13 @@ mod tests {
         let mut a = app();
         let screen = crate::ui::tests::render(&a, 120, 30);
         assert!(
-            screen.contains("Enter start  Ctrl-O other folder  Tab own worktree  Esc cancel"),
+            screen.contains("Enter start  Ctrl-O other folder  Tab own worktree"),
             "{screen}"
         );
         a.update(ctrl('o'));
         let screen = crate::ui::tests::render(&a, 120, 30);
         assert!(
-            screen.contains("Enter use it  Tab complete  ↑/↓ choose  Esc cancel"),
+            screen.contains("Enter use it  Tab complete  ↑/↓ choose"),
             "{screen}"
         );
     }
@@ -446,6 +446,15 @@ mod tests {
             (d.dir.as_path(), d.input.text().as_str()),
             (Path::new("/w/api"), "x")
         );
+    }
+
+    #[test]
+    fn ctrl_q_closes_the_whole_box_from_the_folder_step() {
+        let mut a = app();
+        a.update(key('x'));
+        a.update(ctrl('o'));
+        assert!(a.update(ctrl('q')).is_empty());
+        assert_eq!(a.overlay, None, "Esc only steps back; Ctrl-Q closes");
     }
 
     #[test]

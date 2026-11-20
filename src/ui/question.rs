@@ -71,7 +71,7 @@ pub fn render_stash(frame: &mut Frame, area: Rect, app: &App, cursor: usize) {
         area,
         "Stashed questions",
         rows,
-        &[("Enter", "bring back"), ("x", "drop"), ("Esc", "close")],
+        &[("Enter", "bring back"), ("x", "drop")],
         t,
     );
 }

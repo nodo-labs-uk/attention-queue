@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::theme::Theme;
 
@@ -31,6 +31,7 @@ finished turn; the card on screen stays as it is.
   ?    ask the agent a side question      Space  skip this card
                                           B      move it to the back of the queue
   W    where are we: a short summary of what is done and what is left
+  T    Haiku sums up the latest turn: what you asked, what Claude did
   N    a new Claude session in this project, in a tmux window of its own
        (with none open, in aq's folder); what you type is its first
        prompt, and Tab gives it a git worktree of its own (claude
@@ -40,15 +41,15 @@ finished turn; the card on screen stays as it is.
        whether to trust the folder, aq asks you: y trusts it, n closes it,
        and a trusts every folder waiting
   O    open a workspace: the git repos in a folder, each in a Claude
-       session of its own, all in a tmux session named after the folder.
+       session of its own, as windows here sharing a row of tabs.
        Pick the folder, untick repos you don't want, Enter opens the rest;
        aq saves the set, and O lists it next time. Repos open already in
-       that tmux session are left as they are
+       that workspace are left as they are
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
-       and, in zsh, typed in ready to run. It closes when the shell exits
+       and, in zsh, typed in ready to run. Ctrl-Q or exit closes it
   R    review a pull request              M    next mode for this project
-  t    next theme
+  t    next theme                         Ctrl-Q close any window or popup (Esc too)
   F1   this help                          Q    quit aq
   F2   the tour again                     F3   show or hide the keys row
 
@@ -162,9 +163,9 @@ session is the one picked.
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in
   a      approve: sends Approved, carry on. now, or once it is idle
-  A      message every session in its tmux session, each once idle
+  A      message every session in its row, each once idle
   r      read its last reply fast, as r on a question card
-  b      /btw: the session's own window in a popup the size of ?'s box,
+  b      /btw: the session's own window in a popup over aq,
          /btw typed in its box; ask, read the answer, Ctrl-Q closes it
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
@@ -173,6 +174,7 @@ session is the one picked.
          p plan (presses Shift+Tab in the session until it shows)
   ?  W  ask it a side question, or where it is up to; a copy of the
          session answers, so the session itself never sees it
+  T      Haiku sums up its latest turn, in the same box as W
   x      close the session's pane, after a yes (claude --resume reopens it)
   Esc Esc  stop what it is doing, as Esc in Claude Code; also drops a
          message queued for it
@@ -196,7 +198,7 @@ Ctrl-L clears it now.
 tmux's status line is hidden while aq's window shows; it comes back
 on other windows and when aq quits.";
 
-/// The help page over `area`, scrolled down by `scroll` lines.
+/// The help page in a tall window over `area`, scrolled down by `scroll` lines.
 pub fn render(frame: &mut Frame, area: Rect, scroll: u16, t: &Theme) {
     let lines: Vec<Line> = TEXT
         .lines()
@@ -208,20 +210,12 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16, t: &Theme) {
             None => Line::styled(l.to_string(), Style::new().fg(t.fg)),
         })
         .collect();
-    let block = Block::bordered()
-        .border_style(Style::new().fg(t.dim))
-        .title(Span::styled(
-            " Help ",
-            Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
-        ))
-        .padding(Padding::horizontal(1));
-    frame.render_widget(Clear, area);
+    let panel = super::window::place(area, super::window::Height::Tall);
+    let inner = super::window::draw(frame, panel, "Help", &[("j/k", "scroll")], t);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(block)
-            .style(Style::new().bg(t.bg))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0)),
-        area,
+        inner,
     );
 }

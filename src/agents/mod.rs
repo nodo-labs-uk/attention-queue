@@ -26,6 +26,8 @@ pub enum AgentStatus {
 pub struct Agent {
     pub id: AgentId,
     pub session: String,
+    /// The workspace aq opened its window for (`@aq-group`), or empty.
+    pub group: String,
     pub window_index: u32,
     pub window_name: String,
     pub cwd: PathBuf,
@@ -43,6 +45,17 @@ pub struct Agent {
     pub last_prompt: Option<String>,
     /// A menu of Claude Code's own on its screen, waiting for a pick.
     pub menu: Option<ScreenMenu>,
+}
+
+impl Agent {
+    /// The row of tabs it goes in: its workspace, else its tmux session.
+    pub fn row(&self) -> &str {
+        if self.group.is_empty() {
+            &self.session
+        } else {
+            &self.group
+        }
+    }
 }
 
 /// A menu Claude Code draws in its pane and waits on, such as whether to
@@ -140,10 +153,13 @@ pub enum InputBox {
     Holding(String),
 }
 
-/// Whether `line` is one of the rules around Claude Code's input box.
+/// Whether `line` is one of the rules around Claude Code's input box. The
+/// rule above the box of a named session has the name near its right end:
+/// `───── name ─`.
 fn is_rule(line: &str) -> bool {
     let l = line.trim();
-    !l.is_empty() && l.chars().all(|c| c == '─')
+    let named = l.starts_with("───") && l.ends_with('─');
+    !l.is_empty() && (named || l.chars().all(|c| c == '─'))
 }
 
 /// Whether `line` starts a broadcast from `wall` or `shutdown`, written
@@ -507,6 +523,24 @@ mod input_box_tests {
         assert_eq!(suggestion("\x1b[39m❯\u{a0}go ahead"), None);
         assert_eq!(suggestion("\x1b[39m❯\u{a0}"), None);
         assert_eq!(read_suggestion("Allow this?\n❯ 1. Yes"), None, "a menu");
+    }
+
+    #[test]
+    fn a_named_sessions_rule_has_its_name_in_it() {
+        let rule = "─".repeat(60);
+        let named = format!("{rule} fix-group-rename-identifier ─");
+        let box_of =
+            |text: &str| format!("● Done.\n\n{named}\n\x1b[39m❯\u{a0}{text}\n{rule}\n  status\n");
+        assert_eq!(read_input_box(&box_of("")), InputBox::Empty);
+        assert_eq!(
+            read_input_box(&box_of("my draft")),
+            InputBox::Holding("my draft".into())
+        );
+        // Text that only starts or ends like a rule is not one.
+        for not_a_rule in ["─── heading", "- a ─", "── x ─"] {
+            let screen = format!("{not_a_rule}\n❯ 1. Yes\n  2. No\n");
+            assert_eq!(read_input_box(&screen), InputBox::Unseen, "{not_a_rule}");
+        }
     }
 
     #[test]

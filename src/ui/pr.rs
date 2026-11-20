@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::input::{self, TextInput};
-use super::new_session::SIZE;
+use super::window::{self, Height};
 use super::workspace::{list_box, shown};
 use crate::app::App;
 use crate::pr::app::PrFinder;
@@ -17,16 +17,16 @@ use crate::theme::Theme;
 use crate::visible::{cols, wrap_words};
 
 /// The keys along the bottom of the finder and in the keys row.
-pub const KEYS: [(&str, &str); 3] = [("Enter", "open"), ("↑/↓", "choose"), ("Esc", "close")];
+pub const KEYS: [(&str, &str); 2] = [("Enter", "open"), ("↑/↓", "choose")];
 
 /// The typed text on the first row, a note on the second (loading, opening,
 /// an error), then the PRs. The box keeps one size throughout.
 pub fn render(frame: &mut Frame, area: Rect, f: &PrFinder, t: &Theme) {
-    let panel = input::panel(area, SIZE);
-    // Inside the border and the padding of `list_box`.
+    let panel = window::place(area, Height::Tall);
+    // Inside the window's border and padding.
     let (width, room) = (
-        panel.width.saturating_sub(4) as usize,
-        panel.height.saturating_sub(2) as usize,
+        panel.width.saturating_sub(window::INSET.0) as usize,
+        panel.height.saturating_sub(window::INSET.1) as usize,
     );
     let dim = Style::new().fg(t.dim);
     let bad = Style::new().fg(t.hi);
@@ -75,11 +75,6 @@ pub fn render(frame: &mut Frame, area: Rect, f: &PrFinder, t: &Theme) {
     }
 }
 
-/// The summary box's size: the summary, a warning when the PR moved under
-/// the comments (two rows), how the comments will be placed, and a note
-/// when GitHub's diff could not be read or GitHub would refuse the review.
-const SUBMIT_SIZE: (u16, u16) = (72, 9);
-
 /// The summary box for posting card `card`'s review as `event`.
 pub fn render_submit(
     frame: &mut Frame,
@@ -111,9 +106,12 @@ pub fn render_submit(
         &[],
         ghost,
         t,
-        SUBMIT_SIZE,
+        Height::Short,
     );
-    let rows = input::below_first_row(area, SUBMIT_SIZE);
+    // Under the summary: a warning when the PR moved under the comments,
+    // how the comments will be placed, and a note when GitHub's diff could
+    // not be read or GitHub would refuse the review.
+    let rows = input::below_first_row(area, Height::Short);
     if rows.height == 0 {
         return;
     }
@@ -250,7 +248,7 @@ mod tests {
         assert!(text.contains("nodo/api #41"), "{text}");
         assert!(text.contains("● nodo/api #39"), "{text}");
         assert!(text.contains("Enter"), "{text}");
-        assert!(text.contains("Esc"), "{text}");
+        assert!(text.contains("Ctrl-Q close"), "{text}");
     }
 
     fn corners(s: &str) -> Vec<(usize, Option<usize>)> {

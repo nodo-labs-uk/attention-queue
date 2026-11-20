@@ -20,6 +20,7 @@ fn review_keys(rc: &ReviewCard) -> Vec<(&'static str, String)> {
         ("]c", "change".into()),
         ("H/L", "file".into()),
         ("d", "done".into()),
+        ("u", "show done".into()),
         ("V", "range".into()),
         ("x", "delete".into()),
         ("e", "edit".into()),
@@ -36,28 +37,59 @@ fn review_keys(rc: &ReviewCard) -> Vec<(&'static str, String)> {
         ("j/k", "line".into()),
         ("Space", "skip".into()),
         ("B", "move to back".into()),
-        ("?", "ask".into()),
     ]
+}
+
+/// The keys that work on any card, after the card's own: the least likely
+/// last, so a short screen cuts these first.
+fn every_card(app: &App) -> Vec<(&'static str, String)> {
+    let mut keys = vec![
+        ("?", "ask".into()),
+        ("W", "where are we".into()),
+        ("T", "sum up last turn".into()),
+    ];
+    keys.extend(stashed(app));
+    keys.extend([
+        ("M", "mode".into()),
+        ("!", "shell".into()),
+        ("N", "new session".into()),
+    ]);
+    keys
+}
+
+/// `S`, while any question is stashed.
+fn stashed(app: &App) -> Option<(&'static str, String)> {
+    (!app.stashed.is_empty()).then(|| ("S", format!("stashed {}", app.stashed.len())))
 }
 
 /// The keys that work right now, the likeliest first.
 fn keys_for(app: &App) -> Vec<(&str, String)> {
+    let mut keys = keys_here(app);
+    if app.overlay.is_none() && app.queue.current().is_some() && app.closing_pr.is_none() {
+        keys.extend(every_card(app));
+    }
+    keys
+}
+
+/// The keys of the window or card on screen.
+fn keys_here(app: &App) -> Vec<(&str, String)> {
     match (&app.overlay, app.queue.current()) {
         (Some(Overlay::Ask(a)), _) if a.input.is_some() => {
-            vec![("Enter", "ask".into()), ("Esc", "cancel".into())]
+            vec![("Enter", "ask".into()), ("Ctrl-Q", "close".into())]
         }
         (Some(Overlay::Ask(_)), _) => vec![
             ("j/k", "scroll".into()),
             ("PgUp/PgDn", "page".into()),
             ("?", "ask again".into()),
             ("W", "where are we".into()),
+            ("T", "sum up last turn".into()),
             ("r", "retry".into()),
-            ("q", "close".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (Some(Overlay::Comment(_)), _) => vec![
             ("Ctrl-S", "save".into()),
             ("Enter", "new line".into()),
-            ("Esc", "cancel".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (Some(Overlay::NewSession(d)), _) if d.folder.is_some() => vec![
             ("Tab", "complete".into()),
@@ -70,7 +102,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
                 ("Enter", "open".into()),
                 ("j/k", "choose".into()),
                 ("Ctrl-O", "other folder".into()),
-                ("Esc", "cancel".into()),
+                ("Ctrl-Q", "close".into()),
             ],
             crate::workspace::Stage::Folder(_) => vec![
                 ("Tab", "complete".into()),
@@ -97,7 +129,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
                     "own worktree".into()
                 },
             ),
-            ("Esc", "cancel".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (
             Some(
@@ -108,17 +140,17 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ),
             _,
         ) => {
-            vec![("Enter", "send".into()), ("Esc", "cancel".into())]
+            vec![("Enter", "send".into()), ("Ctrl-Q", "close".into())]
         }
         (Some(Overlay::PrSubmit { .. }), _) => {
-            vec![("Enter", "post".into()), ("Esc", "cancel".into())]
+            vec![("Enter", "post".into()), ("Ctrl-Q", "close".into())]
         }
         (Some(Overlay::QuizAnswer(_)), _) => vec![
             ("Ctrl-S", "submit".into()),
             ("Enter Enter", "submit".into()),
-            ("Esc", "cancel".into()),
+            ("Ctrl-Q", "close".into()),
         ],
-        (Some(Overlay::QuizCode { .. }), _) => vec![("Esc", "close".into())],
+        (Some(Overlay::QuizCode { .. }), _) => vec![("Ctrl-Q", "close".into())],
         (Some(Overlay::CloseAgent(_)), _) => {
             vec![("y", "close it".into()), ("n", "keep it".into())]
         }
@@ -130,7 +162,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             keys
         }
         (Some(Overlay::Model(_) | Overlay::PermissionMode(_)), _) => {
-            vec![("Esc", "cancel".into())]
+            vec![("Ctrl-Q", "close".into())]
         }
         (Some(Overlay::Tour { page }), _) => vec![
             (
@@ -142,25 +174,25 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
                 },
             ),
             ("←", "back".into()),
-            ("Esc", "skip".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (Some(Overlay::Help { .. }), _) => vec![
             ("j/k", "scroll".into()),
             ("PgUp/PgDn", "page".into()),
-            ("q", "close".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (Some(Overlay::Reader(r)), _) => vec![
             ("Space", if r.playing() { "pause" } else { "play" }.into()),
             ("↑/↓", "speed".into()),
             ("0-9 Enter", "set speed".into()),
             ("←/→", "back/on".into()),
-            ("Esc", "close".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (Some(Overlay::Stash { .. }), _) => vec![
             ("Enter", "bring back".into()),
             ("j/k", "choose".into()),
             ("x", "drop".into()),
-            ("Esc", "close".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (Some(Overlay::PrFinder(_)), _) => super::pr::KEYS
             .iter()
@@ -169,7 +201,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
         (Some(Overlay::Search(_)), _) => vec![
             ("j/k", "move".into()),
             ("Enter", "show".into()),
-            ("Esc", "close".into()),
+            ("Ctrl-Q", "close".into()),
         ],
         (
             None,
@@ -231,7 +263,6 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("g", "go to window".into()),
             ("Space", "skip".into()),
             ("B", "move to back".into()),
-            ("?", "ask".into()),
         ],
         (
             None,
@@ -270,7 +301,6 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
                 ("j/k", "scroll".into()),
                 ("Space", "skip".into()),
                 ("B", "move to back".into()),
-                ("?", "ask".into()),
             ])
             .collect(),
         (
@@ -303,6 +333,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("a", "approve".into()),
             ("A", "message group".into()),
             ("W", "where are we".into()),
+            ("T", "sum up last turn".into()),
             ("r", "read reply fast".into()),
             ("b", "/btw".into()),
             ("?", "ask".into()),
@@ -313,20 +344,27 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ("M", "mode".into()),
             ("Esc Esc", "stop".into()),
             ("x", "close".into()),
+            ("Ctrl-U/D", "scroll back".into()),
             ("N", "new session".into()),
             ("R", "review PR".into()),
             ("O", "workspace".into()),
             ("!", "shell".into()),
-            ("t", "theme".into()),
-            ("Q", "quit".into()),
-        ],
+        ]
+        .into_iter()
+        .chain(stashed(app))
+        .chain([("t", "theme".into()), ("Q", "quit".into())])
+        .collect(),
         (
             None,
             Some(Card {
                 kind: CardKind::Tell(_),
                 ..
             }),
-        ) => TELL_KEYS.iter().map(|(k, l)| (*k, l.to_string())).collect(),
+        ) => TELL_KEYS
+            .iter()
+            .filter(|(k, _)| *k != "?")
+            .map(|(k, l)| (*k, l.to_string()))
+            .collect(),
         (
             None,
             Some(Card {
@@ -342,6 +380,7 @@ fn keys_for(app: &App) -> Vec<(&str, String)> {
             ]
         }
         (None, None) => vec![
+            ("N", "new session".into()),
             ("O", "workspace".into()),
             ("t", "theme".into()),
             ("Q", "quit".into()),
@@ -435,10 +474,6 @@ fn quiz_keys(qc: &QuizCard) -> Vec<(&'static str, String)> {
             None => vec![("Enter", "answer".into()), ("m", "whole file".into())],
         },
     };
-    keys.extend([
-        ("Space", "skip".into()),
-        ("B", "move to back".into()),
-        ("M", "mode".into()),
-    ]);
+    keys.extend([("Space", "skip".into()), ("B", "move to back".into())]);
     keys
 }

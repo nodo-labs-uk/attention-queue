@@ -21,7 +21,7 @@ Nothing in the tour reaches a real session. `F2` runs it again at any time.
 
 ## Help
 
-- `F1` opens the help page with every key. `j` and `k` scroll it, `Esc` closes it.
+- `F1` opens the help page with every key. `j` and `k` scroll it, `Ctrl-Q` or `Esc` closes it.
 - `F3` shows or hides the keys row.
 - [Every key](keys.md) has the same list as this site.
 

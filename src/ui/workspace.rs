@@ -1,18 +1,18 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
 
-use super::input;
-use super::new_session::{SIZE, render_folder};
+use super::new_session::render_folder;
+use super::window::{self, Height};
 use crate::config::Workspace;
 use crate::theme::Theme;
 use crate::visible::push_visible;
 use crate::workspace::{Stage, WorkspaceDraft};
 
-/// `O`: the saved workspaces, the folder, or the repos to tick, in one box
-/// of one size, so nothing moves between them.
+/// `O`: the saved workspaces, the folder, or the repos to tick, in one tall
+/// window, so nothing moves between them.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -49,11 +49,7 @@ pub fn render(
                 area,
                 "Open a workspace",
                 rows,
-                &[
-                    ("Enter", "open"),
-                    ("Ctrl-O", "other folder"),
-                    ("Esc", "cancel"),
-                ],
+                &[("Enter", "open"), ("Ctrl-O", "other folder")],
                 t,
             );
         }
@@ -63,6 +59,7 @@ pub fn render(
             pick,
             "Folder holding the workspace's git repos",
             "Not there: type a folder that is",
+            Height::Tall,
             t,
         ),
         Stage::Finding { asked } => list_box(
@@ -131,8 +128,8 @@ pub(crate) fn shown(s: &str) -> String {
     out
 }
 
-/// The box with `rows`, scrolled to keep the highlighted row in view, and
-/// `keys` along its bottom.
+/// A tall window with `rows`, scrolled to keep the highlighted row in
+/// view, and `keys` along its bottom.
 pub(crate) fn list_box(
     frame: &mut Frame,
     area: Rect,
@@ -141,24 +138,8 @@ pub(crate) fn list_box(
     keys: &[(&str, &str)],
     t: &Theme,
 ) {
-    let panel = input::panel(area, SIZE);
-    frame.render_widget(Clear, panel);
-    let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(t.dim);
-    let mut hints = vec![Span::raw(" ")];
-    for (k, what) in keys {
-        hints.push(Span::styled(k.to_string(), key));
-        hints.push(Span::styled(format!(" {what}  "), dim));
-    }
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.acc))
-        .title(format!(" {title} "))
-        .title_bottom(Line::from(hints).right_aligned())
-        .padding(Padding::horizontal(1))
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+    let panel = window::place(area, Height::Tall);
+    let inner = window::draw(frame, panel, title, keys, t);
     let room = inner.height as usize;
     let at = rows
         .iter()

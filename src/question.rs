@@ -329,7 +329,11 @@ impl App {
             return Vec::new();
         };
         self.drop_questions(true, |a| *a == agent);
-        if !asks(&text) {
+        // A message of yours already waits for this session. It answers the
+        // question the moment it is sent, so a card would only flash up.
+        let answered =
+            self.prompts.contains_key(&agent) || self.held.values().any(|(a, _)| *a == agent);
+        if answered || !asks(&text) {
             return Vec::new();
         }
         self.next_card_id += 1;
@@ -575,6 +579,32 @@ mod tests {
             }]
         );
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn a_message_already_waiting_answers_the_question_with_no_card() {
+        // Its turn is over, but aq has not seen it at its prompt yet.
+        let mut a = app();
+        a.agents[0].status = crate::agents::AgentStatus::Busy;
+        let id = a.agents[0].id.clone();
+        let ask = |a: &mut App| {
+            a.update(Msg::LastMessage {
+                agent: id.clone(),
+                checkout: Checkout("/w/api".into()),
+                text: "Draft below.\n\nApprove and I'll push.".into(),
+                at: SystemTime::now(),
+            })
+        };
+        a.prompts.insert(id.clone(), "next step".into());
+        assert!(ask(&mut a).is_empty());
+        assert!(a.queue.is_empty(), "the queued message answers it");
+        a.prompts.clear();
+        a.held.insert(9, (id.clone(), "comments".into()));
+        assert!(ask(&mut a).is_empty());
+        assert!(a.queue.is_empty(), "so does a card's held message");
+        a.held.clear();
+        ask(&mut a);
+        assert!(question(&a).is_some(), "with nothing waiting it is a card");
     }
 
     #[test]

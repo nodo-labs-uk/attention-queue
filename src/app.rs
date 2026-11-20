@@ -344,10 +344,10 @@ pub enum Effect {
     FindRepos {
         root: PathBuf,
     },
-    /// Start Claude in each of `dirs`, as windows of tmux session
-    /// `session`, made if it is not there.
+    /// Start Claude in each of `dirs`, as windows of aq's own tmux session.
     OpenWorkspace {
-        session: String,
+        /// The workspace's name, which tags each new window.
+        group: String,
         dirs: Vec<PathBuf>,
         /// Added to each session's system prompt: how to reach the others.
         system: String,
@@ -665,7 +665,18 @@ pub(crate) struct Shown {
 }
 
 /// Shown while a message waits for its agent to be at its prompt.
-pub const QUEUED_STATUS: &str = "Queued: will send when the agent is idle";
+pub const QUEUED_STATUS: &str =
+    "Queued: sends when the agent is at its prompt. The same key takes it back";
+/// The same, when the agent is not at its prompt because it asked something
+/// that has a card of its own.
+pub const QUEUED_ASKED: &str =
+    "Queued: the agent waits for your answer on another card (Space). The same key takes it back";
+/// The same, when the agent's input box holds text typed and not sent.
+pub const QUEUED_TYPED: &str =
+    "Queued: the agent has text typed in its box. Clear it there, or the same key takes this back";
+/// The same, when the agent's turn is over but its input box is not on its
+/// screen, as when a /btw panel is left open.
+pub const QUEUED_HIDDEN: &str = "Queued: the agent's input box is hidden, perhaps by a /btw panel. Close it there, or the same key takes this back";
 
 /// What p on the empty screen sends: the skill that drafts, checks and opens a PR.
 pub const PR_COMMAND: &str = "/create-pr";
@@ -825,7 +836,7 @@ impl App {
             &self.practice_agents
         };
         let mut agents: Vec<&Agent> = listed.iter().collect();
-        agents.sort_by(|a, b| (&a.session, a.window_index).cmp(&(&b.session, b.window_index)));
+        agents.sort_by(|a, b| (a.row(), a.window_index).cmp(&(b.row(), b.window_index)));
         agents
     }
 
@@ -915,7 +926,7 @@ impl App {
             }
             KeyCode::Char('a') => return self.send_prompt(current, APPROVE_MESSAGE.to_string()),
             KeyCode::Char('A') => {
-                let group = self.picked_agent().map(|a| a.session.clone());
+                let group = self.picked_agent().map(|a| a.row().to_string());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent: current,
                     input: TextInput::single_line(),
@@ -1019,13 +1030,13 @@ impl App {
         }
     }
 
-    /// `A`: sends `text` to every session in tmux session `group`, as
+    /// `A`: sends `text` to every session in row `group`, as
     /// `send_prompt` does to one.
     fn send_to_group(&mut self, group: &str, text: &str) -> Vec<Effect> {
         let members: Vec<AgentId> = self
             .agents_in_order()
             .iter()
-            .filter(|a| a.session == group)
+            .filter(|a| a.row() == group)
             .map(|a| a.id.clone())
             .collect();
         let n = members.len();
@@ -1064,9 +1075,13 @@ impl App {
                 card: None,
             }];
         }
-        // Say which of the two it waits on: only one of them is yours to fix.
+        // Say what it waits on: only some of it is yours to fix.
         let status = if self.prompt_has_text(&agent) {
             format!("Queued: {name} has text typed in its box. Clear it there and this is sent")
+        } else if self.prompt_hidden(&agent) {
+            format!(
+                "Queued: {name}'s input box is hidden, perhaps by a /btw panel. Close it there and this is sent"
+            )
         } else {
             format!("Queued: will send to {name} when it is idle")
         };
@@ -1211,7 +1226,7 @@ impl App {
             session: a.session.clone(),
             window: a.window_index,
             pane: a.id.pane.clone(),
-            title: format!(" /btw in {} · Ctrl-Q closes ", a.window_name),
+            title: format!("/btw in {}", a.window_name),
             type_btw,
         };
         if !type_btw {
@@ -1716,10 +1731,37 @@ impl App {
             return Vec::new();
         }
         self.selection = None;
+        if key.code == KeyCode::Char('q')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self.overlay.is_some()
+        {
+            return self.close_overlay();
+        }
+        self.dispatch_key(key)
+    }
+
+    fn dispatch_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match self.practice_step() {
             Some(step) => self.on_practice_key(key, step),
             None => self.handle_key(key),
         }
+    }
+
+    /// Ctrl-Q: closes the window open over aq, as it closes the tmux
+    /// popups. Each window closes as its Esc closes it, so whatever Esc
+    /// tidies up is tidied; a window whose Esc steps back is stepped back
+    /// until it closes, and one Esc does not close (a question that must
+    /// be answered) stays.
+    fn close_overlay(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        for _ in 0..4 {
+            let before = self.overlay.clone();
+            effects.extend(self.dispatch_key(KeyEvent::from(KeyCode::Esc)));
+            if self.overlay.is_none() || self.overlay == before {
+                break;
+            }
+        }
+        effects
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -1804,6 +1846,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('W') => self.ask_where_are_we(),
+            KeyCode::Char('T') => self.summarise_turn(),
             KeyCode::Char('!') => self.open_shell(),
             KeyCode::Char('N') => {
                 // With no session to start from, aq's own folder.
@@ -1958,7 +2001,7 @@ impl App {
             .filter(|s| crate::llm::valid_session_id(s));
         vec![Effect::Shell {
             dir,
-            title: format!(" shell in {name} · exit or Ctrl-D closes it "),
+            title: format!("Shell in {name}"),
             session_id,
         }]
     }
@@ -1979,7 +2022,15 @@ impl App {
             None => self.picked_agent().and_then(|a| a.checkout.clone()),
         };
         let Some(checkout) = checkout else {
-            self.set_status("No project to set a mode for");
+            // Modes check git diffs, so only a git repo has one.
+            let status = match self.picked_agent() {
+                Some(a) if self.queue.current().is_none() => format!(
+                    "{} is not in a git repo, so it has no mode. Run git init there to give it one",
+                    a.window_name
+                ),
+                _ => "No project to set a mode for".to_string(),
+            };
+            self.set_status(status);
             return Vec::new();
         };
         let mode = match self.config.mode_for(&checkout) {
@@ -2050,6 +2101,7 @@ impl App {
             .into_iter()
             .map(|a| crate::persist::OpenSession {
                 tmux_session: a.session.clone(),
+                group: a.group.clone(),
                 window: a.window_name.clone(),
                 dir: a.cwd.clone(),
                 session_id: a.session_id.clone(),
@@ -2286,8 +2338,8 @@ impl App {
         }
         // What is sent is what the card holds when the send lands.
         if matches!(key.code, KeyCode::Char('c' | 'x' | 'r')) && self.sending.contains_key(&id) {
-            self.set_status(if self.held.contains_key(&id) {
-                QUEUED_STATUS
+            self.set_status(if let Some((agent, _)) = self.held.get(&id) {
+                self.queued_status(agent)
             } else {
                 "Sending…"
             });
@@ -2379,7 +2431,7 @@ impl App {
         }
         let id = card.id;
         if self.sending.contains_key(&id) {
-            self.set_status("Still sending");
+            self.take_back(id);
             return Vec::new();
         }
         if approve {
@@ -2446,9 +2498,50 @@ impl App {
                 card: Some(id),
             }];
         }
+        self.set_status(self.queued_status(&agent));
         self.held.insert(id, (agent, text));
-        self.set_status(QUEUED_STATUS);
         Vec::new()
+    }
+
+    /// What a card says while its message is held for `agent`.
+    pub fn queued_status(&self, agent: &AgentId) -> &'static str {
+        let asked = self.queue.iter().any(|c| {
+            &c.agent == agent
+                && matches!(
+                    c.kind,
+                    CardKind::Permission(_) | CardKind::Choice(_) | CardKind::Menu(_)
+                )
+        });
+        if asked {
+            QUEUED_ASKED
+        } else if self.prompt_has_text(agent) {
+            QUEUED_TYPED
+        } else if self.prompt_hidden(agent) {
+            QUEUED_HIDDEN
+        } else {
+            QUEUED_STATUS
+        }
+    }
+
+    /// Whether the agent's turn is over but its input box was not found on
+    /// its screen, so nothing can be sent until what covers it goes. Claude
+    /// calling it idle is enough to send without the box.
+    fn prompt_hidden(&self, id: &AgentId) -> bool {
+        self.agent(id).is_some_and(|a| {
+            a.waiting && a.input == InputBox::Unseen && a.status != AgentStatus::Idle
+        })
+    }
+
+    /// The sending key again on card `id`: a held message is taken back,
+    /// and the card is as it was before the first press. One already on
+    /// its way to the agent is not stopped.
+    pub(crate) fn take_back(&mut self, id: u64) {
+        if self.held.remove(&id).is_some() {
+            self.sending.remove(&id);
+            self.set_status("Taken back: nothing was sent");
+        } else {
+            self.set_status("Still sending");
+        }
     }
 
     /// Whether text pasted into the agent's pane reaches its prompt as the
@@ -2689,6 +2782,7 @@ pub(crate) mod tests {
                 claude_pid: window * 100,
             },
             session: "main".into(),
+            group: String::new(),
             window_index: window,
             window_name: name.into(),
             cwd: PathBuf::from(checkout),
@@ -2854,6 +2948,21 @@ pub(crate) mod tests {
         assert_eq!(a.config.mode_for(&ck), Mode::Vibe);
         a.update(key('M'));
         assert_eq!(a.config.mode_for(&ck), Mode::Review);
+    }
+
+    #[test]
+    fn mode_key_says_a_session_outside_git_has_no_mode() {
+        let mut a = app();
+        let mut plain = agent("%1", 1, "hackerhunt", "/h", true);
+        plain.checkout = None;
+        a.update(Msg::Agents(vec![plain]));
+        assert!(a.update(key('M')).is_empty());
+        assert_eq!(
+            a.status_text(),
+            Some(
+                "hackerhunt is not in a git repo, so it has no mode. Run git init there to give it one"
+            )
+        );
     }
 
     #[test]
@@ -3494,7 +3603,7 @@ pub(crate) mod tests {
             session: "main".into(),
             window: 3,
             pane: "%1".into(),
-            title: " /btw in api · Ctrl-Q closes ".into(),
+            title: "/btw in api".into(),
             type_btw,
         };
         assert_eq!(a.update(key('b')), vec![btw(true)]);
@@ -4135,6 +4244,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_workspaces_windows_get_a_row_of_their_own_in_the_same_tmux_session() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut ui = agent("%3", 3, "ui", "/w/billing/ui", true);
+        ui.group = "billing".into();
+        let mut svc = agent("%4", 4, "svc", "/w/billing/svc", true);
+        svc.group = "billing".into();
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true), ui, svc];
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        let row = |name: &str| {
+            screen
+                .lines()
+                .find(|l| l.trim_start_matches(['"', ' ']).starts_with(name))
+                .unwrap_or_else(|| panic!("no {name} row: {screen}"))
+                .to_string()
+        };
+        assert!(row("main").contains("1 api") && !row("main").contains("ui"));
+        assert!(row("billing").contains("3 ui") && row("billing").contains("4 svc"));
+    }
+
+    #[test]
     fn a_messages_every_session_in_the_picked_ones_group() {
         let mut a = two_groups();
         a.update(key('A'));
@@ -4204,6 +4333,66 @@ pub(crate) mod tests {
             text: Ok("done\n> ".into()),
         });
         assert_eq!(a.picked_preview(), Some(&Ok("done\n> ".to_string())));
+    }
+
+    #[test]
+    fn a_held_send_is_taken_back_by_the_same_key() {
+        let mut a = app();
+        let id = commented(&mut a);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(a.update(key('s')).is_empty(), "held");
+        assert!(a.held.contains_key(&id));
+        assert!(a.update(key('s')).is_empty());
+        assert_eq!(a.status_text(), Some("Taken back: nothing was sent"));
+        assert!(a.held.is_empty() && a.sending.is_empty());
+        // Nothing goes out when the agent is at its prompt again.
+        assert!(
+            !a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]))
+                .iter()
+                .any(|e| matches!(e, Effect::Send { .. }))
+        );
+        assert_eq!(a.queue.len(), 1);
+        // And the card sends as before.
+        assert!(matches!(
+            a.update(key('s')).as_slice(),
+            [Effect::Send { card: Some(c), .. }] if *c == id
+        ));
+    }
+
+    #[test]
+    fn a_held_send_says_when_the_agent_waits_on_another_card() {
+        let mut a = app();
+        commented(&mut a);
+        let agent_id = a.queue.current().unwrap().agent.clone();
+        assert_eq!(a.queued_status(&agent_id), QUEUED_STATUS);
+        let mut asked =
+            crate::queue::tests::card(77, "/a", CardKind::Permission(Default::default()), 0);
+        asked.agent = agent_id.clone();
+        a.queue.push(asked);
+        assert_eq!(a.queued_status(&agent_id), QUEUED_ASKED);
+    }
+
+    #[test]
+    fn a_held_send_says_when_the_agents_box_is_in_the_way() {
+        let mut a = app();
+        commented(&mut a);
+        let mut busy = agent("%1", 1, "api", "/a", true);
+        busy.status = crate::agents::AgentStatus::Busy;
+        busy.input = InputBox::Unseen;
+        a.update(Msg::Agents(vec![busy.clone()]));
+        let id = busy.id.clone();
+        assert_eq!(
+            a.queued_status(&id),
+            QUEUED_HIDDEN,
+            "turn over, no box seen"
+        );
+        busy.input = InputBox::Holding("/btw why".into());
+        a.update(Msg::Agents(vec![busy.clone()]));
+        assert_eq!(a.queued_status(&id), QUEUED_TYPED);
+        busy.waiting = false;
+        busy.input = InputBox::Unseen;
+        a.update(Msg::Agents(vec![busy]));
+        assert_eq!(a.queued_status(&id), QUEUED_STATUS, "still working");
     }
 
     #[test]

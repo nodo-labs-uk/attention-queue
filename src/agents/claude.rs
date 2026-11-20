@@ -74,7 +74,27 @@ pub fn list_claude_procs() -> Result<Vec<ClaudeProc>> {
     let (status, out, _) =
         super::run_for(cmd, "", LIST_TIMEOUT).context("running claude agents --json")?;
     anyhow::ensure!(status.success(), "claude agents --json failed");
-    parse_agents_json(&out)
+    let mut procs = parse_agents_json(&out)?;
+    let sessions =
+        std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".claude/sessions"));
+    for p in &mut procs {
+        let record = sessions
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(format!("{}.json", p.pid))).ok());
+        if p.status == AgentStatus::Busy && record.is_some_and(|r| only_background_jobs(&r)) {
+            p.status = AgentStatus::Idle;
+        }
+    }
+    Ok(procs)
+}
+
+/// Whether Claude Code's own record of a session, `~/.claude/sessions/<pid>.json`,
+/// says it is at its prompt with only background jobs running. `claude
+/// agents` calls that busy, so a job that never ends, such as a command
+/// waiting on a question nobody sees, would hold every message for ever.
+fn only_background_jobs(record: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(record)
+        .is_ok_and(|v| v.get("status").and_then(|s| s.as_str()) == Some("shell"))
 }
 
 #[cfg(test)]
@@ -100,6 +120,19 @@ mod tests {
         let procs = parse_agents_json(s).unwrap();
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].pid, 1);
+    }
+
+    #[test]
+    fn a_session_with_only_background_jobs_is_at_its_prompt() {
+        assert!(only_background_jobs(r#"{"pid":1,"status":"shell"}"#));
+        for not in [
+            r#"{"status":"busy"}"#,
+            r#"{"status":"idle"}"#,
+            "{}",
+            "not json",
+        ] {
+            assert!(!only_background_jobs(not), "{not}");
+        }
     }
 
     #[test]

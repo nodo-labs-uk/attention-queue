@@ -564,10 +564,10 @@ fn apply(
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
             Effect::FindRepos { root } => Job::FindRepos(root),
             Effect::OpenWorkspace {
-                session,
+                group,
                 dirs,
                 system,
-            } => Job::OpenWorkspace(session, dirs, system),
+            } => Job::OpenWorkspace(group, dirs, system),
             Effect::Copy(sel) => {
                 let text = workers
                     .screen
@@ -990,10 +990,10 @@ fn spawn_effect_worker(
                         Msg::EffectFailed(format!("Could not reopen {}", failed.join(", ")))
                     })
                 }
-                Job::OpenWorkspace(session, dirs, system) => {
+                Job::OpenWorkspace(group, dirs, system) => {
                     let mut failed = Vec::new();
                     for dir in dirs {
-                        match crate::agents::tmux::new_claude_in(&session, &dir, &system) {
+                        match crate::agents::tmux::new_claude_in(&group, &dir, &system) {
                             Ok(pane) => watch_trust(pane, dir, tx.clone()),
                             Err(e) => failed.push(format!("{}: {e:#}", dir.display())),
                         }

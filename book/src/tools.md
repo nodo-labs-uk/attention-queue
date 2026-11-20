@@ -6,11 +6,13 @@
 
 `W` asks the same kind of copy where the session is up to: a short summary of what is done and what is left.
 
+`T` sums up the latest turn only: what you last asked for, what Claude did, and what it said at the end. It runs on Claude Haiku, through your own `claude` login, so it is quick and cheap. Haiku gets no tools: it reads the conversation and nothing else.
+
 ## Shell
 
 `!` opens a shell in a tmux popup, in the project's folder. Use it for things Claude cannot run itself: `sudo`, logins, or commands its permissions block.
 
-The last `! command` Claude suggested is copied and, in zsh, already typed in, so `Enter` runs it. The popup closes when the shell exits.
+The last `! command` Claude suggested is copied and, in zsh, already typed in, so `Enter` runs it. `Ctrl-Q` closes the popup, as does leaving the shell.
 
 ![Claude asks for a command that needs sudo; ! opens a shell with it typed in](media/shell.svg)
 

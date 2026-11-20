@@ -45,7 +45,9 @@ Don't change anything else.
 
 3. Restart any Claude sessions that were running before you added the hooks. A session reads its hooks when it starts.
 
-4. Run `aq` in a tmux window of its own.
+4. For PR review and the checks on GitHub actions, install `gh` and log in with `gh auth login`. The permission card's Haiku summary uses your own `claude` login.
+
+5. Run `aq` in a tmux window of its own.
 
 ## Check it works
 

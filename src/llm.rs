@@ -35,10 +35,12 @@ pub enum JobKind {
     /// Judge the free-text answer to question `question`.
     Judge { question: usize },
     /// A side question, number `index` of the ask overlay. With a session it
-    /// is a fork of that live session; without, a plain call.
+    /// is a fork of that live session; without, a plain call. With `haiku`,
+    /// it runs on the small model with no tools.
     Ask {
         index: usize,
         session_id: Option<String>,
+        haiku: bool,
     },
     /// Say what a permission card's tool call does and what it is for, on the
     /// small model. With a session it is a fork of that live session.
@@ -64,9 +66,10 @@ impl JobKind {
     /// The same job as a plain call.
     fn without_session(&self) -> JobKind {
         match self {
-            JobKind::Ask { index, .. } => JobKind::Ask {
+            JobKind::Ask { index, haiku, .. } => JobKind::Ask {
                 index: *index,
                 session_id: None,
+                haiku: *haiku,
             },
             JobKind::Gist { .. } => JobKind::Gist { session_id: None },
             JobKind::Flag { .. } => JobKind::Flag { session_id: None },
@@ -261,7 +264,7 @@ pub fn ask_with_fallback(
 
 /// `claude -p` for `job`: read-only tools, no MCP servers, slash commands,
 /// skills or hooks, so text in the diff cannot make it change anything.
-/// A summary runs on Haiku with no tools at all.
+/// A summary, `T` included, runs on Haiku with no tools at all.
 pub fn claude_command(job: &LlmJob) -> Command {
     let mut cmd = Command::new("claude");
     cmd.args(["-p", "--output-format", "json"]);
@@ -277,7 +280,10 @@ pub fn claude_command(job: &LlmJob) -> Command {
     }
     if matches!(
         job.kind,
-        JobKind::Gist { .. } | JobKind::Flag { .. } | JobKind::FlagQuestion { .. }
+        JobKind::Gist { .. }
+            | JobKind::Flag { .. }
+            | JobKind::FlagQuestion { .. }
+            | JobKind::Ask { haiku: true, .. }
     ) {
         // Not plan mode: in it Claude Code runs Sonnet in place of Haiku.
         cmd.args(["--model", "haiku", "--tools", ""]);
@@ -538,6 +544,38 @@ mod tests {
     }
 
     #[test]
+    fn only_a_haiku_side_question_runs_on_haiku() {
+        let args = |haiku| -> Vec<String> {
+            let job = LlmJob {
+                card: 1,
+                kind: JobKind::Ask {
+                    index: 0,
+                    session_id: Some("abc-123".into()),
+                    haiku,
+                },
+                cwd: "/tmp".into(),
+                prompt: String::new(),
+            };
+            claude_command(&job)
+                .get_args()
+                .map(|a| a.to_string_lossy().into())
+                .collect()
+        };
+        let small = args(true);
+        assert!(
+            small.windows(2).any(|w| w == ["--model", "haiku"]),
+            "{small:?}"
+        );
+        assert!(small.windows(2).any(|w| w == ["--tools", ""]), "{small:?}");
+        let full = args(false);
+        assert!(!full.iter().any(|a| a == "haiku"), "{full:?}");
+        assert!(
+            full.windows(2).any(|w| w == ["--tools", "Read,Grep,Glob"]),
+            "{full:?}"
+        );
+    }
+
+    #[test]
     fn a_summary_runs_on_haiku_with_no_tools_as_a_fork() {
         let job = LlmJob {
             card: 1,
@@ -658,6 +696,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session_id.map(Into::into),
+                haiku: false,
             },
             cwd: "/tmp".into(),
             prompt: String::new(),
@@ -759,6 +798,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some(id),
+                haiku: false,
             },
             cwd: dir.into(),
             prompt: "what word did I ask you to remember?".into(),

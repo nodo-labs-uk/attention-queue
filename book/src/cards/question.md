@@ -2,7 +2,7 @@
 
 ## Question card
 
-When a session ends its turn by asking you something, such as approving a draft or choosing between two ways, its last message becomes a question card.
+When a session ends its turn by asking you something, such as approving a draft or choosing between two ways, its last message becomes a question card. If a message of yours is already waiting to go to that session, it answers the question, so no card comes up.
 
 ![A session asks to approve a PR draft and a approves it; then Claude's option menu is answered from a card](../media/questions.svg)
 
