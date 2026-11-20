@@ -80,25 +80,51 @@ pub fn body_size(screen: (u16, u16), held: bool) -> (usize, usize) {
     (body.width as usize, body.height as usize)
 }
 
-/// Head, summary, body, "more" marker and key strip of the permission card.
-/// The summary keeps the same rows while it is awaited, so its arrival moves
-/// nothing. A screen too short for it and `BODY_MIN` body rows has none.
-/// A held card always has its band: on a short screen the band shrinks, and
-/// the body keeps at least one row unless the band would lose its first row.
-pub fn card_areas(area: Rect, held: bool) -> [Rect; 5] {
-    let [head, body, more, keys] = areas(area);
-    let gist = if body.height >= GIST_ROWS + 1 + BODY_MIN {
-        GIST_ROWS + 1
-    } else if held {
-        (GIST_ROWS + 1)
-            .min(body.height.saturating_sub(1))
-            .max(body.height.min(1))
+/// Rows a held card's band takes at most: its rows and a blank row after.
+const BAND_ROWS: u16 = GIST_ROWS + 2;
+
+/// The permission card's band, tool caption, body, summary, "more" marker
+/// and key strip. A held card opens with its band; the others have none.
+/// The caption and body sit on a panel, inset a column each side. An
+/// unheld card keeps rows under the body for Haiku's summary, the same
+/// rows while it is awaited, so its arrival moves nothing; a screen too
+/// short for them and `BODY_MIN` body rows has none. A held card always
+/// has its band: on a short screen the band shrinks, and the body keeps at
+/// least one row unless the band would lose its first row.
+pub fn card_areas(area: Rect, held: bool) -> [Rect; 6] {
+    let inner = area.inner(Margin::new(1, 1));
+    let [main, more, keys] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let h = main.height;
+    let (band, caption, gist) = if held {
+        let band = if h >= BAND_ROWS + 1 + BODY_MIN {
+            BAND_ROWS
+        } else {
+            BAND_ROWS.min(h.saturating_sub(2)).max(h.min(1))
+        };
+        (band, 1.min(h - band), 0)
     } else {
-        0
+        let caption = h.min(1);
+        let gist = if h >= GIST_ROWS + 1 + caption + BODY_MIN {
+            GIST_ROWS + 1
+        } else {
+            0
+        };
+        (0, caption, gist)
     };
-    let [gist, body] =
-        Layout::vertical([Constraint::Length(gist), Constraint::Fill(1)]).areas(body);
-    [head, gist, body, more, keys]
+    let [band, caption, body, gist] = Layout::vertical([
+        Constraint::Length(band),
+        Constraint::Length(caption),
+        Constraint::Fill(1),
+        Constraint::Length(gist),
+    ])
+    .areas(main);
+    let inset = |r: Rect| Rect::new(r.x + 1, r.y, r.width.saturating_sub(2), r.height);
+    [band, inset(caption), inset(body), gist, more, keys]
 }
 
 /// Head, body, "more" marker and key strip of the card inside the card area.
@@ -970,15 +996,19 @@ mod tests {
     #[test]
     fn the_summary_keeps_its_rows_and_a_short_screen_has_none() {
         let area = |h| Rect::new(0, 1, 80, h);
-        let [_, gist, body, ..] = card_areas(area(22), false);
-        assert_eq!((gist.height, body.height), (5, 10));
-        let [_, gist, body, ..] = card_areas(area(14), false);
-        assert_eq!((gist.height, body.height), (0, 7));
-        // A held card keeps its band's first row even with one body row.
-        let [_, gist, body, ..] = card_areas(area(8), true);
-        assert_eq!((gist.height, body.height), (1, 0));
-        let [_, gist, body, ..] = card_areas(area(9), true);
-        assert_eq!((gist.height, body.height), (1, 1));
+        let [_, _, body, gist, ..] = card_areas(area(22), false);
+        assert_eq!((gist.height, body.height), (5, 12));
+        let [_, _, body, gist, ..] = card_areas(area(13), false);
+        assert_eq!((gist.height, body.height), (0, 8));
+        // A held card keeps its band's first row even with no body row.
+        let [band, _, body, ..] = card_areas(area(6), true);
+        assert_eq!((band.height, body.height), (1, 0));
+        let [band, _, body, ..] = card_areas(area(7), true);
+        assert_eq!((band.height, body.height), (1, 1));
+        let [band, caption, body, ..] = card_areas(area(22), true);
+        assert_eq!((band.height, caption.height, body.height), (6, 1, 11));
+        // The panel's text keeps a column clear each side.
+        assert_eq!((caption.x, caption.width, body.width), (2, 76, 76));
         let mut pc = card_of("Bash", json!({"command": "ls"}));
         assert_eq!(pc.gist_rows(40), ["Haiku: summarising…"]);
         pc.gist = Gist::Done("word ".repeat(40));
@@ -1078,7 +1108,7 @@ mod tests {
         let mut a = app();
         a.update(Msg::Resize {
             width: 80,
-            height: 11,
+            height: 9,
         });
         let t0 = Instant::now();
         let cmd = (0..lines)
@@ -1097,7 +1127,7 @@ mod tests {
     #[test]
     fn long_command_is_allowed_only_after_scrolling_to_the_end() {
         let (mut a, t) = long_command(5);
-        assert_eq!(body_size((80, 11), false), (78, 2));
+        assert_eq!(body_size((80, 9), false), (76, 2));
         assert!(a.update(key('y', t)).is_empty());
         assert!(a.status_text().unwrap().contains("Scroll to the end"));
         a.update(key('j', t));
@@ -1143,7 +1173,7 @@ mod tests {
         let mut a = app();
         a.update(Msg::Resize {
             width: 40,
-            height: 11,
+            height: 9,
         });
         let t0 = Instant::now();
         let line = |c: char| c.to_string().repeat(60);
@@ -1155,14 +1185,14 @@ mod tests {
         );
         a.update(Msg::Tick(t0));
         let t = t0 + Duration::from_millis(400);
-        // 8 rows at width 40, 2 on screen: scroll to rows 2-3 only.
+        // 8 rows at width 36, 2 on screen: scroll to rows 2-3 only.
         a.update(key('j', t));
         a.update(key('j', t));
-        // At width 80 the body is 4 rows, and the top 2 are the only ones seen
+        // At width 76 the body is 4 rows, and the top 2 are the only ones seen
         // by that count; lines c and d were never shown.
         a.update(Msg::Resize {
             width: 80,
-            height: 11,
+            height: 9,
         });
         assert!(a.update(key('y', t)).is_empty());
         assert!(a.status_text().unwrap().contains("Scroll to the end"));

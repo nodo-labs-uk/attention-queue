@@ -4,12 +4,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 
-use super::window_of;
-use crate::app::{App, project_name};
+use crate::app::App;
 use crate::flag::{Flag, FlagKind, FlagState};
-use crate::model::Card;
 use crate::permission::{GIST_ROWS, Gist, Held, LineKind, PermissionCard};
 use crate::theme::Theme;
 use crate::visible::{cols, visible_code, visible_lines, wrap_words};
@@ -17,17 +15,25 @@ use crate::visible::{cols, visible_code, visible_lines, wrap_words};
 /// How a row of the band is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BandRow {
-    /// The label row, in the kind's colour.
-    Head(FlagKind),
+    /// The first row, on a strip tinted in the kind's colour: the mark and
+    /// label (its first `label` characters) in that colour, then what is
+    /// involved, and from character `aside` on, a quieter aside.
+    Head {
+        kind: FlagKind,
+        label: usize,
+        aside: Option<usize>,
+    },
+    /// A fact: a dim label in the first `LABEL` columns, then its text.
     Text,
-    /// The conflict line, in the kind's colour and bold.
-    Conflict(FlagKind),
+    /// The conflict, label and text in the colour of removed lines.
+    Conflict,
     Dim,
-    /// aq could not check the call.
+    /// aq could not check the call; on a strip tinted in the warning colour.
     Unchecked,
 }
 
-/// Width of the labels (`Conflict: `); wrapped text lines up under them.
+/// Width of the labels (`Conflict` and two spaces); wrapped text lines up
+/// under them.
 const LABEL: usize = 10;
 
 /// `row` cut to fit `width` columns, ending in `…`.
@@ -49,7 +55,7 @@ fn field(label: &str, text: &str, width: usize) -> Vec<String> {
     });
     for (i, row) in rows.iter_mut().enumerate() {
         let lead = if i == 0 { label } else { "" };
-        row.insert_str(0, &format!("{lead:<LABEL$}"));
+        row.insert_str(0, &format!("{lead:>width$}  ", width = LABEL - 2));
     }
     rows
 }
@@ -84,12 +90,24 @@ pub fn flag_rows(flag: &Flag, width: usize, room: usize) -> Vec<(BandRow, String
         FlagKind::SomeoneElse => "▌▌",
         FlagKind::HighStakes => "▲",
     };
-    let head = if flag.target.is_empty() {
-        format!("{mark} {}", flag.label)
-    } else {
-        format!("{mark} {} · {}", flag.label, flag.target)
+    let label = visible_lines(&format!("{mark} {}", flag.label)).join(" ");
+    let target = visible_lines(&flag.target).join(" ");
+    // "PR #5 by Timonsc (outside your org)": the bracketed end is an aside.
+    let (subject, aside) = match target.strip_suffix(')').and_then(|t| t.rsplit_once(" (")) {
+        Some((subject, aside)) => (subject.to_string(), Some(aside.to_string())),
+        None => (target, None),
     };
-    let mut head = visible_lines(&head).join(" ");
+    let mut head = label.clone();
+    if !subject.is_empty() {
+        head.push_str("  ");
+        head.push_str(&subject);
+    }
+    let aside_at = aside.as_ref().map(|a| {
+        head.push_str("  ");
+        let at = head.chars().count();
+        head.push_str(a);
+        at
+    });
     if head.chars().map(cols).sum::<usize>() > width {
         head = cut(head, width);
     }
@@ -98,9 +116,9 @@ pub fn flag_rows(flag: &Flag, width: usize, room: usize) -> Vec<(BandRow, String
         others.push((BandRow::Dim, "Haiku: checking…".into()));
     } else {
         for (label, text) in [
-            ("Who:", &flag.who),
-            ("Happens:", &flag.happens),
-            ("As you:", &flag.as_you),
+            ("Who", &flag.who),
+            ("Happens", &flag.happens),
+            ("As you", &flag.as_you),
         ] {
             if !text.is_empty() {
                 others.extend(
@@ -114,7 +132,7 @@ pub fn flag_rows(flag: &Flag, width: usize, room: usize) -> Vec<(BandRow, String
     let mut conflict = if flag.conflict.is_empty() {
         Vec::new()
     } else {
-        field("Conflict:", &flag.conflict, width)
+        field("Conflict", &flag.conflict, width)
     };
     // The head and the conflict's first row stay; the others share the rest.
     let spare = (room.saturating_sub(1)).saturating_sub(conflict.len().min(1));
@@ -132,31 +150,92 @@ pub fn flag_rows(flag: &Flag, width: usize, room: usize) -> Vec<(BandRow, String
     if conflict_cut && let Some(last) = conflict.last_mut() {
         *last = cut(std::mem::take(last), width);
     }
-    let mut rows = vec![(BandRow::Head(flag.kind), head)];
+    let head_row = BandRow::Head {
+        kind: flag.kind,
+        label: label.chars().count(),
+        aside: aside_at,
+    };
+    let mut rows = vec![(head_row, head)];
     rows.extend(others);
-    rows.extend(
-        conflict
-            .into_iter()
-            .map(|r| (BandRow::Conflict(flag.kind), r)),
-    );
+    rows.extend(conflict.into_iter().map(|r| (BandRow::Conflict, r)));
     rows
 }
 
-/// The band's rows, styled.
-fn band_lines(rows: Vec<(BandRow, String)>, t: &Theme) -> Vec<Line<'static>> {
-    rows.into_iter()
-        .map(|(kind, text)| {
-            let style = match kind {
-                BandRow::Head(k) | BandRow::Conflict(k) => Style::new()
-                    .fg(t.flag_colour(k))
-                    .add_modifier(Modifier::BOLD),
-                BandRow::Text => Style::new().fg(t.fg),
-                BandRow::Dim => Style::new().fg(t.dim),
-                BandRow::Unchecked => Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
+/// `text` split after its first `n` characters.
+fn split_at_char(text: &str, n: usize) -> (String, String) {
+    let at = text.char_indices().nth(n).map_or(text.len(), |(i, _)| i);
+    (text[..at].to_string(), text[at..].to_string())
+}
+
+/// A band row as styled spans.
+fn band_line(kind: BandRow, text: String, t: &Theme) -> Line<'static> {
+    let dim = Style::new().fg(t.dim);
+    match kind {
+        BandRow::Head { kind, label, aside } => {
+            let (mark, rest) = split_at_char(&text, label);
+            let (subject, aside) = match aside {
+                Some(at) => split_at_char(&rest, at.saturating_sub(label)),
+                None => (rest, String::new()),
             };
-            Line::styled(text, style)
-        })
-        .collect()
+            Line::from(vec![
+                Span::styled(
+                    mark,
+                    Style::new()
+                        .fg(t.flag_colour(kind))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(subject, Style::new().fg(t.fg)),
+                Span::styled(aside, dim),
+            ])
+        }
+        BandRow::Text => {
+            let (label, rest) = split_at_char(&text, LABEL);
+            Line::from(vec![
+                Span::styled(label, dim),
+                Span::styled(rest, Style::new().fg(t.fg)),
+            ])
+        }
+        BandRow::Conflict => {
+            let (label, rest) = split_at_char(&text, LABEL);
+            Line::from(vec![
+                Span::styled(label, Style::new().fg(t.del).add_modifier(Modifier::BOLD)),
+                Span::styled(rest, Style::new().fg(t.del)),
+            ])
+        }
+        BandRow::Dim => Line::styled(text, dim),
+        BandRow::Unchecked => {
+            Line::styled(text, Style::new().fg(t.hi).add_modifier(Modifier::BOLD))
+        }
+    }
+}
+
+/// Draws the band's `rows` from the top of `text`, each strip row tinted
+/// across `strip` (its column and width), so the strip can run wider than
+/// the text. Returns how many rows it drew.
+fn draw_band(
+    frame: &mut Frame,
+    text: Rect,
+    strip: (u16, u16),
+    rows: Vec<(BandRow, String)>,
+    t: &Theme,
+) -> u16 {
+    let n = (rows.len() as u16).min(text.height);
+    for (i, (kind, _)) in rows.iter().enumerate().take(n as usize) {
+        let tint = match kind {
+            BandRow::Head { kind, .. } => t.tint(t.flag_colour(*kind)),
+            BandRow::Unchecked => t.tint(t.hi),
+            _ => continue,
+        };
+        let row = Rect::new(strip.0, text.y + i as u16, strip.1, 1);
+        frame.render_widget(Block::new().style(Style::new().bg(tint)), row);
+    }
+    let lines: Vec<Line> = rows
+        .into_iter()
+        .take(n as usize)
+        .map(|(kind, text)| band_line(kind, text, t))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), Rect { height: n, ..text });
+    n
 }
 
 /// The rows `flag_band` takes at most at `width`, for sizing a card.
@@ -182,10 +261,15 @@ pub fn flag_band(frame: &mut Frame, body: Rect, app: &App, state: &FlagState) ->
         )],
         FlagState::Flagged(flag) => {
             let room = usize::from(body.height.saturating_sub(2));
-            let mut lines = band_lines(flag_rows(flag, usize::from(body.width), room), app.theme());
+            let rows = flag_rows(flag, usize::from(body.width), room);
+            let n = draw_band(frame, body, (body.x, body.width), rows, app.theme());
             // A blank row between the band and the text.
-            lines.push(Line::raw(""));
-            lines
+            let used = (n + 1).min(body.height);
+            return Rect {
+                y: body.y + used,
+                height: body.height - used,
+                ..body
+            };
         }
     };
     let [band, rest] =
@@ -194,54 +278,56 @@ pub fn flag_band(frame: &mut Frame, body: Rect, app: &App, state: &FlagState) ->
     rest
 }
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, pc: &PermissionCard) {
+/// The card: a held card's band, then the call on a panel (the tool's
+/// name, then what it would do), Haiku's summary under it, and the keys.
+pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
     let t = app.theme();
-    let bold = Style::new().fg(t.fg).add_modifier(Modifier::BOLD);
-    let head = vec![
-        Line::styled(
-            format!("Permission: {}", visible_code(&pc.tool_name)),
-            Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
-        ),
-        Line::from(vec![
-            Span::styled(project_name(&card.checkout), bold),
-            Span::styled(
-                format!("  window {}", window_of(app, card)),
-                Style::new().fg(t.dim),
-            ),
-        ]),
-    ];
-    let [head_area, gist, body, more, keys] =
+    let [band, caption, body, gist, more, keys] =
         crate::permission::card_areas(area, pc.held.is_some());
-    frame.render_widget(Paragraph::new(head), head_area);
+    // The panel starts under the band's rows; rows the band leaves unused
+    // go below the body, which keeps the height the scrolling counts on.
+    let mut lift = 0;
     if let Some(held) = &pc.held {
-        let band = band_lines(
-            band_rows(held, gist.width as usize, gist.height as usize),
-            t,
-        );
-        frame.render_widget(Paragraph::new(band), gist);
-    } else {
-        let gist_style = match pc.gist {
-            Gist::Done(_) => Style::new().fg(t.fg).add_modifier(Modifier::ITALIC),
-            Gist::Pending | Gist::Failed(_) => Style::new().fg(t.dim),
-        };
-        let gist_rows: Vec<Line> = pc
-            .gist_rows(gist.width as usize)
-            .into_iter()
-            .map(Line::from)
-            .collect();
-        frame.render_widget(Paragraph::new(gist_rows).style(gist_style), gist);
+        let room = if band.height >= 2 { band.height - 1 } else { 1 };
+        let rows = band_rows(held, band.width as usize, room as usize);
+        let n = draw_band(frame, band, (area.x, area.width), rows, t);
+        lift = band.height.saturating_sub(n + 1);
     }
+    let caption = Rect {
+        y: caption.y - lift,
+        ..caption
+    };
+    let body = Rect {
+        y: body.y - lift,
+        ..body
+    };
     let rows = pc.body_rows(body.width as usize);
     let top = pc
         .scroll
         .min(rows.len().saturating_sub(body.height as usize));
+    let shown_rows = (rows.len() - top).min(body.height as usize) as u16;
+    if caption.height > 0 {
+        let panel = Rect::new(
+            caption.x.saturating_sub(1),
+            caption.y,
+            caption.width + 2,
+            caption.height + shown_rows,
+        );
+        frame.render_widget(Block::new().style(Style::new().bg(t.panel)), panel);
+        frame.render_widget(
+            Paragraph::new(visible_code(&pc.tool_name)).style(Style::new().fg(t.dim)),
+            caption,
+        );
+    }
+    // A command reads as code; the other fields as text.
+    let plain = if pc.tool_name == "Bash" { t.key } else { t.fg };
     let shown: Vec<Line> = rows
         .iter()
         .skip(top)
         .take(body.height as usize)
         .map(|(kind, text)| {
             let colour = match kind {
-                LineKind::Plain => t.fg,
+                LineKind::Plain => plain,
                 LineKind::Del => t.del,
                 LineKind::Add => t.add,
             };
@@ -249,6 +335,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, pc: &Permis
         })
         .collect();
     frame.render_widget(Paragraph::new(shown), body);
+    if pc.held.is_none() && gist.height > 0 {
+        // Straight under the panel, after a blank row.
+        let y = body.y + shown_rows + 1;
+        let height = GIST_ROWS.min(gist.bottom().saturating_sub(y));
+        let style = match pc.gist {
+            Gist::Done(_) => Style::new().fg(t.dim).add_modifier(Modifier::ITALIC),
+            Gist::Pending | Gist::Failed(_) => Style::new().fg(t.dim),
+        };
+        let gist_rows: Vec<Line> = pc
+            .gist_rows(body.width as usize)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        frame.render_widget(
+            Paragraph::new(gist_rows).style(style),
+            Rect::new(body.x, y, body.width, height),
+        );
+    }
     let hidden = rows.len().saturating_sub(top + body.height as usize);
     if hidden > 0 {
         let s = if hidden == 1 { "" } else { "s" };
@@ -346,7 +450,7 @@ mod tests {
         a.queue.push(held_card(Held::Flagged(incident())));
         let text = render(&a, 60, 12);
         assert!(text.contains("▌▌ SOMEONE ELSE"));
-        assert!(text.contains("Conflict: you requested changes"));
+        assert!(text.contains("Conflict  you requested changes"));
         assert!(text.contains("gh pr merge"));
         insta::assert_snapshot!(text);
     }
@@ -366,7 +470,13 @@ mod tests {
         use super::{BandRow, band_rows};
         let rows = band_rows(&Held::Flagged(incident()), 40, 0);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, BandRow::Head(FlagKind::SomeoneElse));
+        assert!(matches!(
+            rows[0].0,
+            BandRow::Head {
+                kind: FlagKind::SomeoneElse,
+                ..
+            }
+        ));
         assert!(rows[0].1.starts_with("▌▌ SOMEONE ELSE"));
         let rows = band_rows(&Held::Unchecked("offline".into()), 40, 0);
         assert_eq!(rows.len(), 1);
@@ -375,6 +485,75 @@ mod tests {
         let mut a = app();
         a.queue.push(held_card(Held::Flagged(incident())));
         assert!(render(&a, 60, 10).contains("▌▌ SOMEONE ELSE"));
+    }
+
+    #[test]
+    fn the_band_is_a_tinted_strip_and_the_command_sits_on_a_panel() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        // The dark default and the light theme.
+        for theme in [0, 3] {
+            let mut a = app();
+            a.theme_idx = theme;
+            a.queue.push(held_card(Held::Flagged(incident())));
+            let t = a.theme().clone();
+            let mut hl = crate::highlight::Highlighter::new(&t);
+            let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            term.draw(|f| crate::ui::draw(f, &a, &mut hl)).unwrap();
+            let buf = term.backend().buffer();
+            let row = |text: &str| {
+                (0..buf.area.height)
+                    .find(|&y| {
+                        (0..buf.area.width)
+                            .map(|x| buf[(x, y)].symbol())
+                            .collect::<String>()
+                            .contains(text)
+                    })
+                    .unwrap_or_else(|| panic!("{text} not on screen"))
+            };
+            let band = row("SOMEONE ELSE");
+            let tint = t.tint(t.others);
+            assert_ne!(tint, t.bg, "{}", t.name);
+            // Across the card's width, past the end of the text.
+            assert_eq!(buf[(0, band)].bg, tint, "{}", t.name);
+            assert_eq!(buf[(95, band)].bg, tint, "{}", t.name);
+            assert_eq!(buf[(1, band)].fg, t.others, "{}", t.name);
+            let conflict = row("Conflict");
+            assert_eq!(buf[(1, conflict)].fg, t.del, "{}", t.name);
+            assert_eq!(buf[(30, conflict)].fg, t.del, "{}", t.name);
+            assert_eq!(buf[(1, row("Who"))].bg, t.bg, "the facts are off the strip");
+            let command = row("gh pr merge");
+            assert_eq!(buf[(1, row("Bash"))].bg, t.panel, "{}", t.name);
+            assert_eq!(buf[(2, command)].bg, t.panel, "{}", t.name);
+            assert_eq!(buf[(2, command)].fg, t.key, "{}", t.name);
+        }
+    }
+
+    #[test]
+    fn an_unheld_card_puts_haiku_under_the_command() {
+        let mut a = app();
+        a.queue.push(card(
+            1,
+            "/w/api",
+            CardKind::Permission(PermissionCard {
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({"command": "cargo test"}),
+                summary: "cargo test".into(),
+                gist: crate::permission::Gist::Done("Runs the tests.".into()),
+                ..Default::default()
+            }),
+            10,
+        ));
+        let screen = render(&a, 80, 24);
+        let lines: Vec<&str> = screen.lines().collect();
+        let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap();
+        assert_eq!(at("cargo test"), at("Bash") + 1, "{screen}");
+        assert_eq!(
+            at("Haiku: Runs the tests."),
+            at("cargo test") + 2,
+            "{screen}"
+        );
+        assert!(!screen.contains("Permission:"), "the bar says what it is");
     }
 
     #[test]
@@ -399,7 +578,7 @@ mod tests {
         };
         let text = shown(Held::Flagged(flag));
         assert!(text.contains("▌▌ SOMEONE ELSE"));
-        assert!(text.contains("Conflict: you requested changes"));
+        assert!(text.contains("Conflict  you requested changes"));
         assert!(text.contains('…'));
         insta::assert_snapshot!(text);
     }

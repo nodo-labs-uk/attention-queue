@@ -1190,10 +1190,10 @@ mod tests {
             "the queue bar marks it: {text}"
         );
         assert!(
-            text.contains("▌▌ SOMEONE ELSE · nodo-labs-uk/socratui PR #5"),
+            text.contains("▌▌ SOMEONE ELSE  nodo-labs-uk/socratui PR #5"),
             "{text}"
         );
-        assert!(text.contains(&format!("Conflict: {ASKED}")), "{text}");
+        assert!(text.contains(&format!("Conflict  {ASKED}")), "{text}");
         assert!(text.contains("How should I merge PR #5?"), "{text}");
         assert!(!text.contains("Checking whether"), "{text}");
     }
