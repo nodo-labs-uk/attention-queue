@@ -388,18 +388,27 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
     }
 }
 
+/// Key `k` as a small cap, so keys and words don't run together, then
+/// what it does in dim. Every key hint in aq is drawn this way.
+pub(crate) fn cap(k: &str, label: &str, t: &crate::theme::Theme) -> [Span<'static>; 2] {
+    [
+        Span::styled(
+            format!(" {k} "),
+            Style::new()
+                .fg(t.key)
+                .bg(t.line)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {label}  "), Style::new().fg(t.dim)),
+    ]
+}
+
 /// The keys flowed into rows of `width`, a key never split from its label.
 fn rows(app: &App, width: u16) -> Vec<Line<'static>> {
     let t = app.theme();
     let mut rows = vec![Line::raw(" ")];
     for (k, label) in keys_for(app) {
-        let item = [
-            Span::styled(
-                k.to_string(),
-                Style::new().fg(t.key).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {label}   "), Style::new().fg(t.dim)),
-        ];
+        let item = cap(k, &label, t);
         let w: usize = item.iter().map(Span::width).sum();
         let row = rows.last_mut().expect("a row");
         if row.width() + w > width as usize && row.width() > 1 {

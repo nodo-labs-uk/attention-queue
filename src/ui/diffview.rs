@@ -146,7 +146,7 @@ pub fn render(
             Row::Hunk(i) => {
                 let hk = &f.hunks[i];
                 let text = format!(
-                    "⋯ @@ -{},{} +{},{} @@",
+                    "┄ @@ -{},{} +{},{} @@",
                     hk.old_start, hk.old_len, hk.new_start, hk.new_len
                 );
                 buf.set_stringn(line.x + 1, y, text, line.width as usize, dim);
@@ -265,9 +265,11 @@ fn status_label(s: FileStatus) -> &'static str {
     }
 }
 
+/// The file's path in bold, its label dim, then a thin rule to the right
+/// edge of `area`, so each file opens with a clear heading.
 fn header(buf: &mut Buffer, area: Rect, path: &Path, label: &str, t: &Theme) {
-    buf.set_style(area, Style::new().bg(t.panel));
-    let (x, _) = buf.set_stringn(
+    let dim = Style::new().fg(t.dim);
+    let (mut x, _) = buf.set_stringn(
         area.x + 1,
         area.y,
         visible_code(&path.display().to_string()),
@@ -276,13 +278,12 @@ fn header(buf: &mut Buffer, area: Rect, path: &Path, label: &str, t: &Theme) {
     );
     if !label.is_empty() {
         let room = area.right().saturating_sub(x) as usize;
-        buf.set_stringn(
-            x,
-            area.y,
-            format!(" · {label}"),
-            room,
-            Style::new().fg(t.dim),
-        );
+        (x, _) = buf.set_stringn(x, area.y, format!(" · {label}"), room, dim);
+    }
+    // A space, then the rule, when there is room for any of it.
+    let rule = area.right().saturating_sub(x + 1) as usize;
+    if rule > 0 {
+        buf.set_stringn(x + 1, area.y, "─".repeat(rule), rule, dim);
     }
 }
 
@@ -366,7 +367,7 @@ fn in_code(f: &FileDiff) -> Vec<bool> {
     out
 }
 
-/// Digits of the largest line number, plus a space.
+/// Digits of the largest line number, then a space and the gutter's `│`.
 fn gutter_width(f: &FileDiff) -> u16 {
     let max = f
         .hunks
@@ -374,8 +375,11 @@ fn gutter_width(f: &FileDiff) -> u16 {
         .map(|h| (h.old_start + h.old_len).max(h.new_start + h.new_len))
         .max()
         .unwrap_or(0);
-    max.to_string().len().max(3) as u16 + 1
+    max.to_string().len().max(3) as u16 + 2
 }
+
+/// Columns a comment callout's bar takes, with the space after it.
+const BAR: u16 = 2;
 
 /// "you ✎ " or "old ✎ 12-14 ": what a comment box starts with.
 fn comment_label(rc: &ReviewCard, ci: usize) -> String {
@@ -437,7 +441,9 @@ impl Ctx<'_> {
             Row::Unified(i) => rows_for(&self.shown(all, i), width.saturating_sub(g + 1)),
             Row::Split((l, r)) => {
                 let side = |i: Option<usize>, w: u16| {
-                    i.map_or(1, |i| rows_for(&self.shown(all, i), w.saturating_sub(g)))
+                    i.map_or(1, |i| {
+                        rows_for(&self.shown(all, i), w.saturating_sub(g + 1))
+                    })
                 };
                 side(l, left.width).max(side(r, right.width))
             }
@@ -448,7 +454,7 @@ impl Ctx<'_> {
                     DiffView::Split if c.side == Side::Old => left.width,
                     DiffView::Split => right.width,
                 };
-                let room = area.saturating_sub(g + 1 + self.label_width(rc, ci));
+                let room = area.saturating_sub(g + BAR + self.label_width(rc, ci));
                 rows_for(c.body.lines().nth(part).unwrap_or(""), room)
             }
         }
@@ -482,10 +488,13 @@ impl Ctx<'_> {
         };
         let g = self.gutter as usize;
         let (mut x, _) =
-            buf.set_stringn(area.x, area.y, format!("{no:>w$} ", w = g - 1), width, num);
-        if sign {
-            (x, _) = buf.set_stringn(x, area.y, sign_char.to_string(), 1, Style::new().fg(fg));
-        }
+            buf.set_stringn(area.x, area.y, format!("{no:>w$} ", w = g - 2), width, num);
+        let left = width.saturating_sub(g - 1);
+        (x, _) = buf.set_stringn(x, area.y, "│", left, Style::new().fg(t.dim));
+        // Split view has no sign, but keeps its column so text stands off
+        // the gutter.
+        let sign_char = if sign { sign_char } else { ' ' };
+        (x, _) = buf.set_stringn(x, area.y, sign_char.to_string(), 1, Style::new().fg(fg));
         if let Some(in_code) = &self.in_code {
             let pieces = markdown_line(line_text(l), in_code[i])
                 .into_iter()
@@ -517,6 +526,8 @@ impl Ctx<'_> {
         draw_wrapped(buf, area, x, pieces);
     }
 
+    /// One line of comment `ci` as a callout: a bar down its left edge, the
+    /// author on its first line, and the text, which wraps under itself.
     fn comment(&self, buf: &mut Buffer, area: Rect, rc: &ReviewCard, ci: usize, part: usize) {
         let t = self.t;
         let c = &rc.comments[ci];
@@ -524,16 +535,17 @@ impl Ctx<'_> {
         let x = area.x + self.gutter;
         let box_area = Rect::new(x, area.y, area.right().saturating_sub(x), area.height);
         buf.set_style(box_area, Style::new().bg(t.panel));
+        // Last round's comments stay dim, so this round's stand out.
+        let accent = if old { t.dim } else { t.hi };
+        for y in box_area.top()..box_area.bottom() {
+            buf.set_stringn(x, y, "▎", box_area.width as usize, Style::new().fg(accent));
+        }
         let label = comment_label(rc, ci);
         let room = box_area.width as usize;
-        let mut x = x + 1;
+        let mut x = x + BAR;
         if part == 0 {
-            let style = if old {
-                Style::new().fg(t.dim)
-            } else {
-                Style::new().fg(t.hi).add_modifier(Modifier::BOLD)
-            };
-            (x, _) = buf.set_stringn(x, area.y, &label, room.saturating_sub(1), style);
+            let style = Style::new().fg(accent).add_modifier(Modifier::BOLD);
+            (x, _) = buf.set_stringn(x, area.y, &label, room.saturating_sub(BAR as usize), style);
             if let Some(tag) = self.tag(ci) {
                 let left = (area.right().saturating_sub(x)) as usize;
                 (x, _) =

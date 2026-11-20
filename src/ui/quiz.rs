@@ -51,7 +51,9 @@ pub fn render(
     let inner = area.inner(Margin::new(1, 0));
     let width = inner.width.saturating_sub(2).max(10) as usize;
     let mut lines = card_header(app, card);
-    lines.push(Line::raw(""));
+    if !lines.is_empty() {
+        lines.push(Line::raw(""));
+    }
     let dim = Style::new().fg(t.dim);
     match &qc.state {
         QuizState::Generating => {
@@ -284,19 +286,17 @@ fn question_block(
     }
     match qc.answers.get(i) {
         None if !tries.is_empty() => {
-            let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
-            let dim = Style::new().fg(t.dim);
-            lines.push(Line::from(vec![
-                Span::styled("Enter", key),
-                Span::styled(" try again   ", dim),
-                Span::styled("e", key),
-                Span::styled(" show the answer", dim),
-            ]));
+            let mut spans = Vec::new();
+            for (k, label) in [("Enter", "try again"), ("e", "show the answer")] {
+                spans.extend(super::keys::cap(k, label, t));
+            }
+            lines.push(Line::from(spans));
         }
-        None => lines.push(Line::from(vec![
-            Span::styled("Enter", Style::new().fg(t.key).add_modifier(Modifier::BOLD)),
-            Span::styled(" answer in your own words", Style::new().fg(t.dim)),
-        ])),
+        None => lines.push(Line::from(Vec::from(super::keys::cap(
+            "Enter",
+            "answer in your own words",
+            t,
+        )))),
         Some(a) => {
             for l in a.text.lines() {
                 push_wrapped(lines, l, width, Style::new().fg(t.acc), "  ");
@@ -354,16 +354,11 @@ fn verdict_block(lines: &mut Vec<Line<'static>>, verdict: &Verdict, width: usize
         push_barred(lines, &rest, width, dim, bar, bar_style);
     }
     if code_gap {
-        let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
-        lines.push(Line::from(vec![
-            Span::styled(bar, bar_style),
-            Span::styled("y", key),
-            Span::styled(" fine as is   ", dim),
-            Span::styled("c", key),
-            Span::styled(" fix it   ", dim),
-            Span::styled("m", key),
-            Span::styled(" show the code", dim),
-        ]));
+        let mut spans = vec![Span::styled(bar, bar_style)];
+        for (k, label) in [("y", "fine as is"), ("c", "fix it"), ("m", "show the code")] {
+            spans.extend(super::keys::cap(k, label, t));
+        }
+        lines.push(Line::from(spans));
     }
 }
 

@@ -147,11 +147,9 @@ fn render_text(
             more,
         );
     }
-    let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
     for &(k, label) in keys_shown {
-        spans.push(Span::styled(k, key));
-        spans.push(Span::styled(format!(" {label}  "), dim));
+        spans.extend(super::keys::cap(k, label, t));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), keys);
 }
@@ -194,7 +192,7 @@ mod tests {
             pending: false,
         };
         let text = question(FlagState::Flagged(flag));
-        assert!(text.contains(" aq  ▌▌ question"), "{text}");
+        assert!(text.contains("▌▌ QUESTION"), "{text}");
         insta::assert_snapshot!(text);
     }
 

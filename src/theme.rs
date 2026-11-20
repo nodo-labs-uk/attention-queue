@@ -75,6 +75,19 @@ impl Theme {
         }
     }
 
+    /// `colour` mixed into the background, a fifth of the way: a strip that
+    /// takes a colour's hue without losing the text on it. A colour that is
+    /// not RGB gives the panel colour.
+    pub fn tint(&self, colour: Color) -> Color {
+        match (colour, self.bg) {
+            (Color::Rgb(r, g, b), Color::Rgb(br, bgr, bb)) => {
+                let mix = |c: u8, base: u8| ((u16::from(c) + 4 * u16::from(base)) / 5) as u8;
+                Color::Rgb(mix(r, br), mix(g, bgr), mix(b, bb))
+            }
+            _ => self.panel,
+        }
+    }
+
     pub fn from_toml(text: &str) -> Result<Theme, String> {
         let r: RawTheme = toml::from_str(text).map_err(|e| e.to_string())?;
         let del = parse_hex(&r.del)?;
@@ -168,6 +181,14 @@ mod tests {
                 "ghostty"
             ]
         );
+    }
+
+    #[test]
+    fn a_tint_is_a_fifth_of_the_colour_on_the_background() {
+        let t = &builtin_themes()[0];
+        // #ff9e64 into #1a1b26.
+        assert_eq!(t.tint(t.others), Color::Rgb(0x47, 0x35, 0x32));
+        assert_eq!(t.tint(Color::Reset), t.panel);
     }
 
     #[test]

@@ -1210,7 +1210,7 @@ pub(crate) mod tests {
         assert_eq!(a.overlay, None, "Esc puts it away");
         let screen = crate::ui::tests::render(&a, 100, 30);
         assert!(
-            screen.contains("Enter answer in your own words"),
+            screen.contains("Enter  answer in your own words"),
             "{screen}"
         );
         answered(&mut a, RIGHT);
@@ -1243,7 +1243,7 @@ pub(crate) mod tests {
         assert!(qc.code_gap().is_some());
         assert_eq!(a.overlay, None, "no answer box over y and c");
         let screen = crate::ui::tests::render(&a, 100, 30);
-        assert!(screen.contains("c fix it"), "{screen}");
+        assert!(screen.contains("c  fix it"), "{screen}");
         a.update(key('c'));
         let qc = quiz(&a);
         assert_eq!(qc.fixes, ["Fix: two requests can both pass the zero test"]);

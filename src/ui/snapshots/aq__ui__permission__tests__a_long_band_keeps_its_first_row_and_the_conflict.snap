@@ -1,19 +1,17 @@
 ---
 source: src/ui/permission.rs
-assertion_line: 309
 expression: text
 ---
-" aq  ▌▌ permission socratui · %1                                     1 permission  F3 keys  F1 help "
+" aq   ▌▌ PERMISSION  socratui · window %1                            1 permission  F3 keys  F1 help "
 "                                                                                                    "
-" Permission: Bash                                                                                   "
-" socratui  window %1                                                                                "
-"                                                                                                    "
-" ▌▌ SOMEONE ELSE · nodo-labs-uk/socratui PR #5 by Timonsc (outside your org)                        "
-" Who:      word word word word word word word word word word word word word word word word word     "
+" ▌▌ SOMEONE ELSE  nodo-labs-uk/socratui PR #5 by Timonsc  outside your org                          "
+"      Who  word word word word word word word word word word word word word word word word word     "
 "           word word word word word word word word word word word word word word word word word     "
 "           word word word word word word word word word word word word word word word word word…    "
-" Conflict: you requested changes on 17 Nov; no commits since                                        "
-" gh pr merge 5 --squash                                                                             "
+" Conflict  you requested changes on 17 Nov; no commits since                                        "
+"                                                                                                    "
+"  Bash                                                                                              "
+"  gh pr merge 5 --squash                                                                            "
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
@@ -31,5 +29,6 @@ expression: text
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
-" y allow  n deny  g go to window  ? ask                                                             "
+"                                                                                                    "
+"  y  allow   n  deny   g  go to window   ?  ask                                                     "
 "                                                                                                    "

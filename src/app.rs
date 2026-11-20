@@ -4244,6 +4244,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_tabs_of_every_row_start_in_one_column() {
+        let mut a = two_groups();
+        a.agents[2].group = "infra-tools".into();
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        let first_tab = |name: &str| {
+            let line = screen
+                .lines()
+                .find(|l| l.trim_start_matches(['"', ' ']).starts_with(name))
+                .unwrap_or_else(|| panic!("no {name} row: {screen}"));
+            line.chars().position(|c| c == '●')
+        };
+        assert!(first_tab("main").is_some(), "{screen}");
+        assert_eq!(first_tab("main"), first_tab("infra-tools"), "{screen}");
+    }
+
+    #[test]
     fn a_workspaces_windows_get_a_row_of_their_own_in_the_same_tmux_session() {
         let mut a = App::new(Config::default(), builtin_themes());
         let mut ui = agent("%3", 3, "ui", "/w/billing/ui", true);

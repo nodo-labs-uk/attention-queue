@@ -2,11 +2,11 @@
 source: src/ui/mod.rs
 expression: "render(&a, 60, 16)"
 ---
-" aq  nothing waiting                       F3 keys  F1 help "
+" aq  nothing waiting                2 sessions · 1 waiting  "
 "                                                            "
 "  ● 1 api   ○ 2 web                                         "
 "                                                            "
-"line 10                                                     "
+" api · window 1 · waiting for you ──────────────────────────"
 "line 11                                                     "
 "line 12                                                     "
 "line 13                                                     "

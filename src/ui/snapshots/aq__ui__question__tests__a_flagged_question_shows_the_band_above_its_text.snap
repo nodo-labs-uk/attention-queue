@@ -1,17 +1,16 @@
 ---
 source: src/ui/question.rs
-assertion_line: 198
 expression: text
 ---
-" aq  ▌▌ question socratui · %1                                         1 question  F3 keys  F1 help "
+" aq   ▌▌ QUESTION  socratui · window %1                                1 question  F3 keys  F1 help "
 "                                                                                                    "
 " Claude is asking                                                                                   "
 " socratui  window %1                                                                                "
 "                                                                                                    "
-" ▌▌ SOMEONE ELSE · nodo-labs-uk/socratui PR #5 by Timonsc (outside your org)                        "
-" Who:      Timonsc opened PR #5 from their fork                                                     "
-" Happens:  fixes and merges PR #5 into main                                                         "
-" Conflict: You requested changes on 2026-11-17; no commits since                                    "
+" ▌▌ SOMEONE ELSE  nodo-labs-uk/socratui PR #5 by Timonsc  outside your org                          "
+"      Who  Timonsc opened PR #5 from their fork                                                     "
+"  Happens  fixes and merges PR #5 into main                                                         "
+" Conflict  You requested changes on 2026-11-17; no commits since                                    "
 "                                                                                                    "
 " PR #5 has changes requested.                                                                       "
 "                                                                                                    "
@@ -25,5 +24,5 @@ expression: text
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
-" a approve  Enter reply  x stash  r read fast  g go to window  B move to back  ? ask                "
+"  a  approve   Enter  reply   x  stash   r  read fast   g  go to window   B  move to back   ?  ask  "
 "                                                                                                    "
