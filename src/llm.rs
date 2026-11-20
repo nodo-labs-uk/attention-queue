@@ -1,4 +1,5 @@
-//! Background `claude -p` work: quiz questions and judging answers.
+//! Background `claude -p` work: quiz questions, judging answers, side
+//! questions and the summary on a permission card.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Write};
@@ -12,11 +13,19 @@ use anyhow::{Context, Result, anyhow, bail};
 
 pub const QUIZ_PROMPT: &str = include_str!("../prompts/quiz.md");
 pub const JUDGE_PROMPT: &str = include_str!("../prompts/judge.md");
+pub const GIST_PROMPT: &str = include_str!("../prompts/gist.md");
+pub const FLAG_PROMPT: &str = include_str!("../prompts/flag.md");
+pub const FLAG_QUESTION_PROMPT: &str = include_str!("../prompts/flag-question.md");
 pub const QUIZ_SCHEMA: &str = include_str!("../schemas/quiz.json");
 pub const JUDGE_SCHEMA: &str = include_str!("../schemas/judge.json");
+pub const FLAG_SCHEMA: &str = include_str!("../schemas/flag.json");
+pub const FLAG_QUESTION_SCHEMA: &str = include_str!("../schemas/flag-question.json");
 
 /// How long one `claude -p` call may take before it is killed.
 pub const TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How long a flag job may take: the card waits for it.
+pub const FLAG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What a job is for, so its result finds its way back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,11 +35,48 @@ pub enum JobKind {
     /// Judge the free-text answer to question `question`.
     Judge { question: usize },
     /// A side question, number `index` of the ask overlay. With a session it
-    /// is a fork of that live session; without, a plain call.
+    /// is a fork of that live session; without, a plain call. With `haiku`,
+    /// it runs on the small model with no tools.
     Ask {
         index: usize,
         session_id: Option<String>,
+        haiku: bool,
     },
+    /// Say what a permission card's tool call does and what it is for, on the
+    /// small model. With a session it is a fork of that live session.
+    Gist { session_id: Option<String> },
+    /// Judge or describe a held action, as JSON, on the small model.
+    Flag { session_id: Option<String> },
+    /// Judge a question card, as JSON, on the small model.
+    FlagQuestion { session_id: Option<String> },
+}
+
+impl JobKind {
+    /// The session this job forks.
+    fn session(&self) -> Option<&str> {
+        match self {
+            JobKind::Ask { session_id, .. }
+            | JobKind::Gist { session_id }
+            | JobKind::Flag { session_id }
+            | JobKind::FlagQuestion { session_id } => session_id.as_deref(),
+            JobKind::Quiz | JobKind::Judge { .. } => None,
+        }
+    }
+
+    /// The same job as a plain call.
+    fn without_session(&self) -> JobKind {
+        match self {
+            JobKind::Ask { index, haiku, .. } => JobKind::Ask {
+                index: *index,
+                session_id: None,
+                haiku: *haiku,
+            },
+            JobKind::Gist { .. } => JobKind::Gist { session_id: None },
+            JobKind::Flag { .. } => JobKind::Flag { session_id: None },
+            JobKind::FlagQuestion { .. } => JobKind::FlagQuestion { session_id: None },
+            kind => kind.clone(),
+        }
+    }
 }
 
 /// One `claude -p` call: the prompt goes on stdin, run in `cwd`.
@@ -43,12 +89,23 @@ pub struct LlmJob {
 }
 
 impl LlmJob {
-    /// The JSON schema the answer must follow; side questions answer in text.
+    /// The JSON schema the answer must follow; side questions and summaries
+    /// answer in text.
     pub fn schema(&self) -> Option<&'static str> {
         match self.kind {
             JobKind::Quiz => Some(QUIZ_SCHEMA),
             JobKind::Judge { .. } => Some(JUDGE_SCHEMA),
-            JobKind::Ask { .. } => None,
+            JobKind::Flag { .. } => Some(FLAG_SCHEMA),
+            JobKind::FlagQuestion { .. } => Some(FLAG_QUESTION_SCHEMA),
+            JobKind::Ask { .. } | JobKind::Gist { .. } => None,
+        }
+    }
+
+    /// How long this job may run before it is killed.
+    pub fn timeout(&self) -> Duration {
+        match self.kind {
+            JobKind::Flag { .. } | JobKind::FlagQuestion { .. } => FLAG_TIMEOUT,
+            _ => TIMEOUT,
         }
     }
 }
@@ -121,8 +178,12 @@ pub struct ClaudeCli {
 
 impl Llm for ClaudeCli {
     fn run(&self, job: &LlmJob) -> Result<String> {
-        if matches!(job.kind, JobKind::Ask { .. }) {
-            return ask_with_fallback(job, |j| self.once(j, ask_output));
+        if job.schema().is_none() {
+            return ask_with_fallback(job, FALLBACK_NOTE, |j| self.once(j, ask_output));
+        }
+        if job.kind.session().is_some() {
+            // The answer is JSON, so there is no room for a note.
+            return ask_with_fallback(job, "", |j| self.once(j, structured_output));
         }
         self.once(job, structured_output)
     }
@@ -159,8 +220,12 @@ pub fn valid_session_id(id: &str) -> bool {
 
 impl ClaudeCli {
     fn once(&self, job: &LlmJob, parse: fn(&str) -> Result<String>) -> Result<String> {
-        let (status, out, err) =
-            run_child(claude_command(job), &job.prompt, TIMEOUT, &self.children)?;
+        let (status, out, err) = run_child(
+            claude_command(job),
+            &job.prompt,
+            job.timeout(),
+            &self.children,
+        )?;
         if !status.success() && out.trim().is_empty() {
             if says_session_gone(&err) {
                 return Err(SessionGone(err.trim().to_string()).into());
@@ -171,17 +236,16 @@ impl ClaudeCli {
     }
 }
 
-/// Runs a side question as a fork of its session; if the session cannot be
-/// resumed, once more as a plain call in the checkout, and the answer says so.
+/// Runs a side question, summary or flag job as a fork of its session; if the
+/// session cannot be resumed, once more as a plain call in the checkout, and
+/// `note` is added to the answer.
 /// Timeouts, login and other failures are errors, not a reason to fall back.
 pub fn ask_with_fallback(
     job: &LlmJob,
+    note: &str,
     mut attempt: impl FnMut(&LlmJob) -> Result<String>,
 ) -> Result<String> {
-    let JobKind::Ask { index, session_id } = &job.kind else {
-        return attempt(job);
-    };
-    if session_id.is_none() {
+    if job.kind.session().is_none() {
         return attempt(job);
     }
     attempt(job).or_else(|fork_err| {
@@ -189,20 +253,18 @@ pub fn ask_with_fallback(
             return Err(fork_err);
         }
         let plain = LlmJob {
-            kind: JobKind::Ask {
-                index: *index,
-                session_id: None,
-            },
+            kind: job.kind.without_session(),
             ..job.clone()
         };
         attempt(&plain)
-            .map(|a| a + FALLBACK_NOTE)
+            .map(|a| a + note)
             .map_err(|e| anyhow!("{e:#} (the session could not be resumed: {fork_err:#})"))
     })
 }
 
 /// `claude -p` for `job`: read-only tools, no MCP servers, slash commands,
 /// skills or hooks, so text in the diff cannot make it change anything.
+/// A summary, `T` included, runs on Haiku with no tools at all.
 pub fn claude_command(job: &LlmJob) -> Command {
     let mut cmd = Command::new("claude");
     cmd.args(["-p", "--output-format", "json"]);
@@ -211,20 +273,25 @@ pub fn claude_command(job: &LlmJob) -> Command {
     }
     // A fork of the live session. That session may allow writes, but the
     // flags below still apply to the fork.
-    if let JobKind::Ask {
-        session_id: Some(id),
-        ..
-    } = &job.kind
+    if let Some(id) = job.kind.session()
         && valid_session_id(id)
     {
         cmd.args(["--resume", id, "--fork-session"]);
     }
+    if matches!(
+        job.kind,
+        JobKind::Gist { .. }
+            | JobKind::Flag { .. }
+            | JobKind::FlagQuestion { .. }
+            | JobKind::Ask { haiku: true, .. }
+    ) {
+        // Not plan mode: in it Claude Code runs Sonnet in place of Haiku.
+        cmd.args(["--model", "haiku", "--tools", ""]);
+    } else {
+        cmd.args(["--permission-mode", "plan", "--tools", "Read,Grep,Glob"]);
+    }
     cmd.args([
         "--no-session-persistence",
-        "--permission-mode",
-        "plan",
-        "--tools",
-        "Read,Grep,Glob",
         "--strict-mcp-config",
         "--disable-slash-commands",
         "--settings",
@@ -400,8 +467,30 @@ mod tests {
 
     #[test]
     fn schemas_are_json() {
-        for s in [QUIZ_SCHEMA, JUDGE_SCHEMA] {
+        for s in [QUIZ_SCHEMA, JUDGE_SCHEMA, FLAG_SCHEMA, FLAG_QUESTION_SCHEMA] {
             serde_json::from_str::<serde_json::Value>(s).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_question_flag_schema_asks_for_the_verb() {
+        let schema: serde_json::Value = serde_json::from_str(FLAG_QUESTION_SCHEMA).unwrap();
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"verb".into())
+        );
+        assert_eq!(
+            schema["properties"]["verb"]["enum"],
+            serde_json::json!([
+                "none", "merge", "close", "comment", "review", "edit", "push", "delete", "release"
+            ])
+        );
+        assert!(FLAG_QUESTION_PROMPT.contains("- verb:"));
+        for prompt in [FLAG_PROMPT, FLAG_QUESTION_PROMPT] {
+            let words = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(words.contains("Opening a new pull request or issue is not an answer"));
         }
     }
 
@@ -454,12 +543,160 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_a_haiku_side_question_runs_on_haiku() {
+        let args = |haiku| -> Vec<String> {
+            let job = LlmJob {
+                card: 1,
+                kind: JobKind::Ask {
+                    index: 0,
+                    session_id: Some("abc-123".into()),
+                    haiku,
+                },
+                cwd: "/tmp".into(),
+                prompt: String::new(),
+            };
+            claude_command(&job)
+                .get_args()
+                .map(|a| a.to_string_lossy().into())
+                .collect()
+        };
+        let small = args(true);
+        assert!(
+            small.windows(2).any(|w| w == ["--model", "haiku"]),
+            "{small:?}"
+        );
+        assert!(small.windows(2).any(|w| w == ["--tools", ""]), "{small:?}");
+        let full = args(false);
+        assert!(!full.iter().any(|a| a == "haiku"), "{full:?}");
+        assert!(
+            full.windows(2).any(|w| w == ["--tools", "Read,Grep,Glob"]),
+            "{full:?}"
+        );
+    }
+
+    #[test]
+    fn a_summary_runs_on_haiku_with_no_tools_as_a_fork() {
+        let job = LlmJob {
+            card: 1,
+            kind: JobKind::Gist {
+                session_id: Some("abc-123".into()),
+            },
+            cwd: "/tmp".into(),
+            prompt: String::new(),
+        };
+        let args: Vec<String> = claude_command(&job)
+            .get_args()
+            .map(|a| a.to_string_lossy().into())
+            .collect();
+        for pair in [
+            ["--model", "haiku"],
+            ["--tools", ""],
+            ["--resume", "abc-123"],
+            ["--settings", r#"{"disableAllHooks":true}"#],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+        }
+        for flag in ["--fork-session", "--no-session-persistence"] {
+            assert!(args.iter().any(|a| a == flag), "{flag} in {args:?}");
+        }
+        assert!(!args.iter().any(|a| a == "plan" || a == "--json-schema"));
+        // Without the session it is asked again as a plain call.
+        let mut seen = Vec::new();
+        let out = ask_with_fallback(&job, FALLBACK_NOTE, |j| {
+            seen.push(j.kind.clone());
+            match j.kind.session() {
+                Some(_) => Err(SessionGone("No conversation found".into()).into()),
+                None => Ok("Lists files.".into()),
+            }
+        });
+        assert_eq!(out.unwrap(), format!("Lists files.{FALLBACK_NOTE}"));
+        assert_eq!(seen[1], JobKind::Gist { session_id: None });
+    }
+
+    fn flag_job(kind: JobKind) -> LlmJob {
+        LlmJob {
+            card: 1,
+            kind,
+            cwd: "/tmp".into(),
+            prompt: String::new(),
+        }
+    }
+
+    #[test]
+    fn flag_jobs_run_on_haiku_with_a_schema_and_no_tools() {
+        for (kind, schema) in [
+            (
+                JobKind::Flag {
+                    session_id: Some("abc-123".into()),
+                },
+                FLAG_SCHEMA,
+            ),
+            (
+                JobKind::FlagQuestion {
+                    session_id: Some("abc-123".into()),
+                },
+                FLAG_QUESTION_SCHEMA,
+            ),
+        ] {
+            let args: Vec<String> = claude_command(&flag_job(kind))
+                .get_args()
+                .map(|a| a.to_string_lossy().into())
+                .collect();
+            for pair in [
+                ["--model", "haiku"],
+                ["--tools", ""],
+                ["--json-schema", schema],
+                ["--resume", "abc-123"],
+            ] {
+                assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+            }
+            assert!(args.iter().any(|a| a == "--fork-session"));
+            assert!(!args.iter().any(|a| a == "plan"));
+        }
+    }
+
+    #[test]
+    fn flag_jobs_time_out_after_30_s() {
+        let flag = flag_job(JobKind::Flag { session_id: None });
+        let question = flag_job(JobKind::FlagQuestion { session_id: None });
+        assert_eq!(flag.timeout(), Duration::from_secs(30));
+        assert_eq!(question.timeout(), Duration::from_secs(30));
+        assert_eq!(flag_job(JobKind::Quiz).timeout(), TIMEOUT);
+        assert_eq!(
+            flag_job(JobKind::Gist { session_id: None }).timeout(),
+            TIMEOUT
+        );
+    }
+
+    #[test]
+    fn a_flag_job_falls_back_without_a_note() {
+        let job = flag_job(JobKind::Flag {
+            session_id: Some("abc-123".into()),
+        });
+        let mut seen = Vec::new();
+        let out = ask_with_fallback(&job, "", |j| {
+            seen.push(j.kind.clone());
+            match j.kind.session() {
+                Some(_) => Err(SessionGone("No conversation found".into()).into()),
+                None => {
+                    Ok(r#"{"flag":"none","who":"","happens":"","as_you":"","conflict":""}"#.into())
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(seen[1], JobKind::Flag { session_id: None });
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["flag"], "none");
+    }
+
     fn ask_args(session_id: Option<&str>) -> Vec<String> {
         let job = LlmJob {
             card: 1,
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session_id.map(Into::into),
+                haiku: false,
             },
             cwd: "/tmp".into(),
             prompt: String::new(),
@@ -561,6 +798,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some(id),
+                haiku: false,
             },
             cwd: dir.into(),
             prompt: "what word did I ask you to remember?".into(),

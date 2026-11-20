@@ -2,7 +2,7 @@
 
 ## Reopened after a restart
 
-aq keeps a list of the Claude sessions open in tmux. When it starts and finds none open, as after the machine restarts, it reopens each one with `claude --resume`, in its old tmux session (made again if it is gone) and under its old window name. A session whose folder is gone, such as a removed worktree, is left out. If you close every session while aq is running, there is nothing to reopen next time. Sessions that all end at once, as at a shutdown, stay on the list for 10 seconds: if aq goes down with them, they are reopened next time.
+aq keeps a list of the Claude sessions open in tmux. When it starts and finds none open, as after the machine restarts, it reopens each one with `claude --resume`, in its old tmux session (made again if it is gone), under its old window name and in its old workspace. A session whose folder is gone, such as a removed worktree, is left out. If you close every session while aq is running, there is nothing to reopen next time. Sessions that all end at once, as at a shutdown, stay on the list for 10 seconds: if aq goes down with them, they are reopened next time.
 
 ## A new session: N
 
@@ -50,8 +50,8 @@ A workspace is a set of git repos in one folder, for work that spans them. `O` o
 
 1. Pick the folder that holds the repos. aq finds the git repos inside it, up to two levels down, and ticks them all.
 2. `Space` unticks a repo you do not want; `a` ticks all or none.
-3. `Enter` starts a Claude session in each repo, as windows of one tmux session named after the folder. They share a row of tabs in the sessions view.
+3. `Enter` starts a Claude session in each repo, as windows in aq's own tmux session. Each window is tagged with the workspace's name (the tmux window option `@aq-group`), so they share a row of tabs in the sessions view.
 
-aq saves the set in its config, and `O` lists it next time. Opening it again starts only the repos that have no session in that tmux session yet.
+aq saves the set in its config, and `O` lists it next time. Opening it again starts only the repos that have no session in that workspace yet.
 
 Sessions opened from a workspace are told about each other and about [`aq tell`](cards/message.md), so they can ask each other for work.

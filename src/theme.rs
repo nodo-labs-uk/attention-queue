@@ -19,6 +19,10 @@ pub struct Theme {
     pub sel: Color,
     pub key: Color,
     pub ok: Color,
+    /// The band of a flagged action that involves someone else.
+    pub others: Color,
+    /// The band of a high-stakes flagged action.
+    pub stakes: Color,
     /// Optional syntect bundled theme name. When empty, a syntect theme is
     /// built from this palette's own colours.
     pub syntax: String,
@@ -41,6 +45,9 @@ struct RawTheme {
     sel: String,
     key: String,
     ok: String,
+    /// Fall back to `del` and `hi` so older theme files still load.
+    others: Option<String>,
+    stakes: Option<String>,
     #[serde(default)]
     syntax: String,
 }
@@ -60,19 +67,31 @@ pub fn parse_hex(s: &str) -> Result<Color, String> {
 }
 
 impl Theme {
+    /// The band colour of a flagged action's kind.
+    pub fn flag_colour(&self, kind: crate::flag::FlagKind) -> Color {
+        match kind {
+            crate::flag::FlagKind::SomeoneElse => self.others,
+            crate::flag::FlagKind::HighStakes => self.stakes,
+        }
+    }
+
     pub fn from_toml(text: &str) -> Result<Theme, String> {
         let r: RawTheme = toml::from_str(text).map_err(|e| e.to_string())?;
+        let del = parse_hex(&r.del)?;
+        let hi = parse_hex(&r.hi)?;
         Ok(Theme {
+            others: r.others.as_deref().map_or(Ok(del), parse_hex)?,
+            stakes: r.stakes.as_deref().map_or(Ok(hi), parse_hex)?,
             bg: parse_hex(&r.bg)?,
             panel: parse_hex(&r.panel)?,
             line: parse_hex(&r.line)?,
             fg: parse_hex(&r.fg)?,
             dim: parse_hex(&r.dim)?,
             acc: parse_hex(&r.acc)?,
-            hi: parse_hex(&r.hi)?,
+            hi,
             add: parse_hex(&r.add)?,
             add_bg: parse_hex(&r.add_bg)?,
-            del: parse_hex(&r.del)?,
+            del,
             del_bg: parse_hex(&r.del_bg)?,
             sel: parse_hex(&r.sel)?,
             key: parse_hex(&r.key)?,
@@ -156,6 +175,27 @@ mod tests {
         let t = &builtin_themes()[0];
         assert_eq!(t.bg, Color::Rgb(0x1a, 0x1b, 0x26));
         assert_eq!(t.add_bg, Color::Rgb(0x20, 0x30, 0x3b));
+    }
+
+    #[test]
+    fn a_theme_file_without_flag_colours_still_loads() {
+        let text = "name = \"old\"\nbg = \"#000000\"\npanel = \"#000000\"\nline = \"#000000\"\nfg = \"#ffffff\"\ndim = \"#888888\"\nacc = \"#0000ff\"\nhi = \"#ffff00\"\nadd = \"#00ff00\"\nadd_bg = \"#001100\"\ndel = \"#ff0000\"\ndel_bg = \"#110000\"\nsel = \"#222222\"\nkey = \"#00ffff\"\nok = \"#00ff00\"\n";
+        let t = Theme::from_toml(text).unwrap();
+        assert_eq!(t.others, t.del);
+        assert_eq!(t.stakes, t.hi);
+        let t = Theme::from_toml(&format!(
+            "{text}others = \"#010203\"\nstakes = \"#040506\"\n"
+        ))
+        .unwrap();
+        assert_eq!(t.others, Color::Rgb(1, 2, 3));
+        assert_eq!(t.stakes, Color::Rgb(4, 5, 6));
+    }
+
+    #[test]
+    fn tokyo_night_has_its_flag_colours() {
+        let t = &builtin_themes()[0];
+        assert_eq!(t.others, Color::Rgb(0xff, 0x9e, 0x64));
+        assert_eq!(t.stakes, Color::Rgb(0xbb, 0x9a, 0xf7));
     }
 
     #[test]

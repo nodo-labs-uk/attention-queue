@@ -11,6 +11,7 @@ use crate::app::{App, Effect, Overlay};
 use crate::edit::EditPreview;
 use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, valid_session_id};
 use crate::model::{Card, CardKind, Checkout};
+use crate::pr::PrInfo;
 use crate::quiz::{QuizState, diff_text, fenced};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::visible::{visible_lines, wrap_words};
@@ -29,6 +30,9 @@ pub const NO_CARD: u64 = 0;
 /// What `W` asks.
 pub const WHERE_ARE_WE: &str = "Where are we with this? In a few short lines: what is done, \
 what is still left to do, and anything that needs me.";
+/// What `T` asks, on Haiku.
+pub const SUMMARISE: &str = "Summarise our latest exchange in a few short lines: what I \
+last asked for, what you did, and what you told me at the end. Leave out earlier turns.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -69,36 +73,15 @@ pub enum LineKind {
     Error,
 }
 
-/// The widest the overlay gets: text this wide reads in one sweep.
-const PANEL_WIDTH: u16 = 100;
-
-/// The most room the overlay takes in the body area. It is drawn only as
-/// tall as its text, from the same top row.
-pub fn panel(area: Rect) -> Rect {
-    let w = (area.width * 4 / 5)
-        .min(PANEL_WIDTH)
-        .max(area.width.min(20));
-    let h = area.height.saturating_sub(2).max(area.height.min(6));
-    Rect::new(
-        area.x + (area.width - w) / 2,
-        area.y + (area.height - h) / 2,
-        w,
-        h,
-    )
-}
-
-/// How much narrower and shorter the text is than the panel: a border and
-/// a blank cell of padding on each side.
-pub const INSET: u16 = 4;
-
 /// Width and height of the text inside the overlay, for a screen of this
 /// size.
 pub fn text_size(screen: (u16, u16)) -> (usize, usize) {
     let body = Rect::new(0, 0, screen.0, screen.1.saturating_sub(2));
-    let p = panel(body);
+    let p = crate::ui::window::place(body, crate::ui::window::Height::Tall);
+    let (w, h) = crate::ui::window::INSET;
     (
-        usize::from(p.width.saturating_sub(INSET)).max(1),
-        usize::from(p.height.saturating_sub(INSET)).max(1),
+        usize::from(p.width.saturating_sub(w)).max(1),
+        usize::from(p.height.saturating_sub(h)).max(1),
     )
 }
 
@@ -140,6 +123,7 @@ impl AskState {
             kind: JobKind::Ask {
                 index,
                 session_id: self.session_id.clone(),
+                haiku: self.entries[index].question == SUMMARISE,
             },
             cwd: self.checkout.0.clone(),
             prompt: ask_prompt(&self.context, &self.entries[index].question),
@@ -149,10 +133,10 @@ impl AskState {
 
 /// A question as the panel shows it: `W`'s long wording is for the model.
 fn shown_question(question: &str) -> &str {
-    if question == WHERE_ARE_WE {
-        "Where are we?"
-    } else {
-        question
+    match question {
+        WHERE_ARE_WE => "Where are we?",
+        SUMMARISE => "The latest turn, in short (Haiku)",
+        _ => question,
     }
 }
 
@@ -235,7 +219,25 @@ fn changed_window(after: &str, changed: &[Range<u32>], cap: usize) -> String {
 /// edit, the permission's tool input, or the quiz question. About
 /// `CONTEXT_CAP` bytes at most.
 pub fn context_for(card: &Card) -> String {
+    context_with_pr(card, None)
+}
+
+/// `context_for`, with the PR's title, number, author and description
+/// before the diff when the card reviews a PR.
+pub fn context_with_pr(card: &Card, pr: Option<&PrInfo>) -> String {
     match &card.kind {
+        CardKind::Review(rc) if let Some(pr) = pr => {
+            let head = format!(
+                "A review of PR #{} of {}, \"{}\" by {}. Its description:\n\n{}\n\nDiff:\n\n",
+                pr.number,
+                pr.repo,
+                pr.title,
+                pr.author,
+                cap_text(&pr.body, 4096)
+            );
+            let room = CONTEXT_CAP.saturating_sub(head.len());
+            format!("{head}{}", diff_text(&rc.files, room))
+        }
         CardKind::Review(rc) => format!(
             "A review of the agent's changes. Diff:\n\n{}",
             diff_text(&rc.files, CONTEXT_CAP)
@@ -353,7 +355,10 @@ impl App {
             card: card.id,
             checkout: card.checkout.clone(),
             session_id,
-            context: context_for(card),
+            context: context_with_pr(
+                card,
+                self.pr_reviews.get(&card.checkout.0).map(|pr| &pr.info),
+            ),
             entries: Vec::new(),
             input: Some(TextInput::single_line()),
             scroll: 0,
@@ -384,6 +389,16 @@ session list."
 
     /// `W`: ask where the work stands, as `?` with that question already sent.
     pub(crate) fn ask_where_are_we(&mut self) -> Vec<Effect> {
+        self.ask_now(WHERE_ARE_WE)
+    }
+
+    /// `T`: Haiku sums up the session's latest turn, in the same window.
+    pub(crate) fn summarise_turn(&mut self) -> Vec<Effect> {
+        self.ask_now(SUMMARISE)
+    }
+
+    /// Opens the `?` window, if it is not open, with `question` already sent.
+    fn ask_now(&mut self, question: &str) -> Vec<Effect> {
         if !matches!(self.overlay, Some(Overlay::Ask(_))) {
             self.open_ask();
         }
@@ -392,7 +407,7 @@ session list."
         };
         ask.input = None;
         ask.entries.push(Entry {
-            question: WHERE_ARE_WE.into(),
+            question: question.into(),
             answer: Answer::Pending,
             fallback: false,
         });
@@ -448,6 +463,7 @@ session list."
             KeyCode::Char('q') | KeyCode::Esc => self.overlay = None,
             KeyCode::Char('?') => ask.input = Some(TextInput::single_line()),
             KeyCode::Char('W') => return self.ask_where_are_we(),
+            KeyCode::Char('T') => return self.summarise_turn(),
             KeyCode::Char('j') | KeyCode::Down => ask.scroll = (ask.scroll + 1).min(max),
             KeyCode::Char('k') | KeyCode::Up => ask.scroll = ask.scroll.min(max).saturating_sub(1),
             KeyCode::PageDown => ask.scroll = (ask.scroll + page).min(max),
@@ -469,7 +485,10 @@ session list."
 
     /// The model's answer to a side question; dropped if the overlay is gone.
     pub(crate) fn on_ask_result(&mut self, ev: LlmEvent) -> Vec<Effect> {
-        let JobKind::Ask { index, session_id } = ev.kind else {
+        let JobKind::Ask {
+            index, session_id, ..
+        } = ev.kind
+        else {
             return Vec::new();
         };
         let Some(Overlay::Ask(ask)) = &mut self.overlay else {
@@ -566,7 +585,7 @@ mod tests {
         // j and k inside the overlay do not reach the card.
         let effects = press(&mut a, KeyCode::Enter);
         assert!(matches!(&effects[..], [Effect::Llm(j)] if matches!(
-            &j.kind, JobKind::Ask { index: 0, session_id: Some(s) } if s == "s1")));
+            &j.kind, JobKind::Ask { index: 0, session_id: Some(s), .. } if s == "s1")));
         let Effect::Llm(job) = &effects[0] else {
             panic!()
         };
@@ -610,7 +629,8 @@ mod tests {
                 j.kind,
                 JobKind::Ask {
                     index: i,
-                    session_id: Some("s1".into())
+                    session_id: Some("s1".into()),
+                    haiku: false,
                 }
             );
             assert!(!j.prompt.contains("one") || i == 0);
@@ -621,6 +641,7 @@ mod tests {
                 kind: JobKind::Ask {
                     index,
                     session_id: Some("s1".into()),
+                    haiku: false,
                 },
                 result: r,
             })
@@ -660,6 +681,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: None,
+                haiku: false,
             },
             result: Ok("run \u{1b}[2J\u{202e}now".into()),
         }));
@@ -690,10 +712,37 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
+                haiku: false,
             },
             result: Ok("api is half done".into()),
         }));
         assert_eq!(ask_state(&a).entries[0].answer, Answer::Pending);
+    }
+
+    #[test]
+    fn t_has_haiku_sum_up_the_latest_turn_and_a_retry_stays_on_haiku() {
+        let mut a = app();
+        a.agents = vec![agent("%1", 1, "api", "/a", true)];
+        let haiku_fork = |e: &[Effect]| {
+            matches!(e, [Effect::Llm(j)] if j.prompt.contains(SUMMARISE)
+                && matches!(&j.kind, JobKind::Ask { index: 0, session_id: Some(s), haiku: true } if s == "s1"))
+        };
+        assert!(haiku_fork(&press(&mut a, KeyCode::Char('T'))));
+        a.update(Msg::Llm(LlmEvent {
+            card: NO_CARD,
+            kind: JobKind::Ask {
+                index: 0,
+                session_id: Some("s1".into()),
+                haiku: true,
+            },
+            result: Err("timed out".into()),
+        }));
+        assert!(haiku_fork(&press(&mut a, KeyCode::Char('r'))));
+        let screen = crate::ui::tests::render(&a, 100, 30);
+        assert!(
+            screen.contains("The latest turn, in short (Haiku)"),
+            "{screen}"
+        );
     }
 
     #[test]
@@ -704,13 +753,14 @@ mod tests {
         let e = press(&mut a, KeyCode::Char('W'));
         assert!(matches!(&e[..], [Effect::Llm(j)] if j.card == NO_CARD
             && j.prompt.contains(WHERE_ARE_WE)
-            && matches!(&j.kind, JobKind::Ask { index: 0, session_id: Some(s) } if s == "s1")));
+            && matches!(&j.kind, JobKind::Ask { index: 0, session_id: Some(s), .. } if s == "s1")));
         assert!(ask_state(&a).input.is_none());
         a.update(Msg::Llm(LlmEvent {
             card: NO_CARD,
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
+                haiku: false,
             },
             result: Ok("half done".into()),
         }));
@@ -762,6 +812,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session.map(Into::into),
+                haiku: false,
             },
             cwd: "/".into(),
             prompt: "p".into(),
@@ -776,7 +827,7 @@ mod tests {
     fn fork_failure_falls_back() {
         let job = ask_job(Some("sid"));
         let mut seen = Vec::new();
-        let r = crate::llm::ask_with_fallback(&job, |j| {
+        let r = crate::llm::ask_with_fallback(&job, crate::llm::FALLBACK_NOTE, |j| {
             seen.push(j.kind.clone());
             match &j.kind {
                 JobKind::Ask {
@@ -792,16 +843,18 @@ mod tests {
             vec![
                 JobKind::Ask {
                     index: 0,
-                    session_id: Some("sid".into())
+                    session_id: Some("sid".into()),
+                    haiku: false,
                 },
                 JobKind::Ask {
                     index: 0,
-                    session_id: None
+                    session_id: None,
+                    haiku: false,
                 },
             ]
         );
         // Both failing reports both.
-        let e = crate::llm::ask_with_fallback(&job, |j| match &j.kind {
+        let e = crate::llm::ask_with_fallback(&job, crate::llm::FALLBACK_NOTE, |j| match &j.kind {
             JobKind::Ask {
                 session_id: Some(_),
                 ..
@@ -816,7 +869,7 @@ mod tests {
         );
         // No session: one plain attempt only.
         let mut n = 0;
-        let _ = crate::llm::ask_with_fallback(&ask_job(None), |_| {
+        let _ = crate::llm::ask_with_fallback(&ask_job(None), crate::llm::FALLBACK_NOTE, |_| {
             n += 1;
             Err(anyhow!("x"))
         });
@@ -831,10 +884,14 @@ mod tests {
             "rate limit reached",
         ] {
             let mut n = 0;
-            let r = crate::llm::ask_with_fallback(&ask_job(Some("sid")), |_| {
-                n += 1;
-                Err(anyhow!(why))
-            });
+            let r = crate::llm::ask_with_fallback(
+                &ask_job(Some("sid")),
+                crate::llm::FALLBACK_NOTE,
+                |_| {
+                    n += 1;
+                    Err(anyhow!(why))
+                },
+            );
             assert_eq!(r.unwrap_err().to_string(), why);
             assert_eq!(n, 1, "{why}");
         }
@@ -853,6 +910,7 @@ mod tests {
                 kind: JobKind::Ask {
                     index: 0,
                     session_id: None,
+                    haiku: false,
                 },
                 result: Ok(text),
             })

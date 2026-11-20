@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::card_header;
 use super::input;
@@ -122,19 +122,10 @@ pub fn render_answer(
     let Some(q) = qc.questions.get(draft.question) else {
         return;
     };
-    let panel = super::input::panel(area, (120, (u32::from(area.height) * 92 / 100) as u16));
-    frame.render_widget(Clear, panel);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.acc))
-        .title(format!(
-            " Question {} of {} ",
-            draft.question + 1,
-            qc.questions.len()
-        ))
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    let inner = block.inner(panel).inner(Margin::new(1, 0));
-    frame.render_widget(block, panel);
+    let panel = super::window::place(area, super::window::Height::Tall);
+    let title = format!("Question {} of {}", draft.question + 1, qc.questions.len());
+    let keys = [("Ctrl-S", "submit"), ("Enter", "new line")];
+    let inner = super::window::draw(frame, panel, &title, &keys, t);
     let width = inner.width.max(10) as usize;
     let mut question = Vec::new();
     question_text(&mut question, q.scope, &q.question, width, t);
@@ -158,16 +149,20 @@ pub fn render_answer(
         );
     }
     frame.render_widget(Paragraph::new(shown), piece);
-    frame.render_widget(Paragraph::new(question), ask.inner(Margin::new(0, 0)));
-    input::render_sized(
-        frame,
-        answer,
-        &draft.input,
-        "Your answer",
-        "submit",
-        t,
-        (answer.width, answer.height),
+    frame.render_widget(Paragraph::new(question), ask);
+    // The answer box: a rule with its name, then the typed text.
+    let label = " Your answer ";
+    let rule = format!(
+        "──{label}{}",
+        "─".repeat(usize::from(answer.width).saturating_sub(label.len() + 2))
     );
+    let [rule_row, typed] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(answer);
+    frame.render_widget(
+        Paragraph::new(Line::styled(rule, Style::new().fg(t.dim))),
+        rule_row,
+    );
+    input::draw_text(frame, typed, &draft.input, None, t);
 }
 
 /// What question `i` is about: its piece of the diff, or the piece from the
@@ -416,21 +411,8 @@ pub fn render_code(
     let Some(q) = qc.questions.get(question) else {
         return;
     };
-    let panel = super::input::panel(
-        area,
-        (
-            (u32::from(area.width) * 9 / 10) as u16,
-            (u32::from(area.height) * 9 / 10) as u16,
-        ),
-    );
-    frame.render_widget(Clear, panel);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.acc))
-        .title(format!(" {} ", q.code_ref.cite()))
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+    let panel = super::window::place(area, super::window::Height::Tall);
+    let inner = super::window::draw(frame, panel, &q.code_ref.cite(), &[], t);
     let lines = match qc.code.get(&question) {
         Some(Code::Loaded(s)) => code_lines(s, None, t, hl),
         Some(Code::Failed(e)) => vec![Line::styled(e.clone(), Style::new().fg(t.del))],

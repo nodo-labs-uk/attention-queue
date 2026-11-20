@@ -11,6 +11,7 @@ mod keys;
 mod menu;
 mod new_session;
 mod permission;
+mod pr;
 mod question;
 mod quiz;
 mod reader;
@@ -19,6 +20,7 @@ mod shell;
 mod step;
 mod tour;
 mod tree;
+pub mod window;
 mod workspace;
 
 use ratatui::Frame;
@@ -127,10 +129,14 @@ fn body_area(app: &App, (width, height): (u16, u16)) -> Rect {
     Rect::new(0, 1, width, height.saturating_sub(1 + keys))
 }
 
-/// Where a tmux popup over aq goes, and its colours: the box `W` and `?`
-/// open, at its full height, so every box over aq looks the same.
+/// Where a tmux popup over aq goes, and its colours: those of aq's own
+/// tall windows, so every window over aq looks the same.
 pub fn popup_look(app: &App) -> crate::agents::tmux::PopupLook {
-    let area = crate::ask::panel(body_area(app, app.screen.unwrap_or((80, 24))));
+    let body = body_area(app, app.screen.unwrap_or((80, 24)));
+    look_at(app, window::place(body, window::Height::Tall))
+}
+
+fn look_at(app: &App, area: Rect) -> crate::agents::tmux::PopupLook {
     let t = app.theme();
     let hex = |c: Color| match c {
         Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
@@ -141,9 +147,11 @@ pub fn popup_look(app: &App) -> crate::agents::tmux::PopupLook {
         y: area.y,
         width: area.width,
         height: area.height,
-        border: hex(t.line),
+        border: hex(t.acc),
         bg: hex(t.panel),
         fg: hex(t.fg),
+        key: hex(t.key),
+        dim: hex(t.dim),
     }
 }
 
@@ -307,11 +315,15 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
                 more,
                 ghost,
                 t,
-                (100, 12),
+                window::Height::Short,
             );
         }
         Some(Overlay::NewSession(d)) => new_session::render(frame, body, d, t),
         Some(Overlay::Workspace(d)) => workspace::render(frame, body, d, &app.config.workspaces, t),
+        Some(Overlay::PrFinder(f)) => pr::render(frame, body, f, t),
+        Some(Overlay::PrSubmit { card, event, input }) => {
+            pr::render_submit(frame, body, app, *card, *event, input, t)
+        }
         None => {}
     }
     if let Some(step) = app.practice_step() {
@@ -360,9 +372,9 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
             Style::new().fg(t.dim),
         ),
     ])];
-    if app.held.contains_key(&card.id) {
+    if let Some((agent, _)) = app.held.get(&card.id) {
         lines.push(Line::styled(
-            crate::app::QUEUED_STATUS,
+            app.queued_status(agent),
             Style::new().fg(t.hi).add_modifier(Modifier::BOLD),
         ));
     }
@@ -399,17 +411,20 @@ pub(crate) mod tests {
     use ratatui::backend::TestBackend;
 
     #[test]
-    fn popups_take_the_place_and_colours_of_the_ask_box() {
+    fn popups_take_the_place_and_colours_of_a_tall_window() {
         let mut a = app();
         a.screen = Some((200, 50));
         let look = super::popup_look(&a);
         let keys = super::keys::height(&a, 200, 50);
-        let panel = crate::ask::panel(ratatui::layout::Rect::new(0, 1, 200, 50 - 1 - keys));
+        let panel = super::window::place(
+            ratatui::layout::Rect::new(0, 1, 200, 50 - 1 - keys),
+            super::window::Height::Tall,
+        );
         assert_eq!(
             (look.x, look.y, look.width, look.height),
             (panel.x, panel.y, panel.width, panel.height)
         );
-        assert_eq!(look.width, 100, "as wide as W's box gets");
+        assert_eq!(look.width, 100, "as wide as every window");
         assert!(look.border.starts_with('#') && look.bg.starts_with('#'));
     }
 
@@ -524,13 +539,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_card_lists_the_keys_that_work_on_any_card() {
+        let kinds = [
+            CardKind::Review(ReviewCard::default()),
+            CardKind::Permission(PermissionCard::default()),
+        ];
+        for kind in kinds {
+            let mut a = app();
+            a.config.show_keys = true;
+            a.queue.push(card(1, "/a", kind, 0));
+            let screen = render(&a, 200, 40);
+            for hint in ["? ask", "W where are we", "T sum up last turn", "M mode"] {
+                assert!(screen.contains(hint), "{hint} missing:\n{screen}");
+            }
+            assert!(!screen.contains("stashed"), "nothing is stashed");
+        }
+    }
+
+    #[test]
     fn long_status_leaves_keys_visible() {
         let mut a = app();
         a.config.show_keys = true;
         a.update(crate::app::Msg::AgentsFailed(
             "running tmux list-panes: No such file or directory (os error 2)".into(),
         ));
-        let screen = render(&a, 60, 3);
+        let screen = render(&a, 80, 3);
         let last = screen.lines().last().unwrap();
         assert!(last.contains("Q quit"), "{last}");
         assert!(last.contains("Could not list agents"), "{last}");

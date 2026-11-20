@@ -13,7 +13,7 @@ The tab shows the mode when it is not review. A new mode applies from the sessio
 | Quiz | When a session finishes, you explain pieces of its diff in your own words on a [quiz card](cards/quiz.md). |
 | Vibe | Nothing is checked. A finished turn makes no card. |
 
-In every mode, permission prompts, questions, option menus and messages between sessions still come to the queue.
+In every mode, permission prompts, questions, option menus, messages between sessions and [flagged actions](cards/flagged.md) still come to the queue.
 
 ## Choosing a mode
 

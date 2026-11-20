@@ -354,7 +354,7 @@ impl App {
     /// `y` closes the card; `u` sends `undo` and closes it once that lands.
     fn finish_shell(&mut self, id: u64, undo: Option<(AgentId, String)>) -> Vec<Effect> {
         if self.sending.contains_key(&id) {
-            self.set_status("Still sending");
+            self.take_back(id);
             return Vec::new();
         }
         let Some((agent, text)) = undo else {

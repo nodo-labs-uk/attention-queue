@@ -22,6 +22,8 @@ use crate::agents::{AgentConn, Checkouts};
 use crate::app::{App, Effect, MouseKind, Msg, ReviewRequest};
 use crate::config::{Config, Paths};
 use crate::edit::apply_edit;
+use crate::flag::candidate::{Action, candidates, is_flag_tool};
+use crate::flag::facts::{Cli, Me};
 use crate::git;
 use crate::highlight::Highlighter;
 use crate::ipc::{self, HookReply, HookRequest};
@@ -48,6 +50,10 @@ const SAVE_EVERY: Duration = Duration::from_secs(1);
 const QUIT_WAIT: Duration = Duration::from_secs(3);
 /// Files larger than this are not read for a step card.
 const READ_MAX: u64 = 10 * 1024 * 1024;
+
+/// The user's GitHub login and orgs, once `gh` has given them, for the run
+/// of aq.
+static ME: std::sync::Mutex<Option<Me>> = std::sync::Mutex::new(None);
 
 pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     // Loaded before raw mode: bad theme files warn on stderr.
@@ -145,8 +151,9 @@ impl Workers {
 /// Hooks waiting for an answer, by request id.
 type Waiting = HashMap<u64, oneshot::Sender<HookReply>>;
 
-/// Requests the loader is still reading files for, and whether each is an
-/// edit (rather than a permission request).
+/// Requests the loader is still reading files for, and whether each must be
+/// refused if aq stops (an edit or a candidate) rather than left to the
+/// window (a permission request).
 type Loading = HashMap<u64, bool>;
 
 async fn event_loop(
@@ -284,14 +291,15 @@ fn repaint(terminal: &mut DefaultTerminal, buf: &ratatui::buffer::Buffer) -> std
 }
 
 /// aq cannot go on: every hook gets "no decision" (a permission prompt
-/// stays in the window), except step-mode edits, whose hooks are let go
-/// unanswered so the edit is refused rather than let through.
+/// stays in the window), except step-mode edits and candidates, whose hooks
+/// are let go unanswered so the call is refused rather than let through.
 fn abandon_hooks(app: &App, waiting: &mut Waiting, loading: &Loading) {
     for (req_id, reply) in waiting.drain() {
         let edit = loading.get(&req_id).copied().unwrap_or_else(|| {
-            app.queue.iter().any(|c| {
-                matches!(&c.kind, crate::model::CardKind::Step(s) if s.req_ids.contains(&req_id))
-            })
+            app.holds_flag(req_id)
+                || app.queue.iter().any(|c| {
+                    matches!(&c.kind, crate::model::CardKind::Step(s) if s.req_ids.contains(&req_id))
+                })
         });
         if !edit {
             let _ = reply.send(HookReply::NoDecision);
@@ -310,6 +318,30 @@ fn on_ipc(
     loading: &mut Loading,
 ) -> Result<(), WorkerGone> {
     let (req_id, reply) = (ev.req_id, ev.reply);
+    // A candidate is checked on its own thread in any mode, never on the
+    // step path.
+    if let HookRequest::PreTool {
+        tool_name,
+        tool_input,
+        ..
+    } = &ev.req
+        && is_flag_tool(tool_name)
+    {
+        let actions = candidates(tool_name, tool_input);
+        // The hook only sends candidates; anything else carries on.
+        if actions.is_empty() {
+            let _ = reply.send(HookReply::NoDecision);
+            return Ok(());
+        }
+        waiting.insert(req_id, reply);
+        loading.insert(req_id, true);
+        return workers.load(Load::Flag {
+            req_id,
+            req: ev.req,
+            actions,
+            at: std::time::SystemTime::now(),
+        });
+    }
     match ev.req {
         HookRequest::PostTool {
             session_id,
@@ -442,7 +474,11 @@ fn on_msg(
     loading: &mut Loading,
 ) -> Result<(), WorkerGone> {
     let loaded = match &msg {
-        Msg::PreTool { req_id, .. } | Msg::Ipc { req_id, .. } => Some(*req_id),
+        Msg::PreTool { req_id, .. } | Msg::Ipc { req_id, .. } | Msg::Flag { req_id, .. } => {
+            Some(*req_id)
+        }
+        // Haiku's answer for a grey call, which waited in `loading`.
+        Msg::Llm(ev) => app.flag_job_req(ev.card),
         _ => None,
     };
     // Before: a decision sees which hooks still wait.
@@ -460,8 +496,12 @@ fn on_msg(
     }
     apply(app, msg, workers, waiting)?;
     // After: a hook that left while its file was read is reported now that
-    // its card exists, so the card keeps its decision for the retry.
-    if let Some(req_id) = loaded {
+    // its card exists, so the card keeps its decision for the retry. A grey
+    // call has no card until Haiku answers, so it stays until then and is
+    // refused if aq stops.
+    if let Some(req_id) = loaded
+        && !app.awaits_haiku(req_id)
+    {
         loading.remove(&req_id);
     }
     sweep(app, workers, waiting, loading)
@@ -524,10 +564,10 @@ fn apply(
             Effect::ListDirs { typed, base } => Job::ListDirs(typed, base),
             Effect::FindRepos { root } => Job::FindRepos(root),
             Effect::OpenWorkspace {
-                session,
+                group,
                 dirs,
                 system,
-            } => Job::OpenWorkspace(session, dirs, system),
+            } => Job::OpenWorkspace(group, dirs, system),
             Effect::Copy(sel) => {
                 let text = workers
                     .screen
@@ -570,6 +610,39 @@ fn apply(
             },
             Effect::ReadCode(req) => Job::ReadCode(req),
             Effect::Llm(job) => Job::Llm(job),
+            Effect::FlagFacts { card, cwd, action } => Job::FlagFacts { card, cwd, action },
+            Effect::LogFlag(entry) => Job::LogFlag(entry),
+            Effect::ListPrs { dirs } => Job::ListPrs(dirs),
+            Effect::OpenPr {
+                dir,
+                repo,
+                number,
+                known,
+            } => Job::OpenPr {
+                dir,
+                repo,
+                number,
+                known,
+            },
+            Effect::RemovePrWorktree { main, dir } => Job::RemovePrWorktree { main, dir },
+            Effect::PostReview {
+                dir,
+                repo,
+                number,
+                head_sha,
+                body,
+                card,
+                earlier,
+            } => Job::PostReview {
+                dir,
+                repo,
+                number,
+                head_sha,
+                body,
+                card,
+                earlier,
+            },
+            Effect::RefreshPr { card, info, main } => Job::RefreshPr { card, info, main },
             Effect::Reply { req_id, decision } => {
                 // The hook may have gone; then nobody is listening.
                 if let Some(reply) = waiting.remove(&req_id) {
@@ -602,6 +675,14 @@ enum Load {
     Permission {
         req_id: u64,
         req: HookRequest,
+        at: std::time::SystemTime,
+    },
+    /// Check a candidate's `actions`. Done on a thread of its own, so a slow
+    /// `gh` never holds up an edit.
+    Flag {
+        req_id: u64,
+        req: HookRequest,
+        actions: Vec<Action>,
         at: std::time::SystemTime,
     },
 }
@@ -638,6 +719,29 @@ fn spawn_loader(tx: UnboundedSender<Msg>) -> std::sync::mpsc::Sender<Load> {
                         at,
                         now: std::time::Instant::now(),
                     }
+                }
+                Load::Flag {
+                    req_id,
+                    req,
+                    actions,
+                    at,
+                } => {
+                    let HookRequest::PreTool { cwd, .. } = &req else {
+                        continue;
+                    };
+                    let checkout = checkouts.of(Path::new(cwd));
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let verdict = check_flag(&req, actions);
+                        let _ = tx.send(Msg::Flag {
+                            req_id,
+                            req,
+                            checkout,
+                            verdict,
+                            at,
+                        });
+                    });
+                    continue;
                 }
             };
             if tx.send(msg).is_err() {
@@ -702,6 +806,62 @@ enum Job {
     ReadCode(CodeRequest),
     /// Started on its own thread: it can take minutes.
     Llm(LlmJob),
+    /// Started on its own thread: `gh` can take a while.
+    FlagFacts {
+        card: u64,
+        cwd: PathBuf,
+        action: Action,
+    },
+    LogFlag(serde_json::Value),
+    /// Started on its own thread: `gh` can take a while.
+    ListPrs(Vec<PathBuf>),
+    /// Started on its own thread: a checkout can take minutes.
+    OpenPr {
+        dir: PathBuf,
+        repo: Option<String>,
+        number: u64,
+        known: Vec<PathBuf>,
+    },
+    /// Started on its own thread: `git status` reads the whole worktree.
+    RemovePrWorktree {
+        main: PathBuf,
+        dir: PathBuf,
+    },
+    /// Started on its own thread: `gh` can take a while.
+    PostReview {
+        dir: PathBuf,
+        repo: String,
+        number: u64,
+        head_sha: String,
+        body: serde_json::Value,
+        card: u64,
+        earlier: Option<crate::pr::app::Uncertain>,
+    },
+    /// Started on its own thread: a checkout can take minutes.
+    RefreshPr {
+        card: u64,
+        info: crate::pr::PrInfo,
+        main: PathBuf,
+    },
+}
+
+/// Checks a candidate's actions and logs the decision. A failed write to the
+/// log is ignored: it must never hold up the decision.
+fn check_flag(req: &HookRequest, actions: Vec<Action>) -> crate::flag::Verdict {
+    let HookRequest::PreTool {
+        cwd,
+        tool_name,
+        tool_input,
+        ..
+    } = req
+    else {
+        unreachable!("only a PreTool request is a candidate")
+    };
+    let verdict = crate::flag::check(actions, Path::new(cwd), &ME, &Cli);
+    let entry = crate::flag::log::entry(tool_name, tool_input, &verdict.decision);
+    let log = crate::flag::log::log_path(&crate::config::paths().state_dir);
+    let _ = crate::flag::log::append(&log, &entry);
+    verdict
 }
 
 /// The fields of `HookRequest::PostTool`.
@@ -830,10 +990,10 @@ fn spawn_effect_worker(
                         Msg::EffectFailed(format!("Could not reopen {}", failed.join(", ")))
                     })
                 }
-                Job::OpenWorkspace(session, dirs, system) => {
+                Job::OpenWorkspace(group, dirs, system) => {
                     let mut failed = Vec::new();
                     for dir in dirs {
-                        match crate::agents::tmux::new_claude_in(&session, &dir, &system) {
+                        match crate::agents::tmux::new_claude_in(&group, &dir, &system) {
                             Ok(pane) => watch_trust(pane, dir, tx.clone()),
                             Err(e) => failed.push(format!("{}: {e:#}", dir.display())),
                         }
@@ -929,6 +1089,130 @@ fn spawn_effect_worker(
                     });
                     None
                 }
+                Job::FlagFacts { card, cwd, action } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::flag::me(&ME, &Cli, &cwd)
+                            .map(|me| (crate::flag::facts::gather(&action, &cwd, &me, &Cli), me))
+                            .map_err(|e| format!("Could not look up your GitHub login: {e:#}"));
+                        let _ = tx.send(Msg::FlagFacts { card, result });
+                    });
+                    None
+                }
+                Job::ListPrs(dirs) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let result =
+                            crate::flag::me(&ME, &Cli, dirs.first().map_or(Path::new("."), |d| d))
+                                .map_err(|e| format!("Could not look up your GitHub login: {e:#}"))
+                                .and_then(|me| {
+                                    crate::pr::list_all(&Cli, &dirs, &me)
+                                        .map_err(|e| format!("{e:#}"))
+                                });
+                        let _ = tx.send(Msg::PrList(result));
+                    });
+                    None
+                }
+                Job::OpenPr {
+                    dir,
+                    repo,
+                    number,
+                    known,
+                } => {
+                    let tx = tx.clone();
+                    let state_dir = paths.state_dir.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::flag::me(&ME, &Cli, &dir)
+                            .and_then(|me| {
+                                crate::pr::open(
+                                    &Cli,
+                                    &dir,
+                                    repo.as_deref(),
+                                    number,
+                                    &known,
+                                    &me,
+                                    &state_dir,
+                                )
+                            })
+                            .map_err(|e| format!("Could not open PR #{number}: {e:#}"));
+                        let _ = tx.send(Msg::PrOpened {
+                            asked: (repo, number),
+                            result,
+                        });
+                    });
+                    None
+                }
+                Job::RemovePrWorktree { main, dir } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = crate::pr::checkout::remove(&Cli, &main, &dir) {
+                            let _ =
+                                tx.send(Msg::EffectFailed(format!("The worktree is kept: {e:#}")));
+                        }
+                    });
+                    None
+                }
+                Job::PostReview {
+                    dir,
+                    repo,
+                    number,
+                    head_sha,
+                    body,
+                    card,
+                    earlier,
+                } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        use crate::pr::PostError;
+                        let started = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs());
+                        let result = match earlier {
+                            None => crate::pr::post_review(
+                                &Cli, &dir, &repo, number, &head_sha, &body, None, started,
+                            ),
+                            Some(earlier) => match crate::flag::me(&ME, &Cli, &dir) {
+                                Ok(me) => crate::pr::post_review(
+                                    &Cli,
+                                    &dir,
+                                    &repo,
+                                    number,
+                                    &head_sha,
+                                    &body,
+                                    Some(crate::pr::Earlier {
+                                        login: &me.login,
+                                        since: earlier.started,
+                                        heads: &earlier.heads,
+                                    }),
+                                    started,
+                                ),
+                                Err(e) => Err(PostError::NotPosted(format!(
+                                    "Could not look up your GitHub login: {e:#}"
+                                ))),
+                            },
+                        };
+                        let _ = tx.send(Msg::ReviewPosted { card, result });
+                    });
+                    None
+                }
+                Job::RefreshPr { card, info, main } => {
+                    let tx = tx.clone();
+                    let state_dir = paths.state_dir.clone();
+                    std::thread::spawn(move || {
+                        let number = info.number;
+                        let result = crate::flag::me(&ME, &Cli, &main)
+                            .and_then(|me| crate::pr::refresh(&Cli, &info, &main, &me, &state_dir))
+                            .map_err(|e| format!("Could not refresh PR #{number}: {e:#}"));
+                        let _ = tx.send(Msg::PrRefreshed { card, result });
+                    });
+                    None
+                }
+                // A failed write is ignored, as when the runtime logs.
+                Job::LogFlag(entry) => {
+                    let log = crate::flag::log::log_path(&paths.state_dir);
+                    let _ = crate::flag::log::append(&log, &entry);
+                    None
+                }
                 Job::Snapshot(req) => Some(take_snapshot(req)),
                 Job::GoTo(pane) => crate::permission::go_to_window(&pane, &[])
                     .err()
@@ -1010,10 +1294,17 @@ fn spawn_effect_worker(
 
 /// Diff from `from` (or the branch base) to a fresh snapshot: the from
 /// tree, the snapshot, and the files.
-fn diff_since(c: &Checkout, from: Option<&str>) -> Result<(String, String, Vec<git::FileDiff>)> {
-    let from = match from {
-        Some(t) => t.to_string(),
-        None => git::base_tree(c)?,
+/// With a `base_ref` (a PR's base branch) the first round starts at its merge
+/// base with HEAD instead of the default branch.
+fn diff_since(
+    c: &Checkout,
+    from: Option<&str>,
+    base_ref: Option<&str>,
+) -> Result<(String, String, Vec<git::FileDiff>)> {
+    let from = match (from, base_ref) {
+        (Some(t), _) => t.to_string(),
+        (None, Some(b)) => git::merge_base_tree(c, b)?,
+        (None, None) => git::base_tree(c)?,
     };
     let to = git::snapshot_tree(c)?;
     let files = git::diff_trees(c, &from, &to)?;
@@ -1023,7 +1314,7 @@ fn diff_since(c: &Checkout, from: Option<&str>) -> Result<(String, String, Vec<g
 /// Diff from the request's tree (or the branch base) to a fresh snapshot.
 fn compute_review(req: ReviewRequest) -> Msg {
     let c = &req.checkout;
-    match diff_since(c, req.from_tree.as_deref()) {
+    match diff_since(c, req.from_tree.as_deref(), req.base_ref.as_deref()) {
         Ok((from_tree, to_tree, files)) => Msg::ReviewComputed {
             req,
             from_tree,
@@ -1031,16 +1322,16 @@ fn compute_review(req: ReviewRequest) -> Msg {
             files,
             at: std::time::SystemTime::now(),
         },
-        Err(e) => Msg::EffectFailed(format!(
-            "Could not diff {}: {e:#}",
-            crate::app::project_name(c)
-        )),
+        Err(e) => {
+            let error = format!("Could not diff {}: {e:#}", crate::app::project_name(c));
+            Msg::ReviewFailed { req, error }
+        }
     }
 }
 
 /// The diff a quiz is about.
 fn compute_quiz(checkout: Checkout, agent: AgentId, from_tree: Option<String>) -> Msg {
-    match diff_since(&checkout, from_tree.as_deref()) {
+    match diff_since(&checkout, from_tree.as_deref(), None) {
         Ok((from_tree, to_tree, files)) => Msg::QuizDiff {
             checkout,
             agent,
@@ -1650,6 +1941,192 @@ mod tests {
         assert!(matches!(msg, Msg::PreTool { req_id: 1, .. }), "{msg:?}");
     }
 
+    fn bash_req(cwd: &str, command: &str) -> HookRequest {
+        HookRequest::PreTool {
+            session_id: "s1".into(),
+            transcript_path: String::new(),
+            cwd: cwd.into(),
+            tool_name: "Bash".into(),
+            tool_use_id: "t1".into(),
+            tool_input: serde_json::json!({ "command": command }),
+            pane: None,
+        }
+    }
+
+    fn flag_msg(req_id: u64, decision: crate::flag::rules::Decision) -> Msg {
+        Msg::Flag {
+            req_id,
+            req: bash_req("/w/step", "git push"),
+            checkout: None,
+            verdict: crate::flag::Verdict {
+                actions: Vec::new(),
+                decision,
+                facts: Vec::new(),
+                conflicts: Vec::new(),
+                me: None,
+            },
+            at: std::time::SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn a_bash_candidate_never_takes_the_step_path() {
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
+        let (workers, _jobs, loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        let (ev, mut hook) = ipc_event(1, bash_req("/w/step", "git push origin main"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(hook.try_recv().is_err(), "no answer yet");
+        assert!(waiting.contains_key(&1) && loading.contains_key(&1));
+        match loads.try_recv() {
+            Ok(Load::Flag {
+                req_id: 1, actions, ..
+            }) => assert_eq!(actions.len(), 1),
+            Ok(Load::Edit { .. }) => panic!("took the step path"),
+            _ => panic!("nothing handed over for the flag"),
+        }
+    }
+
+    #[test]
+    fn a_flag_tool_call_with_no_candidate_is_answered_at_once() {
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        app.config.set_mode(&Checkout("/w/step".into()), Mode::Step);
+        let (workers, _jobs, loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        let (ev, mut hook) = ipc_event(1, bash_req("/w/step", "echo 'git push'"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        assert_eq!(hook.try_recv(), Ok(HookReply::NoDecision));
+        assert!(waiting.is_empty() && loading.is_empty());
+        assert!(loads.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_cleared_flag_gets_no_decision() {
+        use crate::flag::rules::Decision;
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        let (workers, _jobs, _loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        let (ev, mut hook) = ipc_event(1, bash_req("/w", "git push origin fix"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let msg = flag_msg(1, Decision::Cleared);
+        on_msg(&mut app, msg, &workers, &mut waiting, &mut loading).unwrap();
+        assert_eq!(hook.try_recv(), Ok(HookReply::NoDecision));
+        assert!(waiting.is_empty() && loading.is_empty());
+    }
+
+    #[test]
+    fn waiting_flag_hooks_are_let_go_unanswered_when_aq_stops() {
+        use crate::flag::FlagKind;
+        use crate::flag::rules::Decision;
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        let (workers, _jobs, _loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        // One still being checked, one checked and flagged.
+        let (ev, mut checking) = ipc_event(1, bash_req("/w", "git push origin fix"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let (ev, mut flagged) = ipc_event(2, bash_req("/w", "git push --force"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let force = Decision::Flagged {
+            kind: FlagKind::HighStakes,
+            label: "FORCE PUSH",
+        };
+        on_msg(
+            &mut app,
+            flag_msg(2, force),
+            &workers,
+            &mut waiting,
+            &mut loading,
+        )
+        .unwrap();
+        assert!(flagged.try_recv().is_err(), "held");
+        abandon_hooks(&app, &mut waiting, &loading);
+        // The hook then refuses with `FLAG_WAITING_REASON`.
+        let closed = Err(oneshot::error::TryRecvError::Closed);
+        assert_eq!(checking.try_recv(), closed);
+        assert_eq!(flagged.try_recv(), closed);
+    }
+
+    #[test]
+    fn a_held_flag_leaves_loading_and_is_let_go_unanswered_when_aq_stops() {
+        use crate::flag::FlagKind;
+        use crate::flag::rules::Decision;
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        let (workers, _jobs, _loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        let (ev, mut flagged) = ipc_event(1, bash_req("/w", "gh pr merge 5"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let (ev, mut grey) = ipc_event(2, bash_req("/w", "git push origin fix"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let someone = Decision::Flagged {
+            kind: FlagKind::SomeoneElse,
+            label: "SOMEONE ELSE",
+        };
+        on_msg(
+            &mut app,
+            flag_msg(1, someone),
+            &workers,
+            &mut waiting,
+            &mut loading,
+        )
+        .unwrap();
+        on_msg(
+            &mut app,
+            flag_msg(2, Decision::Grey),
+            &workers,
+            &mut waiting,
+            &mut loading,
+        )
+        .unwrap();
+        // The held card is the record now; the grey call waits for Haiku.
+        assert!(!loading.contains_key(&1) && loading.contains_key(&2));
+        assert!(app.holds_flag(1) && app.holds_flag(2));
+        let card = app.pending_flags.keys().copied().next().unwrap();
+        let msg = Msg::Llm(crate::llm::LlmEvent {
+            card,
+            kind: crate::llm::JobKind::Flag { session_id: None },
+            result: Err("took longer than 30 s".into()),
+        });
+        on_msg(&mut app, msg, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(loading.is_empty() && app.holds_flag(2));
+        assert!(
+            flagged.try_recv().is_err() && grey.try_recv().is_err(),
+            "held"
+        );
+        abandon_hooks(&app, &mut waiting, &loading);
+        let closed = Err(oneshot::error::TryRecvError::Closed);
+        assert_eq!(flagged.try_recv(), closed);
+        assert_eq!(grey.try_recv(), closed);
+    }
+
+    #[test]
+    fn a_held_flag_whose_hook_goes_is_reported() {
+        use crate::flag::FlagKind;
+        use crate::flag::rules::Decision;
+        let mut app = App::new(Config::default(), crate::theme::builtin_themes());
+        let (workers, _jobs, _loads) = wedged();
+        let (mut waiting, mut loading) = (Waiting::new(), Loading::new());
+        let (ev, hook) = ipc_event(1, bash_req("/w", "git push --force"));
+        on_ipc(&mut app, ev, &workers, &mut waiting, &mut loading).unwrap();
+        let force = Decision::Flagged {
+            kind: FlagKind::HighStakes,
+            label: "FORCE PUSH",
+        };
+        on_msg(
+            &mut app,
+            flag_msg(1, force),
+            &workers,
+            &mut waiting,
+            &mut loading,
+        )
+        .unwrap();
+        drop(hook);
+        let msg = Msg::Tick(std::time::Instant::now());
+        on_msg(&mut app, msg, &workers, &mut waiting, &mut loading).unwrap();
+        assert!(waiting.is_empty());
+        assert!(app.on_stale(), "the card says it was answered elsewhere");
+    }
+
     #[test]
     fn a_dead_worker_is_fatal_and_permission_hooks_get_no_decision() {
         use crossterm::event::{KeyCode, KeyEvent};
@@ -2039,6 +2516,7 @@ mod tests {
             from_tree: None,
             full_branch: false,
             card: None,
+            base_ref: None,
         };
         let Msg::ReviewComputed { files, to_tree, .. } = compute_review(req) else {
             panic!("expected a diff");
@@ -2046,5 +2524,58 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].hunks[0].lines.len(), 2);
         assert_eq!(to_tree.len(), 40);
+    }
+
+    #[test]
+    fn compute_review_with_a_base_ref_diffs_from_its_merge_base() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let commit = |name: &str| {
+            std::fs::write(dir.path().join(name), "x\n").unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", name]);
+        };
+        git(&["init", "-q", "-b", "main"]);
+        commit("init.txt");
+        git(&["checkout", "-qb", "base2"]);
+        commit("base2.txt");
+        git(&["checkout", "-qb", "feat"]);
+        commit("feat.txt");
+        let diff_paths = |base_ref: Option<&str>| {
+            let req = ReviewRequest {
+                checkout: crate::model::Checkout::new(dir.path()),
+                agent: AgentId {
+                    pane: "%1".into(),
+                    claude_pid: 1,
+                },
+                from_tree: None,
+                full_branch: false,
+                card: None,
+                base_ref: base_ref.map(str::to_string),
+            };
+            let Msg::ReviewComputed { files, .. } = compute_review(req) else {
+                panic!("expected a diff");
+            };
+            files.len()
+        };
+        assert_eq!(diff_paths(Some("base2")), 1);
+        assert_eq!(diff_paths(None), 2);
     }
 }

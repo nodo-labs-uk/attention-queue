@@ -2,46 +2,43 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::input;
-use crate::ask::{AskState, INSET, LineKind, panel};
+use super::window::{self, Height};
+use crate::ask::{AskState, LineKind};
 use crate::theme::Theme;
 
 /// The questions and answers in a panel over the card, with the question
 /// being typed in a box along its bottom edge.
 pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
-    let most = panel(area);
-    // As tall as what was asked and answered, and no shorter than a few
-    // rows, so a short answer does not sit in an empty screen-high box.
-    let text_rows = ask
-        .lines(usize::from(most.width.saturating_sub(INSET)))
-        .0
-        .len();
-    let input_rows = if ask.input.is_some() { 2 } else { 0 };
-    let want = u16::try_from(text_rows + input_rows + usize::from(INSET)).unwrap_or(u16::MAX);
-    let panel = Rect {
-        height: want.clamp(most.height.min(8), most.height),
-        ..most
+    let panel = window::place(area, Height::Tall);
+    let title = if ask.card == crate::ask::NO_CARD {
+        "Ask this session"
+    } else {
+        "Ask about this card"
     };
-    frame.render_widget(Clear, panel);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.line))
-        .title(if ask.card == crate::ask::NO_CARD {
-            " Ask this session "
-        } else {
-            " Ask about this card "
-        })
-        .padding(Padding::uniform(1))
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+    let keys: &[(&str, &str)] = if ask.input.is_some() {
+        &[("Enter", "ask")]
+    } else {
+        &[]
+    };
+    let inner = window::draw(frame, panel, title, keys, t);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let (rows, _) = ask.lines(usize::from(inner.width));
-    let h = usize::from(inner.height);
+    // The question being typed takes the bottom rows, under a rule.
+    let input_rows = if ask.input.is_some() {
+        2.min(inner.height)
+    } else {
+        0
+    };
+    let text = Rect {
+        height: inner.height - input_rows,
+        ..inner
+    };
+    let (rows, _) = ask.lines(usize::from(text.width));
+    let h = usize::from(text.height);
     let scroll = ask.scroll.min(rows.len().saturating_sub(h));
     let lines: Vec<Line> = rows
         .into_iter()
@@ -57,11 +54,18 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
             Line::styled(text, style)
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), text);
     if let Some(i) = &ask.input {
-        let h = panel.height.min(3);
-        let bottom = Rect::new(panel.x, panel.bottom() - h, panel.width, h);
-        input::render(frame, bottom, i, "Your question", t);
+        let rule = Rect::new(inner.x, text.bottom(), inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "─".repeat(usize::from(inner.width)),
+                Style::new().fg(t.dim),
+            )),
+            rule,
+        );
+        let typed = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
+        input::draw_text(frame, typed, i, None, t);
     }
 }
 

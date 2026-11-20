@@ -53,15 +53,15 @@ fn note(ok: bool, text: impl Into<String>) -> HookReply {
 }
 
 impl App {
-    /// The sessions a session in `pane` can tell, its own tmux session's
-    /// first.
+    /// The sessions a session in `pane` can tell, those in its own row
+    /// (its workspace, else its tmux session) first.
     fn tellable(&self, from: &Agent) -> Vec<&Agent> {
         let mut others: Vec<&Agent> = self
             .agents_in_order()
             .into_iter()
             .filter(|a| a.id != from.id)
             .collect();
-        others.sort_by_key(|a| a.session != from.session);
+        others.sort_by_key(|a| a.row() != from.row());
         others
     }
 
@@ -88,17 +88,13 @@ impl App {
         let lines: Vec<String> = others
             .iter()
             .map(|a| {
-                let place = if a.session == from.session {
-                    "same tmux session"
-                } else {
-                    "tmux session "
+                let place = match (a.row() == from.row(), a.group.is_empty()) {
+                    (true, true) => "same tmux session".to_string(),
+                    (true, false) => "same workspace".to_string(),
+                    (false, true) => format!("tmux session {}", a.session),
+                    (false, false) => format!("workspace {}", a.group),
                 };
-                let session = if a.session == from.session {
-                    String::new()
-                } else {
-                    a.session.clone()
-                };
-                format!("{}  ({place}{session})", tell_name(a))
+                format!("{}  ({place})", tell_name(a))
             })
             .collect();
         note(true, lines.join("\n"))
@@ -149,6 +145,7 @@ impl App {
                 message: QuestionCard {
                     text: text.to_string(),
                     scroll: 0,
+                    flag: Default::default(),
                 },
             }),
         });
@@ -181,7 +178,7 @@ impl App {
             for by in ways {
                 let found: Vec<&&Agent> = others
                     .iter()
-                    .filter(|a| (!same_only || a.session == me.session) && named(a, by))
+                    .filter(|a| (!same_only || a.row() == me.row()) && named(a, by))
                     .collect();
                 match found[..] {
                     [one] => return Ok(one),

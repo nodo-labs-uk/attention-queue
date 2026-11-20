@@ -6,9 +6,9 @@ When nothing is waiting, aq shows a tab for each Claude session, with the picked
 
 ## Tabs
 
-- `●` means the session is waiting for you; `○` means it is working.
+- `●` means the session is waiting for you; `○` means it is working. A session with only background jobs running counts as waiting, so messages still reach it.
 - Each tab shows the session's permission mode (auto, plan, accept edits) as its footer does, and the project's mode when it is not review.
-- Sessions in different tmux sessions get a row each, led by the tmux session's name.
+- Each [workspace](new-sessions.md#workspaces) gets a row of its own, and so does each other tmux session, led by its name.
 
 While aq's window is showing, tmux's own status line is hidden, since the tabs list the sessions. It shows on your other windows, and comes back when aq quits.
 
@@ -20,11 +20,13 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 | `Tab` | the session you last typed in, here or in its own window; `Tab` again goes back to the one before. Moving with `h` `l` does not count. |
 | `g` | go to its window |
 | `Enter` | message it: sent now, or once it is idle (`Esc` cancels) |
-| `A` | message every session in its tmux session, each once idle |
+| `a` | approve: sends "Approved, carry on." now, or once it is idle |
+| `A` | message every session in its row, each once idle |
 | `W` | ask where it is up to |
+| `T` | Haiku sums up its latest turn |
 | `?` | ask it a [side question](tools.md#side-questions) |
 | `r` | [read its last reply fast](tools.md#fast-reading) |
-| `b` | that session in a popup the size of the `?` box, with `/btw ` typed in its box for a side question; Ctrl-Q closes it, and the side-question panel in the session with it |
+| `b` | that session in a popup over aq, with `/btw ` typed in its box for a side question; Ctrl-Q closes it, and the side-question panel in the session with it |
 | `p` | ask an idle session to open a PR (`/create-pr`) and go there |
 | `m` | switch its model: `f` fable, `o` opus, `s` sonnet, `h` haiku |
 | `P` | switch its permission mode: `a` auto, `m` manual, `e` accept edits, `p` plan |

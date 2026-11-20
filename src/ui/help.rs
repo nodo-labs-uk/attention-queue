@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::theme::Theme;
 
@@ -31,6 +31,7 @@ finished turn; the card on screen stays as it is.
   ?    ask the agent a side question      Space  skip this card
                                           B      move it to the back of the queue
   W    where are we: a short summary of what is done and what is left
+  T    Haiku sums up the latest turn: what you asked, what Claude did
   N    a new Claude session in this project, in a tmux window of its own
        (with none open, in aq's folder); what you type is its first
        prompt, and Tab gives it a git worktree of its own (claude
@@ -40,14 +41,15 @@ finished turn; the card on screen stays as it is.
        whether to trust the folder, aq asks you: y trusts it, n closes it,
        and a trusts every folder waiting
   O    open a workspace: the git repos in a folder, each in a Claude
-       session of its own, all in a tmux session named after the folder.
+       session of its own, as windows here sharing a row of tabs.
        Pick the folder, untick repos you don't want, Enter opens the rest;
        aq saves the set, and O lists it next time. Repos open already in
-       that tmux session are left as they are
+       that workspace are left as they are
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
-       and, in zsh, typed in ready to run. It closes when the shell exits
-  M    next mode for this project         t    next theme
+       and, in zsh, typed in ready to run. Ctrl-Q or exit closes it
+  R    review a pull request              M    next mode for this project
+  t    next theme                         Ctrl-Q close any window or popup (Esc too)
   F1   this help                          Q    quit aq
   F2   the tour again                     F3   show or hide the keys row
 
@@ -67,6 +69,31 @@ finished turn; the card on screen stays as it is.
   f  hide or show the file list (remembered)
   e  open the file at this line in $VISUAL or $EDITOR, in a popup
 
+# PR review
+R opens a pull request as a review card: the list of open PRs, a number
+or a pasted link. aq never switches a branch in a session's folder. Your
+own PR is reviewed in the folder that has its branch, else in a worktree
+aq makes. Someone else's (a teammate's too) is checked out on its head
+commit, with no branch.
+  c  comment as on any review card   i  read the PR description
+  ?  ask Claude about the PR
+  D  close the PR review (removes a worktree aq made, if it is clean
+     and no session runs in it)
+Your PR:  s  send the comments to the session in that folder, which fixes
+  and pushes; with none there, a new session starts with them
+  a  approve: the PR review ends, and a worktree goes as with D
+Someone else's PR:
+  r  check it out again, for new commits
+  s  comment   a  approve   X  request changes
+  Each opens a summary box: Enter posts one review to GitHub, Esc cancels.
+  A comment GitHub cannot take on a line goes in the review's main text
+  with its path and lines, tagged file (GitHub's diff has the file, not
+  the lines) or top (it has not the file). If GitHub's diff could not be
+  read, every comment goes there.
+  Posting is refused if the PR moved on GitHub: press r, then check
+  where your comments sit. After a post that may have reached GitHub,
+  aq checks GitHub before it posts again.
+
 # Step card
   y  allow   n  reject with a reason   e  ask for a different change
   j/k move   H/L or tab change   za fold   zR unfold all
@@ -80,12 +107,22 @@ finished turn; the card on screen stays as it is.
   y  allow (once you have scrolled to the end)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
 
+# Flagged action card
+A risky action Claude runs (a push, a merge, a PR comment, a release) is
+held in every mode on a permission card with a band: ▌▌ SOMEONE ELSE or
+AS YOU, or ▲ MAIN BRANCH, TAG, RELEASE, FORCE PUSH, DELETE BRANCH...
+  y  allow (once you have scrolled to the end)   n  deny with a reason
+  j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
+A card whose band reads aq could not check this is held too.
+An unanswered call is refused, never allowed. The log is flags.jsonl
+in aq's state folder.
+
 # Question card
 When a session ends its turn by asking you something (to approve a
 draft, to choose between two ways), its message becomes a card.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words;
      Claude's suggestion shows in lighter text, Tab or Ctrl-F fills it in
-     a is there only when the question asks for a go-ahead
+     a is there only when it asks for a go-ahead or names its pick
   x  stash the card      g  go to the session's window   j/k scroll
   S  the stashed questions: Enter brings one back, x drops it
   r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
@@ -97,6 +134,8 @@ When Claude asks with its own menu of options, the card lists them:
   o  answer in your own words   u  back a question
   x  let the menu show in the session's window instead   g  and go there
 This needs AskUserQuestion in the PreToolUse hook's matcher.
+A question or menu that leads to a flagged action shows the same band.
+Answering never approves the action: each one is held on its own card.
 
 # Message card
 A session ran aq tell to ask another session to do something. Nothing
@@ -123,9 +162,10 @@ session is the one picked.
   Enter  message it: sent now, or once it is idle (Esc cancels); what
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in
-  A      message every session in its tmux session, each once idle
+  a      approve: sends Approved, carry on. now, or once it is idle
+  A      message every session in its row, each once idle
   r      read its last reply fast, as r on a question card
-  b      /btw: the session's own window in a popup the size of ?'s box,
+  b      /btw: the session's own window in a popup over aq,
          /btw typed in its box; ask, read the answer, Ctrl-Q closes it
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
@@ -134,6 +174,7 @@ session is the one picked.
          p plan (presses Shift+Tab in the session until it shows)
   ?  W  ask it a side question, or where it is up to; a copy of the
          session answers, so the session itself never sees it
+  T      Haiku sums up its latest turn, in the same box as W
   x      close the session's pane, after a yes (claude --resume reopens it)
   Esc Esc  stop what it is doing, as Esc in Claude Code; also drops a
          message queued for it
@@ -157,7 +198,7 @@ Ctrl-L clears it now.
 tmux's status line is hidden while aq's window shows; it comes back
 on other windows and when aq quits.";
 
-/// The help page over `area`, scrolled down by `scroll` lines.
+/// The help page in a tall window over `area`, scrolled down by `scroll` lines.
 pub fn render(frame: &mut Frame, area: Rect, scroll: u16, t: &Theme) {
     let lines: Vec<Line> = TEXT
         .lines()
@@ -169,20 +210,12 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16, t: &Theme) {
             None => Line::styled(l.to_string(), Style::new().fg(t.fg)),
         })
         .collect();
-    let block = Block::bordered()
-        .border_style(Style::new().fg(t.dim))
-        .title(Span::styled(
-            " Help ",
-            Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
-        ))
-        .padding(Padding::horizontal(1));
-    frame.render_widget(Clear, area);
+    let panel = super::window::place(area, super::window::Height::Tall);
+    let inner = super::window::draw(frame, panel, "Help", &[("j/k", "scroll")], t);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(block)
-            .style(Style::new().bg(t.bg))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0)),
-        area,
+        inner,
     );
 }

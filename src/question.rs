@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, Effect, Overlay, PromptDraft};
+use crate::flag::FlagState;
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::review::APPROVE_MESSAGE;
 use crate::ui::input::TextInput;
@@ -18,6 +19,8 @@ pub struct QuestionCard {
     pub text: String,
     /// First row on screen.
     pub scroll: usize,
+    /// Whether answering may lead to a flagged action.
+    pub flag: FlagState,
 }
 
 /// How a piece of a question's text is drawn. Claude writes Markdown, so
@@ -37,8 +40,9 @@ pub enum Kind {
 pub type Row = Vec<(Kind, String)>;
 
 impl QuestionCard {
-    /// Whether a yes answers the question: it asks for a go-ahead in its
-    /// last lines. "How long did it take?" does not, and has no approve.
+    /// Whether a yes answers the question: it asks for a go-ahead, or
+    /// names its own pick, in its last lines. "How long did it take?"
+    /// does not, and has no approve.
     pub fn approvable(&self) -> bool {
         spoken(&self.text)
             .iter()
@@ -281,10 +285,19 @@ fn is_asking(line: &str) -> bool {
     line.contains('?') || GO_AHEAD.iter().chain(&OPEN).any(|w| has_words(&line, w))
 }
 
+/// Words that name the session's own pick: a yes means "go with it".
+const PICK: [&str; 5] = [
+    "my pick",
+    "i'd pick",
+    "i'd go with",
+    "i recommend",
+    "recommended",
+];
+
 /// Whether a yes answers `line`.
 fn wants_go_ahead(line: &str) -> bool {
     let line = line.to_lowercase();
-    GO_AHEAD.iter().any(|w| has_words(&line, w))
+    GO_AHEAD.iter().chain(&PICK).any(|w| has_words(&line, w))
 }
 
 /// Whether `words` is in `line` as whole words: "confirm" asks, but
@@ -306,14 +319,22 @@ impl App {
         checkout: Checkout,
         text: String,
         at: SystemTime,
-    ) {
+    ) -> Vec<Effect> {
         // The session has moved on, or has gone, since it was read.
-        if !self.agent(&agent).is_some_and(|a| a.waiting) {
-            return;
-        }
+        let Some(session_id) = self
+            .agent(&agent)
+            .filter(|a| a.waiting)
+            .map(|a| a.session_id.clone())
+        else {
+            return Vec::new();
+        };
         self.drop_questions(true, |a| *a == agent);
-        if !asks(&text) {
-            return;
+        // A message of yours already waits for this session. It answers the
+        // question the moment it is sent, so a card would only flash up.
+        let answered =
+            self.prompts.contains_key(&agent) || self.held.values().any(|(a, _)| *a == agent);
+        if answered || !asks(&text) {
+            return Vec::new();
         }
         self.next_card_id += 1;
         self.queue.push(Card {
@@ -324,8 +345,13 @@ impl App {
             // moment later and says in its heading what was asked:
             // answering there answers this too.
             created: at + AFTER_ITS_REVIEW,
-            kind: CardKind::Question(QuestionCard { text, scroll: 0 }),
+            kind: CardKind::Question(QuestionCard {
+                text,
+                scroll: 0,
+                flag: FlagState::None,
+            }),
         });
+        self.check_question(self.next_card_id, Some(session_id))
     }
 
     /// What `agent` asked at the end of its turn, while that is unanswered.
@@ -498,7 +524,14 @@ mod tests {
             text: text.into(),
             at: SystemTime::now(),
         });
-        assert!(effects.is_empty());
+        // A question that mentions an action is only checked for a flag.
+        assert!(
+            effects.iter().all(|e| matches!(
+                e,
+                Effect::Llm(job) if matches!(job.kind, crate::llm::JobKind::FlagQuestion { .. })
+            )),
+            "{effects:?}"
+        );
     }
 
     fn question(a: &App) -> Option<&str> {
@@ -549,6 +582,32 @@ mod tests {
     }
 
     #[test]
+    fn a_message_already_waiting_answers_the_question_with_no_card() {
+        // Its turn is over, but aq has not seen it at its prompt yet.
+        let mut a = app();
+        a.agents[0].status = crate::agents::AgentStatus::Busy;
+        let id = a.agents[0].id.clone();
+        let ask = |a: &mut App| {
+            a.update(Msg::LastMessage {
+                agent: id.clone(),
+                checkout: Checkout("/w/api".into()),
+                text: "Draft below.\n\nApprove and I'll push.".into(),
+                at: SystemTime::now(),
+            })
+        };
+        a.prompts.insert(id.clone(), "next step".into());
+        assert!(ask(&mut a).is_empty());
+        assert!(a.queue.is_empty(), "the queued message answers it");
+        a.prompts.clear();
+        a.held.insert(9, (id.clone(), "comments".into()));
+        assert!(ask(&mut a).is_empty());
+        assert!(a.queue.is_empty(), "so does a card's held message");
+        a.held.clear();
+        ask(&mut a);
+        assert!(question(&a).is_some(), "with nothing waiting it is a card");
+    }
+
+    #[test]
     fn an_open_question_cannot_be_approved() {
         let mut a = app();
         said(
@@ -557,6 +616,26 @@ mod tests {
         );
         assert!(a.update(key('a')).is_empty());
         assert_eq!(a.queue.len(), 1, "the card stays");
+    }
+
+    #[test]
+    fn a_question_with_a_stated_pick_can_be_approved() {
+        let pick = |text: &str| super::QuestionCard {
+            text: text.into(),
+            scroll: 0,
+            flag: Default::default(),
+        };
+        assert!(
+            pick(
+                "Is it held or let through?\n\n- **Held (my pick).** A card shows.\n- **Let through.** Nothing shows."
+            )
+            .approvable()
+        );
+        assert!(pick("Which one? I'd go with B.").approvable());
+        assert!(pick("A or B? I recommend B.").approvable());
+        assert!(pick("Which way?\n\n1. Rules (recommended)\n2. Haiku").approvable());
+        // A pick alone does not make a message ask.
+        assert!(!asks("Went with B, my pick from yesterday."));
     }
 
     #[test]
@@ -750,6 +829,7 @@ mod tests {
                    ```\nlet x = a ** b;\n```\n2 * 3 and a lone ` stay\n\nApprove **this**?"
                 .into(),
             scroll: 0,
+            flag: Default::default(),
         };
         let rows = q.rows(20);
         let text = |r: &super::Row| r.iter().map(|(_, t)| t.as_str()).collect::<String>();

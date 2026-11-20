@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::card_header;
 use super::diffview::scroll_top;
@@ -255,15 +255,9 @@ fn render_file(
 
 /// `gd` results, in a box over the card.
 pub fn render_search(frame: &mut Frame, area: Rect, list: &SearchList, t: &Theme) {
-    let panel = super::input::panel(area, (90, 14));
-    frame.render_widget(Clear, panel);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.acc))
-        .title(format!(" Where {} appears ", list.ident))
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+    let panel = super::window::place(area, super::window::Height::Tall);
+    let title = format!("Where {} appears", list.ident);
+    let inner = super::window::draw(frame, panel, &title, &[("Enter", "go to it")], t);
     let buf = frame.buffer_mut();
     let dim = Style::new().fg(t.dim);
     let w = inner.width.saturating_sub(1) as usize;

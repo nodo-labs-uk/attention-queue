@@ -38,6 +38,9 @@ pub struct SavedState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenSession {
     pub tmux_session: String,
+    /// Its window's workspace tag, if aq opened it for one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     pub window: String,
     pub dir: PathBuf,
     pub session_id: String,
@@ -266,6 +269,25 @@ mod tests {
     use crate::app::{Effect, Msg, ReviewRequest};
     use crate::quiz::tests::{RIGHT, answer_free, answered, asking, file, quiz};
     use crate::review::Side;
+
+    #[test]
+    fn a_saved_session_keeps_its_workspace_and_old_files_still_read() {
+        let mut a = app();
+        let mut api = agent("%1", 1, "api", "/w/billing/api", true);
+        api.group = "billing".into();
+        a.update(Msg::Agents(vec![
+            api,
+            agent("%2", 2, "web", "/w/web", true),
+        ]));
+        let saved = a.saved_state().sessions;
+        assert_eq!(saved[0].group, "billing");
+        assert_eq!(saved[1].group, "");
+        let old: OpenSession = serde_json::from_str(
+            r#"{"tmux_session":"main","window":"api","dir":"/w/api","session_id":"s1"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.group, "", "a state file from before groups");
+    }
 
     /// aq starts again with the state `a` saved, and sees agent `%1` in
     /// `/a` already waiting. Returns the new app and what it asked for.

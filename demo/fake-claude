@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stands in for `claude -p` in the demo recordings, so they need no login
-and cost nothing: canned quiz questions, a verdict, or a side answer, picked
-by the JSON schema aq passes."""
+and cost nothing: canned quiz questions, a verdict, a permission summary or a
+side answer, picked by the JSON schema and the model aq passes."""
 import json
 import sys
 import time
@@ -57,6 +57,9 @@ ANSWER = """The limiter is now a token bucket per key, and its tests pass.
 Left: the README still describes the old 60-calls-a-minute window.
 Needs you: is a burst of 10 right for the public API?"""
 
+GIST = ("Runs the project's database migration against the dev database. "
+        "The agent added a migration for the new column and wants to apply it before testing.")
+
 args = sys.argv[1:]
 if args[:1] == ["agents"]:
     sys.exit("fake-claude: aq reads the agent list from AQ_AGENTS_JSON in the demo")
@@ -69,6 +72,8 @@ elif '"verdict"' in schema:
     # The first try gets a leading question; the next is right.
     first = "Earlier tries" not in prompt
     out = {"is_error": False, "structured_output": NOT_YET if first else VERDICT}
+elif "haiku" in args:
+    out = {"is_error": False, "result": GIST}
 else:
     out = {"is_error": False, "result": ANSWER}
 print(json.dumps(out))

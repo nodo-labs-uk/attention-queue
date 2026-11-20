@@ -7,7 +7,10 @@ aq is a terminal app for people who run several Claude Code sessions in tmux. It
 - a diff to review when a session finishes its turn,
 - an edit to allow before it is applied,
 - a permission prompt,
-- a question, or Claude's own menu of options.
+- a question, or Claude's own menu of options,
+- a risky GitHub action, such as a merge or a push to the default branch, held in every mode.
+
+`R` opens a GitHub pull request as a review card too, so you can review a teammate's PR the same way.
 
 A card that comes in while you are on another one waits its turn. It never takes the screen. When nothing is waiting, aq shows every session live, and you can message one, start a new one, or ask where it is up to.
 
@@ -32,5 +35,6 @@ aq does not start or own your sessions. Start Claude however you like, in any tm
 - Linux (aq reads `/proc` to find Claude sessions).
 - tmux, with aq and your Claude sessions running inside it.
 - Claude Code, with the aq hooks added to its settings.
+- For PR review and the checks on GitHub actions: `gh`, logged in as you.
 
 aq is open source under the MIT licence: [github.com/nodo-labs-uk/attention-queue](https://github.com/nodo-labs-uk/attention-queue).

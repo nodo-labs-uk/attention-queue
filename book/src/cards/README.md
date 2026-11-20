@@ -8,6 +8,7 @@ Each kind of card has its own keys. These keys work on every card:
 | `B` | move it to the back of the queue |
 | `?` | ask the session a [side question](../tools.md#side-questions) |
 | `W` | where are we: a short summary of what is done and what is left |
+| `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a [shell](../tools.md#shell) in a popup, in this project |
 | `N` | a [new Claude session](../new-sessions.md) in this project |
 | `O` | open a [workspace](../new-sessions.md#workspaces) |
@@ -30,9 +31,11 @@ Moving around works as in vim, on every card that scrolls:
 The kinds of card:
 
 - [Review](review.md): a finished turn's diff.
+- [PR review](pr-review.md): a pull request opened with `R`.
 - [Step](step.md): one edit, waiting to be applied.
 - [Shell change](shell-change.md): what a shell command changed, in step mode.
 - [Permission](permission.md): Claude asks to run a tool.
+- [Flagged action](flagged.md): a risky action Claude runs, held in every mode.
 - [Question and option menu](question.md): a session asks you something.
 - [Message between sessions](message.md): one session asks another to do something.
 - [Quiz](quiz.md): explain a piece of the diff.

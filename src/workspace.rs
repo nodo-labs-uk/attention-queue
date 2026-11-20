@@ -221,7 +221,7 @@ impl App {
         let open: Vec<PathBuf> = self
             .agents
             .iter()
-            .filter(|a| a.session == pick.name)
+            .filter(|a| a.row() == pick.name)
             .flat_map(|a| {
                 [
                     Some(a.cwd.clone()),
@@ -263,7 +263,7 @@ impl App {
             ),
         });
         effects.push(Effect::OpenWorkspace {
-            session: pick.name,
+            group: pick.name,
             dirs,
             system,
         });
@@ -355,7 +355,7 @@ mod tests {
         effects
             .iter()
             .find_map(|e| match e {
-                Effect::OpenWorkspace { session, dirs, .. } => Some((session.as_str(), &dirs[..])),
+                Effect::OpenWorkspace { group, dirs, .. } => Some((group.as_str(), &dirs[..])),
                 _ => None,
             })
             .expect("an OpenWorkspace")
@@ -449,7 +449,7 @@ mod tests {
             },
         );
         let mut open = agent("%5", 1, "api", "/w/billing/api", true);
-        open.session = "billing".into();
+        open.group = "billing".into();
         a.agents.push(open);
         assert!(
             a.update(key('O')).is_empty(),

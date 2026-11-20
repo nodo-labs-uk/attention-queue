@@ -46,6 +46,14 @@ An optional `syntax` names one of the code highlighting themes bundled with aq; 
 
 Review rounds, unsent comments and quiz progress, so a restart loses nothing. `XDG_STATE_HOME` moves the folder. If aq cannot read the file when it starts, it renames it to `state.json.bad` and starts empty, so nothing saved is written over.
 
+## Flagged actions: `~/.local/state/aq/flags.jsonl`
+
+One line for each GitHub action aq checked: what Claude ran, why it was flagged or cleared, and your answer. See [Flagged action](cards/flagged.md).
+
+## PR worktrees
+
+`~/.local/state/aq/pr/` holds the worktrees aq makes to review PRs, one folder per PR, named `<owner>-<repo>-<number>`. `XDG_STATE_HOME` moves it. aq removes a worktree when you close the PR review or post the review, if it has no uncommitted changes and no session is working in it.
+
 ## Socket
 
 The hooks reach aq over a Unix socket: `$XDG_RUNTIME_DIR/aq.sock`, or `/tmp/aq-$UID/aq.sock`. `AQ_SOCKET` overrides it. The socket's folder must be private to you; aq refuses to start if other users can open it.

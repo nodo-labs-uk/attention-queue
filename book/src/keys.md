@@ -11,9 +11,11 @@ This is the same list as aq's help page (`F1`).
 | `F3` | show or hide the keys row |
 | `M` | next mode for this project |
 | `t` | next theme |
+| `Ctrl-Q` | close any window or popup; `Esc` closes aq's own windows too |
 | `Q` | quit aq |
 | `?` | ask the session a side question; a copy answers |
 | `W` | where are we: a short summary of what is done and what is left |
+| `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a shell in a popup, in this project |
 | `N` | a new Claude session in this project |
 | `O` | open a workspace |
@@ -54,6 +56,20 @@ This is the same list as aq's help page (`F1`).
 | `m` | Markdown as written, or as read |
 | `f` | hide or show the file list |
 | `e` | open the file at this line in your editor |
+
+## PR review
+
+`R` opens the list of PRs from anywhere. On a PR's card, the review card keys work, and these:
+
+| Key | What it does |
+|---|---|
+| `R` | list open PRs, or open one by number or link |
+| `i` | read the PR's description |
+| `D` | close the PR review |
+| `?` | ask Claude about the PR |
+| `s` | on someone else's PR, post the comments as a review |
+| `a` `X` | on someone else's PR, post and approve, or post and request changes |
+| `r` | on someone else's PR, check it out again |
 
 ## Step card
 
@@ -162,6 +178,7 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `g` | go to its window |
 | `Tab` | the session you last typed in; again for the one before |
 | `Enter` | message it |
+| `a` | approve: sends "Approved, carry on." |
 | `A` | message every session in its tmux session |
 | `p` | ask it to open a PR |
 | `m` | switch its model |

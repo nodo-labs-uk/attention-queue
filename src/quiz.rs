@@ -597,7 +597,10 @@ impl App {
             return Vec::new();
         };
         match ev.kind {
-            JobKind::Ask { .. } => Vec::new(),
+            JobKind::Ask { .. }
+            | JobKind::Gist { .. }
+            | JobKind::Flag { .. }
+            | JobKind::FlagQuestion { .. } => Vec::new(),
             JobKind::Quiz => {
                 if qc.state != QuizState::Generating {
                     return Vec::new();
@@ -859,7 +862,7 @@ impl App {
     /// working or gone.
     fn finish_quiz(&mut self, id: u64) -> Vec<Effect> {
         if self.sending.contains_key(&id) {
-            self.set_status("Still sending");
+            self.take_back(id);
             return Vec::new();
         }
         let Some(card) = self.queue.iter().find(|c| c.id == id) else {

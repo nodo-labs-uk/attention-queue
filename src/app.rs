@@ -6,6 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::agents::{Agent, AgentStatus, InputBox};
 use crate::config::Config;
+use crate::flag::Verdict;
+use crate::flag::candidate::Action;
+use crate::flag::facts::{Facts, Me};
 use crate::git::{FileDiff, GrepHit};
 use crate::ipc::{HookReply, HookRequest};
 use crate::llm::{LlmEvent, LlmJob};
@@ -145,6 +148,23 @@ pub enum Msg {
         result: Snapshot,
         at: SystemTime,
     },
+    /// A forwarded candidate, checked by the runtime: a hook is waiting for
+    /// `Effect::Reply` with this `req_id`.
+    Flag {
+        req_id: u64,
+        req: HookRequest,
+        /// The checkout of the request's cwd, found by the runtime.
+        checkout: Option<Checkout>,
+        verdict: Verdict,
+        /// When the runtime received it.
+        at: SystemTime,
+    },
+    /// The facts an `Effect::FlagFacts` asked for, with the user they were
+    /// judged against.
+    FlagFacts {
+        card: u64,
+        result: Result<(Facts, Me), String>,
+    },
     /// The hook waiting on `req_id` went away without an answer.
     HookGone {
         req_id: u64,
@@ -189,6 +209,11 @@ pub enum Msg {
         question: usize,
         result: Result<Snippet, String>,
     },
+    /// A `ComputeReview` effect could not make its diff.
+    ReviewFailed {
+        req: ReviewRequest,
+        error: String,
+    },
     /// The diff a `ComputeReview` effect asked for.
     ReviewComputed {
         req: ReviewRequest,
@@ -196,6 +221,38 @@ pub enum Msg {
         to_tree: String,
         files: Vec<FileDiff>,
         at: SystemTime,
+    },
+    /// The open PRs an `Effect::ListPrs` asked for.
+    PrList(Result<crate::pr::PrListing, String>),
+    /// The PR an `Effect::OpenPr` made ready, with GitHub's diff of it.
+    /// `asked` is the request's repo and number.
+    PrOpened {
+        asked: (Option<String>, u64),
+        result: Result<
+            (
+                crate::pr::PrInfo,
+                crate::pr::checkout::PrCheckout,
+                crate::pr::GhDiffRead,
+            ),
+            String,
+        >,
+    },
+    /// What an `Effect::PostReview` for review card `card` did.
+    ReviewPosted {
+        card: u64,
+        result: Result<(), crate::pr::PostError>,
+    },
+    /// The PR on card `card` checked out and read again (`Effect::RefreshPr`).
+    PrRefreshed {
+        card: u64,
+        result: Result<
+            (
+                crate::pr::PrInfo,
+                crate::pr::checkout::PrCheckout,
+                crate::pr::GhDiffRead,
+            ),
+            String,
+        >,
     },
 }
 
@@ -210,6 +267,9 @@ pub struct ReviewRequest {
     /// The card to refresh (`r`). `None` means the agent finished a round:
     /// refresh the checkout's review card, or make one if the diff is not empty.
     pub card: Option<u64>,
+    /// A PR's base branch: the first round diffs from its merge base with HEAD
+    /// instead of the default branch's.
+    pub base_ref: Option<String>,
 }
 
 /// Work for the runtime. `update` never does I/O itself.
@@ -226,6 +286,14 @@ pub enum Effect {
         decision: HookReply,
     },
     Llm(LlmJob),
+    /// Look up the user and the facts for `action`, for a question card.
+    FlagFacts {
+        card: u64,
+        cwd: PathBuf,
+        action: Action,
+    },
+    /// Append a line to the flag log.
+    LogFlag(serde_json::Value),
     /// Write the config to disk. (Saved state is written by the runtime
     /// whenever `App::state_to_save` has something.)
     SaveConfig,
@@ -276,10 +344,10 @@ pub enum Effect {
     FindRepos {
         root: PathBuf,
     },
-    /// Start Claude in each of `dirs`, as windows of tmux session
-    /// `session`, made if it is not there.
+    /// Start Claude in each of `dirs`, as windows of aq's own tmux session.
     OpenWorkspace {
-        session: String,
+        /// The workspace's name, which tags each new window.
+        group: String,
         dirs: Vec<PathBuf>,
         /// Added to each session's system prompt: how to reach the others.
         system: String,
@@ -356,6 +424,42 @@ pub enum Effect {
         /// Whose last `! command` to have typed in, if any.
         session_id: Option<String>,
     },
+    /// List the open PRs of the repos `dirs` are checkouts of.
+    ListPrs {
+        dirs: Vec<PathBuf>,
+    },
+    /// Make PR `number` of `repo` (else `dir`'s repo) ready for review.
+    /// `known` holds every known session's checkout.
+    OpenPr {
+        dir: PathBuf,
+        repo: Option<String>,
+        number: u64,
+        known: Vec<PathBuf>,
+    },
+    /// Remove the worktree `dir` that aq made for a PR, from clone `main`.
+    RemovePrWorktree {
+        main: PathBuf,
+        dir: PathBuf,
+    },
+    /// Post `body` as a review of PR `number` of `repo`, if its head on
+    /// GitHub is still `head_sha`; for review card `card`. `earlier`:
+    /// attempts that may have posted it already.
+    PostReview {
+        dir: PathBuf,
+        repo: String,
+        number: u64,
+        head_sha: String,
+        body: serde_json::Value,
+        card: u64,
+        earlier: Option<crate::pr::app::Uncertain>,
+    },
+    /// Check out someone else's PR again at its head, and read it and
+    /// GitHub's diff of it again, for review card `card`.
+    RefreshPr {
+        card: u64,
+        info: crate::pr::PrInfo,
+        main: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +503,14 @@ pub enum Overlay {
     Model(AgentId),
     /// Picking a session's permission mode.
     PermissionMode(AgentId),
+    /// `R`: picking a PR to review.
+    PrFinder(Box<crate::pr::app::PrFinder>),
+    /// `s`, `a` or `X` on someone else's PR card: the review's summary.
+    PrSubmit {
+        card: u64,
+        event: crate::pr::place::Event,
+        input: TextInput,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,6 +575,11 @@ pub struct App {
     /// timed out): it stays until a key moves on, and sends nothing.
     pub(crate) stale: Option<u64>,
     pub(crate) next_card_id: u64,
+    /// Grey calls waiting for Haiku, by the id of their Haiku job.
+    pub(crate) pending_flags: std::collections::HashMap<u64, crate::flagged::PendingFlag>,
+    /// Haiku's answer on a question or option-menu card, kept while its
+    /// target's facts are looked up.
+    pub(crate) question_flags: std::collections::HashMap<u64, crate::flagged::QuestionSaid>,
     /// When Esc was last pressed on the empty screen; a second one soon
     /// after stops the picked agent.
     esc_at: Option<Instant>,
@@ -521,6 +638,12 @@ pub struct App {
     /// The session whose last reply `r` reads fast, once its conversation
     /// is read.
     pub(crate) read_reply: Option<String>,
+    /// The PRs under review, by the folder each is checked out in.
+    pub(crate) pr_reviews: BTreeMap<PathBuf, crate::pr::app::PrReview>,
+    /// `D` on a PR card: the card whose review is asked about closing.
+    pub(crate) closing_pr: Option<u64>,
+    /// What is under way on someone else's PR cards.
+    pub(crate) pr_cards: crate::pr::app::PrCards,
 }
 
 /// A pane's screen as last read, or why it could not be.
@@ -542,7 +665,18 @@ pub(crate) struct Shown {
 }
 
 /// Shown while a message waits for its agent to be at its prompt.
-pub const QUEUED_STATUS: &str = "Queued: will send when the agent is idle";
+pub const QUEUED_STATUS: &str =
+    "Queued: sends when the agent is at its prompt. The same key takes it back";
+/// The same, when the agent is not at its prompt because it asked something
+/// that has a card of its own.
+pub const QUEUED_ASKED: &str =
+    "Queued: the agent waits for your answer on another card (Space). The same key takes it back";
+/// The same, when the agent's input box holds text typed and not sent.
+pub const QUEUED_TYPED: &str =
+    "Queued: the agent has text typed in its box. Clear it there, or the same key takes this back";
+/// The same, when the agent's turn is over but its input box is not on its
+/// screen, as when a /btw panel is left open.
+pub const QUEUED_HIDDEN: &str = "Queued: the agent's input box is hidden, perhaps by a /btw panel. Close it there, or the same key takes this back";
 
 /// What p on the empty screen sends: the skill that drafts, checks and opens a PR.
 pub const PR_COMMAND: &str = "/create-pr";
@@ -608,6 +742,8 @@ impl App {
             shown: None,
             stale: None,
             next_card_id: 0,
+            pending_flags: Default::default(),
+            question_flags: Default::default(),
             esc_at: None,
             unclaimed: Default::default(),
             saved: Some(Default::default()),
@@ -631,6 +767,9 @@ impl App {
             conversation: None,
             reading_conversation: false,
             read_reply: None,
+            pr_reviews: BTreeMap::new(),
+            closing_pr: None,
+            pr_cards: Default::default(),
         }
     }
 
@@ -697,7 +836,7 @@ impl App {
             &self.practice_agents
         };
         let mut agents: Vec<&Agent> = listed.iter().collect();
-        agents.sort_by(|a, b| (&a.session, a.window_index).cmp(&(&b.session, b.window_index)));
+        agents.sort_by(|a, b| (a.row(), a.window_index).cmp(&(b.row(), b.window_index)));
         agents
     }
 
@@ -722,8 +861,8 @@ impl App {
     }
 
     /// h/l or j/k pick an agent on the empty screen; Tab goes to the one
-    /// you last sent a message to; Enter or i write it a message;
-    /// g goes to its window; p asks it to open a pull request; m picks its model.
+    /// you last sent a message to; Enter or i write it a message; a sends
+    /// it the approve message; g goes to its window; p asks it to open a pull request; m picks its model.
     fn on_empty_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ids: Vec<AgentId> = self
             .agents_in_order()
@@ -785,8 +924,9 @@ impl App {
                     suggestion,
                 }));
             }
+            KeyCode::Char('a') => return self.send_prompt(current, APPROVE_MESSAGE.to_string()),
             KeyCode::Char('A') => {
-                let group = self.picked_agent().map(|a| a.session.clone());
+                let group = self.picked_agent().map(|a| a.row().to_string());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent: current,
                     input: TextInput::single_line(),
@@ -890,13 +1030,13 @@ impl App {
         }
     }
 
-    /// `A`: sends `text` to every session in tmux session `group`, as
+    /// `A`: sends `text` to every session in row `group`, as
     /// `send_prompt` does to one.
     fn send_to_group(&mut self, group: &str, text: &str) -> Vec<Effect> {
         let members: Vec<AgentId> = self
             .agents_in_order()
             .iter()
-            .filter(|a| a.session == group)
+            .filter(|a| a.row() == group)
             .map(|a| a.id.clone())
             .collect();
         let n = members.len();
@@ -935,9 +1075,13 @@ impl App {
                 card: None,
             }];
         }
-        // Say which of the two it waits on: only one of them is yours to fix.
+        // Say what it waits on: only some of it is yours to fix.
         let status = if self.prompt_has_text(&agent) {
             format!("Queued: {name} has text typed in its box. Clear it there and this is sent")
+        } else if self.prompt_hidden(&agent) {
+            format!(
+                "Queued: {name}'s input box is hidden, perhaps by a /btw panel. Close it there and this is sent"
+            )
         } else {
             format!("Queued: will send to {name} when it is idle")
         };
@@ -978,7 +1122,13 @@ impl App {
         }
         let rows = self
             .screen
-            .map_or(20, |s| crate::permission::body_size(s).1)
+            .map_or(20, |s| {
+                let held = matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(CardKind::Permission(pc)) if pc.held.is_some()
+                );
+                crate::permission::body_size(s, held).1
+            })
             .max(2);
         let n = if matches!(c, 'd' | 'u') {
             rows / 2
@@ -1076,7 +1226,7 @@ impl App {
             session: a.session.clone(),
             window: a.window_index,
             pane: a.id.pane.clone(),
-            title: format!(" /btw in {} · Ctrl-Q closes ", a.window_name),
+            title: format!("/btw in {}", a.window_name),
             type_btw,
         };
         if !type_btw {
@@ -1276,6 +1426,10 @@ impl App {
         }
         self.queue.pin();
         let current = self.queue.current().map(|c| c.id);
+        // A close question goes with its card from the front.
+        if self.closing_pr.is_some() && self.closing_pr != current {
+            self.closing_pr = None;
+        }
         if self.shown.map(|s| s.id) != current {
             let preempted = !by_user && self.shown.is_some();
             self.shown = current.map(|id| Shown { id, at, preempted });
@@ -1317,10 +1471,7 @@ impl App {
                 checkout,
                 text,
                 at,
-            } => {
-                self.on_last_message(agent, checkout, text, at);
-                Vec::new()
-            }
+            } => self.on_last_message(agent, checkout, text, at),
             Msg::Conversation { session_id, said } => {
                 self.reading_conversation = false;
                 self.conversation = Some((session_id, said));
@@ -1417,6 +1568,14 @@ impl App {
                 req_id,
                 decision: HookReply::NoDecision,
             }],
+            Msg::Flag {
+                req_id,
+                req,
+                checkout,
+                verdict,
+                at,
+            } => self.on_flag(req_id, at, req, checkout, verdict),
+            Msg::FlagFacts { card, result } => self.on_flag_facts(card, result),
             Msg::PreTool { req_id, edit, .. } => self.on_pre_tool(req_id, edit),
             Msg::PostTool {
                 session_id,
@@ -1468,6 +1627,16 @@ impl App {
             Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Ask { .. }) => {
                 self.on_ask_result(ev)
             }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Gist { .. }) => {
+                self.on_gist(ev);
+                Vec::new()
+            }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Flag { .. }) => {
+                self.on_flag_llm(ev)
+            }
+            Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::FlagQuestion { .. }) => {
+                self.on_flag_question_llm(ev)
+            }
             Msg::Llm(ev) => self.on_llm(ev),
             Msg::QuizDiff {
                 checkout,
@@ -1491,9 +1660,21 @@ impl App {
                 files,
                 at,
             } => {
-                self.on_review_computed(req, from_tree, to_tree, files, at);
+                self.on_review_recomputed(req.card, true);
+                self.on_review_computed(req, from_tree, to_tree, files, at)
+            }
+            Msg::ReviewFailed { req, error } => {
+                self.on_review_recomputed(req.card, false);
+                self.set_status(error);
                 Vec::new()
             }
+            Msg::PrList(prs) => {
+                self.on_pr_list(prs);
+                Vec::new()
+            }
+            Msg::PrOpened { asked, result } => self.on_pr_opened(asked, result),
+            Msg::ReviewPosted { card, result } => self.on_review_posted(card, result),
+            Msg::PrRefreshed { card, result } => self.on_pr_refreshed(card, result),
         }
     }
 
@@ -1550,10 +1731,37 @@ impl App {
             return Vec::new();
         }
         self.selection = None;
+        if key.code == KeyCode::Char('q')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self.overlay.is_some()
+        {
+            return self.close_overlay();
+        }
+        self.dispatch_key(key)
+    }
+
+    fn dispatch_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match self.practice_step() {
             Some(step) => self.on_practice_key(key, step),
             None => self.handle_key(key),
         }
+    }
+
+    /// Ctrl-Q: closes the window open over aq, as it closes the tmux
+    /// popups. Each window closes as its Esc closes it, so whatever Esc
+    /// tidies up is tidied; a window whose Esc steps back is stepped back
+    /// until it closes, and one Esc does not close (a question that must
+    /// be answered) stays.
+    fn close_overlay(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        for _ in 0..4 {
+            let before = self.overlay.clone();
+            effects.extend(self.dispatch_key(KeyEvent::from(KeyCode::Esc)));
+            if self.overlay.is_none() || self.overlay == before {
+                break;
+            }
+        }
+        effects
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -1611,7 +1819,12 @@ impl App {
                 return Vec::new();
             }
             Some(Overlay::Reader(_)) => return self.on_reader_key(key),
+            Some(Overlay::PrFinder(_)) => return self.on_pr_finder_key(key),
+            Some(Overlay::PrSubmit { .. }) => return self.on_pr_submit_key(key),
             _ => {}
+        }
+        if let Some(effects) = self.on_close_pr_key(key) {
+            return effects;
         }
         if key
             .modifiers
@@ -1633,6 +1846,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('W') => self.ask_where_are_we(),
+            KeyCode::Char('T') => self.summarise_turn(),
             KeyCode::Char('!') => self.open_shell(),
             KeyCode::Char('N') => {
                 // With no session to start from, aq's own folder.
@@ -1647,6 +1861,15 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('O') => self.open_workspace_box(),
+            // Not as the second key of `zR` on a step card.
+            KeyCode::Char('R')
+                if !matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(CardKind::Step(sc)) if sc.view.pending.is_some()
+                ) =>
+            {
+                self.open_pr_finder()
+            }
             KeyCode::Char('S') => {
                 self.open_stash();
                 Vec::new()
@@ -1778,7 +2001,7 @@ impl App {
             .filter(|s| crate::llm::valid_session_id(s));
         vec![Effect::Shell {
             dir,
-            title: format!(" shell in {name} · exit or Ctrl-D closes it "),
+            title: format!("Shell in {name}"),
             session_id,
         }]
     }
@@ -1799,7 +2022,15 @@ impl App {
             None => self.picked_agent().and_then(|a| a.checkout.clone()),
         };
         let Some(checkout) = checkout else {
-            self.set_status("No project to set a mode for");
+            // Modes check git diffs, so only a git repo has one.
+            let status = match self.picked_agent() {
+                Some(a) if self.queue.current().is_none() => format!(
+                    "{} is not in a git repo, so it has no mode. Run git init there to give it one",
+                    a.window_name
+                ),
+                _ => "No project to set a mode for".to_string(),
+            };
+            self.set_status(status);
             return Vec::new();
         };
         let mode = match self.config.mode_for(&checkout) {
@@ -1870,6 +2101,7 @@ impl App {
             .into_iter()
             .map(|a| crate::persist::OpenSession {
                 tmux_session: a.session.clone(),
+                group: a.group.clone(),
                 window: a.window_name.clone(),
                 dir: a.cwd.clone(),
                 session_id: a.session_id.clone(),
@@ -1987,13 +2219,20 @@ impl App {
     /// What `agent`'s finished turn asks for in `checkout`, by its mode.
     fn on_turn_end_in(&mut self, checkout: &Checkout, agent: &Agent) -> Vec<Effect> {
         let from_tree = self.rounds.get(&checkout.0).map(|r| r.tree.clone());
-        match self.config.mode_for(checkout) {
+        // A PR's checkout is there to be reviewed, whatever its mode.
+        let base_ref = self.pr_base(checkout);
+        let mode = match base_ref {
+            Some(_) => Mode::Review,
+            None => self.config.mode_for(checkout),
+        };
+        match mode {
             Mode::Review => vec![Effect::ComputeReview(ReviewRequest {
                 checkout: checkout.clone(),
                 agent: agent.id.clone(),
                 from_tree,
                 full_branch: false,
                 card: None,
+                base_ref,
             })],
             Mode::Quiz => vec![Effect::ComputeQuiz {
                 checkout: checkout.clone(),
@@ -2012,7 +2251,7 @@ impl App {
         to_tree: String,
         files: Vec<FileDiff>,
         at: SystemTime,
-    ) {
+    ) -> Vec<Effect> {
         // A finished round claims its checkout's saved draft. Whatever
         // happens next (a card there already, nothing to review), older
         // saves for the checkout are done with.
@@ -2031,17 +2270,20 @@ impl App {
             // the round it closes must be the tree the user reviewed.
             // Anything newer shows in the next round.
             if self.sending.contains_key(&card.id) {
-                return;
+                return Vec::new();
             }
             if let CardKind::Review(rc) = &mut card.kind {
                 rc.replace_diff(from_tree, to_tree, files, req.full_branch);
             }
             card.agent = req.agent;
-            return;
+            return Vec::new();
         }
         // A refreshed card that has gone since, or nothing to review.
         if req.card.is_some() || files.is_empty() {
-            return;
+            if files.is_empty() {
+                return self.on_empty_pr(&req);
+            }
+            return Vec::new();
         }
         let last = self.rounds.get(&req.checkout.0);
         let round = last.map_or(1, |l| l.round + 1);
@@ -2079,6 +2321,7 @@ impl App {
                 req.full_branch,
             )),
         });
+        Vec::new()
     }
 
     fn on_review_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -2086,14 +2329,17 @@ impl App {
             return Vec::new();
         };
         let id = card.id;
+        if let Some(effects) = self.on_pr_card_key(key) {
+            return effects;
+        }
         if matches!(key.code, KeyCode::Char('s' | 'a')) && !self.settled(id) {
             self.too_quick("review");
             return Vec::new();
         }
         // What is sent is what the card holds when the send lands.
-        if matches!(key.code, KeyCode::Char('c' | 'x' | 'R')) && self.sending.contains_key(&id) {
-            self.set_status(if self.held.contains_key(&id) {
-                QUEUED_STATUS
+        if matches!(key.code, KeyCode::Char('c' | 'x' | 'r')) && self.sending.contains_key(&id) {
+            self.set_status(if let Some((agent, _)) = self.held.get(&id) {
+                self.queued_status(agent)
             } else {
                 "Sending…"
             });
@@ -2180,13 +2426,31 @@ impl App {
         let Some(card) = self.queue.current() else {
             return Vec::new();
         };
+        if !matches!(card.kind, CardKind::Review(_)) {
+            return Vec::new();
+        }
+        let id = card.id;
+        if self.sending.contains_key(&id) {
+            self.take_back(id);
+            return Vec::new();
+        }
+        if approve {
+            let dir = card.checkout.0.clone();
+            self.approving(id, &dir);
+        }
+        let Some(card) = self.queue.current() else {
+            return Vec::new();
+        };
         let CardKind::Review(rc) = &card.kind else {
             return Vec::new();
         };
-        let id = card.id;
-        if self.sending.contains_key(&id) {
-            self.set_status("Still sending");
-            return Vec::new();
+        if !approve
+            && self
+                .pr_reviews
+                .get(&card.checkout.0)
+                .is_some_and(|pr| pr.info.mine)
+        {
+            return self.send_my_pr(id);
         }
         let agent = self.agent(&card.agent);
         let (text, done) = if approve {
@@ -2234,9 +2498,50 @@ impl App {
                 card: Some(id),
             }];
         }
+        self.set_status(self.queued_status(&agent));
         self.held.insert(id, (agent, text));
-        self.set_status(QUEUED_STATUS);
         Vec::new()
+    }
+
+    /// What a card says while its message is held for `agent`.
+    pub fn queued_status(&self, agent: &AgentId) -> &'static str {
+        let asked = self.queue.iter().any(|c| {
+            &c.agent == agent
+                && matches!(
+                    c.kind,
+                    CardKind::Permission(_) | CardKind::Choice(_) | CardKind::Menu(_)
+                )
+        });
+        if asked {
+            QUEUED_ASKED
+        } else if self.prompt_has_text(agent) {
+            QUEUED_TYPED
+        } else if self.prompt_hidden(agent) {
+            QUEUED_HIDDEN
+        } else {
+            QUEUED_STATUS
+        }
+    }
+
+    /// Whether the agent's turn is over but its input box was not found on
+    /// its screen, so nothing can be sent until what covers it goes. Claude
+    /// calling it idle is enough to send without the box.
+    fn prompt_hidden(&self, id: &AgentId) -> bool {
+        self.agent(id).is_some_and(|a| {
+            a.waiting && a.input == InputBox::Unseen && a.status != AgentStatus::Idle
+        })
+    }
+
+    /// The sending key again on card `id`: a held message is taken back,
+    /// and the card is as it was before the first press. One already on
+    /// its way to the agent is not stopped.
+    pub(crate) fn take_back(&mut self, id: u64) {
+        if self.held.remove(&id).is_some() {
+            self.sending.remove(&id);
+            self.set_status("Taken back: nothing was sent");
+        } else {
+            self.set_status("Still sending");
+        }
     }
 
     /// Whether text pasted into the agent's pane reaches its prompt as the
@@ -2345,7 +2650,7 @@ impl App {
     }
 
     /// Removes review card `id` and records its round.
-    fn close_review(&mut self, id: u64, status: String) -> Vec<Effect> {
+    pub(crate) fn close_review(&mut self, id: u64, status: String) -> Vec<Effect> {
         let Some(Card {
             checkout,
             kind: CardKind::Review(rc),
@@ -2357,15 +2662,15 @@ impl App {
         // Only this round's comments show in the next; older ones go.
         let comments = rc.current_comments().cloned().collect();
         self.rounds.insert(
-            checkout.0,
+            checkout.0.clone(),
             LastRound {
                 tree: rc.to_tree,
                 round: rc.round,
                 comments,
             },
         );
-        self.set_status(status);
-        Vec::new()
+        self.set_status(status.clone());
+        self.on_review_closed(id, &checkout.0, &status)
     }
 
     fn toggle_full_branch(&mut self) -> Vec<Effect> {
@@ -2386,6 +2691,7 @@ impl App {
             from_tree: (!full_branch).then(|| last.tree.clone()),
             full_branch,
             card: Some(card.id),
+            base_ref: self.pr_base(&card.checkout),
         };
         self.set_status(if full_branch {
             "Loading the whole branch diff"
@@ -2476,6 +2782,7 @@ pub(crate) mod tests {
                 claude_pid: window * 100,
             },
             session: "main".into(),
+            group: String::new(),
             window_index: window,
             window_name: name.into(),
             cwd: PathBuf::from(checkout),
@@ -2644,6 +2951,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn mode_key_says_a_session_outside_git_has_no_mode() {
+        let mut a = app();
+        let mut plain = agent("%1", 1, "hackerhunt", "/h", true);
+        plain.checkout = None;
+        a.update(Msg::Agents(vec![plain]));
+        assert!(a.update(key('M')).is_empty());
+        assert_eq!(
+            a.status_text(),
+            Some(
+                "hackerhunt is not in a git repo, so it has no mode. Run git init there to give it one"
+            )
+        );
+    }
+
+    #[test]
     fn ask_opens_overlay_and_q_closes_it() {
         let mut a = app();
         a.update(key('?'));
@@ -2694,6 +3016,7 @@ pub(crate) mod tests {
             CardKind::Question(crate::question::QuestionCard {
                 text: "ok?".into(),
                 scroll: 0,
+                flag: Default::default(),
             }),
             20,
         ));
@@ -2769,6 +3092,7 @@ pub(crate) mod tests {
                 from_tree: None,
                 full_branch: false,
                 card: None,
+                base_ref: None,
             }
         );
         assert!(a.queue.is_empty(), "no card until the diff is in");
@@ -3279,7 +3603,7 @@ pub(crate) mod tests {
             session: "main".into(),
             window: 3,
             pane: "%1".into(),
-            title: " /btw in api · Ctrl-Q closes ".into(),
+            title: "/btw in api".into(),
             type_btw,
         };
         assert_eq!(a.update(key('b')), vec![btw(true)]);
@@ -3493,7 +3817,7 @@ pub(crate) mod tests {
             _ => panic!("help is not open: {:?}", a.overlay),
         };
         a.screen = Some((80, 30));
-        let half = (crate::permission::body_size((80, 30)).1 / 2) as u16;
+        let half = (crate::permission::body_size((80, 30), false).1 / 2) as u16;
         a.update(press(KeyCode::F(1), KeyModifiers::NONE));
         assert_eq!(help(&a), 0);
         a.update(press(KeyCode::Char('d'), KeyModifiers::CONTROL));
@@ -3528,6 +3852,21 @@ pub(crate) mod tests {
             Instant::now(),
         ));
         assert_eq!(a.picked_agent().unwrap().id.pane, "%1");
+    }
+
+    #[test]
+    fn a_on_the_empty_screen_approves_the_picked_session() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let idle = agent("%1", 1, "api", "/w/api", true);
+        a.agents = vec![idle.clone()];
+        assert_eq!(
+            a.update(key('a')),
+            [Effect::Send {
+                agent: idle.id,
+                text: APPROVE_MESSAGE.into(),
+                card: None,
+            }]
+        );
     }
 
     #[test]
@@ -3905,6 +4244,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_workspaces_windows_get_a_row_of_their_own_in_the_same_tmux_session() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let mut ui = agent("%3", 3, "ui", "/w/billing/ui", true);
+        ui.group = "billing".into();
+        let mut svc = agent("%4", 4, "svc", "/w/billing/svc", true);
+        svc.group = "billing".into();
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true), ui, svc];
+        let screen = crate::ui::tests::render(&a, 120, 30);
+        let row = |name: &str| {
+            screen
+                .lines()
+                .find(|l| l.trim_start_matches(['"', ' ']).starts_with(name))
+                .unwrap_or_else(|| panic!("no {name} row: {screen}"))
+                .to_string()
+        };
+        assert!(row("main").contains("1 api") && !row("main").contains("ui"));
+        assert!(row("billing").contains("3 ui") && row("billing").contains("4 svc"));
+    }
+
+    #[test]
     fn a_messages_every_session_in_the_picked_ones_group() {
         let mut a = two_groups();
         a.update(key('A'));
@@ -3977,6 +4336,66 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_held_send_is_taken_back_by_the_same_key() {
+        let mut a = app();
+        let id = commented(&mut a);
+        a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", false)]));
+        assert!(a.update(key('s')).is_empty(), "held");
+        assert!(a.held.contains_key(&id));
+        assert!(a.update(key('s')).is_empty());
+        assert_eq!(a.status_text(), Some("Taken back: nothing was sent"));
+        assert!(a.held.is_empty() && a.sending.is_empty());
+        // Nothing goes out when the agent is at its prompt again.
+        assert!(
+            !a.update(Msg::Agents(vec![agent("%1", 1, "api", "/a", true)]))
+                .iter()
+                .any(|e| matches!(e, Effect::Send { .. }))
+        );
+        assert_eq!(a.queue.len(), 1);
+        // And the card sends as before.
+        assert!(matches!(
+            a.update(key('s')).as_slice(),
+            [Effect::Send { card: Some(c), .. }] if *c == id
+        ));
+    }
+
+    #[test]
+    fn a_held_send_says_when_the_agent_waits_on_another_card() {
+        let mut a = app();
+        commented(&mut a);
+        let agent_id = a.queue.current().unwrap().agent.clone();
+        assert_eq!(a.queued_status(&agent_id), QUEUED_STATUS);
+        let mut asked =
+            crate::queue::tests::card(77, "/a", CardKind::Permission(Default::default()), 0);
+        asked.agent = agent_id.clone();
+        a.queue.push(asked);
+        assert_eq!(a.queued_status(&agent_id), QUEUED_ASKED);
+    }
+
+    #[test]
+    fn a_held_send_says_when_the_agents_box_is_in_the_way() {
+        let mut a = app();
+        commented(&mut a);
+        let mut busy = agent("%1", 1, "api", "/a", true);
+        busy.status = crate::agents::AgentStatus::Busy;
+        busy.input = InputBox::Unseen;
+        a.update(Msg::Agents(vec![busy.clone()]));
+        let id = busy.id.clone();
+        assert_eq!(
+            a.queued_status(&id),
+            QUEUED_HIDDEN,
+            "turn over, no box seen"
+        );
+        busy.input = InputBox::Holding("/btw why".into());
+        a.update(Msg::Agents(vec![busy.clone()]));
+        assert_eq!(a.queued_status(&id), QUEUED_TYPED);
+        busy.waiting = false;
+        busy.input = InputBox::Unseen;
+        a.update(Msg::Agents(vec![busy]));
+        assert_eq!(a.queued_status(&id), QUEUED_STATUS, "still working");
+    }
+
+    #[test]
     fn send_to_a_working_agent_waits_until_it_is_idle() {
         let mut a = app();
         let id = commented(&mut a);
@@ -4044,7 +4463,7 @@ pub(crate) mod tests {
             a.update(key('s')).as_slice(),
             [Effect::Send { .. }]
         ));
-        for k in ['c', 'x', 'R'] {
+        for k in ['c', 'x', 'r'] {
             a.status_msg = None;
             assert!(a.update(key(k)).is_empty(), "{k}");
             assert_eq!(a.overlay, None, "{k}");

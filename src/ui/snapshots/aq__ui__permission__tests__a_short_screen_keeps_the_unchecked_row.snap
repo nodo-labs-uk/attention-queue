@@ -1,0 +1,17 @@
+---
+source: src/ui/permission.rs
+assertion_line: 309
+expression: text
+---
+" aq  permission socratui · %11 permission  F3 keys  F1 help "
+"                                                            "
+" Permission: Bash                                           "
+" socratui  window %1                                        "
+"                                                            "
+" aq could not check this: gh is not logged in               "
+"                                                            "
+"                                                            "
+" gh pr merge 5 --squash                                     "
+"                                                            "
+" y allow  n deny  g go to window  ? ask                     "
+"                                                            "

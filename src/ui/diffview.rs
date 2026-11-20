@@ -48,7 +48,16 @@ pub fn scroll_top(cursor_row: usize, total: usize, height: usize) -> usize {
         .min(total.saturating_sub(height))
 }
 
-pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mut Highlighter) {
+/// `tags` holds a dim word to show beside each comment, by index; it may be
+/// shorter than the comments, or empty.
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    rc: &ReviewCard,
+    tags: &[Option<&str>],
+    t: &Theme,
+    hl: &mut Highlighter,
+) {
     // Squashed to no rows, the area sits below the screen.
     if area.height == 0 {
         return;
@@ -95,6 +104,7 @@ pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hl: &mu
     let selected = anchor_row.min(cursor_row)..=anchor_row.max(cursor_row);
     let ctx = Ctx {
         t,
+        tags,
         in_code: (is_markdown(new_path) && !rc.markdown_source).then(|| in_code(f)),
         gutter: gutter_width(f),
         new_key: new_path.to_path_buf(),
@@ -386,6 +396,8 @@ struct Mark {
 
 struct Ctx<'a> {
     t: &'a Theme,
+    /// A word beside each comment, by index.
+    tags: &'a [Option<&'a str>],
     /// Set when Markdown is shown as read: whether each line is code.
     in_code: Option<Vec<bool>>,
     gutter: u16,
@@ -394,6 +406,16 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// What comment `ci`'s first row starts with: its label, then its tag.
+    fn label_width(&self, rc: &ReviewCard, ci: usize) -> u16 {
+        let tag = self.tag(ci).map_or(0, |t| t.chars().count() + 1);
+        (comment_label(rc, ci).chars().count() + tag) as u16
+    }
+
+    fn tag(&self, ci: usize) -> Option<&str> {
+        self.tags.get(ci).copied().flatten()
+    }
+
     /// Line `i`'s text as drawn: read as Markdown when it is shown so.
     fn shown(&self, all: &[&DiffLine], i: usize) -> String {
         let text = line_text(all[i]);
@@ -426,8 +448,7 @@ impl Ctx<'_> {
                     DiffView::Split if c.side == Side::Old => left.width,
                     DiffView::Split => right.width,
                 };
-                let room =
-                    area.saturating_sub(g + 1 + comment_label(rc, ci).chars().count() as u16);
+                let room = area.saturating_sub(g + 1 + self.label_width(rc, ci));
                 rows_for(c.body.lines().nth(part).unwrap_or(""), room)
             }
         }
@@ -504,7 +525,6 @@ impl Ctx<'_> {
         let box_area = Rect::new(x, area.y, area.right().saturating_sub(x), area.height);
         buf.set_style(box_area, Style::new().bg(t.panel));
         let label = comment_label(rc, ci);
-        let width = label.chars().count();
         let room = box_area.width as usize;
         let mut x = x + 1;
         if part == 0 {
@@ -514,8 +534,13 @@ impl Ctx<'_> {
                 Style::new().fg(t.hi).add_modifier(Modifier::BOLD)
             };
             (x, _) = buf.set_stringn(x, area.y, &label, room.saturating_sub(1), style);
+            if let Some(tag) = self.tag(ci) {
+                let left = (area.right().saturating_sub(x)) as usize;
+                (x, _) =
+                    buf.set_stringn(x, area.y, format!("{tag} "), left, Style::new().fg(t.dim));
+            }
         } else {
-            x += width as u16;
+            x += self.label_width(rc, ci);
         }
         let text = c.body.lines().nth(part).unwrap_or("");
         let fg = if old { t.dim } else { t.fg };

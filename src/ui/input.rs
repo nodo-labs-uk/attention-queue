@@ -6,10 +6,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::widgets::Paragraph;
 
+use super::window::{self, Height};
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,16 +203,14 @@ fn not_word(c: char) -> bool {
     !(c.is_alphanumeric() || c == '_')
 }
 
-/// Draws the box centred in `area`, at a fixed size, with the cursor placed.
+/// Draws the box as a short window in `area`, with the cursor placed.
 pub fn render(frame: &mut Frame, area: Rect, input: &TextInput, title: &str, t: &Theme) {
-    let height = if input.multi_line { 10 } else { 5 };
     let submit = if input.multi_line { "save" } else { "send" };
-    render_sized(frame, area, input, title, submit, t, (72, height));
+    render_with_keys(frame, area, input, title, submit, &[], t, Height::Short);
 }
 
-/// Where a box of `size` (columns, rows) sits in `area`: centred, and
-/// shrunk to fit.
-pub fn panel(area: Rect, size: (u16, u16)) -> Rect {
+/// A rect of `size` (columns, rows) centred in `area`, shrunk to fit.
+pub fn centred(area: Rect, size: (u16, u16)) -> Rect {
     let [h] = Layout::horizontal([Constraint::Length(size.0.min(area.width))])
         .flex(Flex::Center)
         .areas(area);
@@ -221,34 +220,21 @@ pub fn panel(area: Rect, size: (u16, u16)) -> Rect {
     panel
 }
 
-/// The rows under the first inside a box of `size`, for what goes with a
-/// one-line input.
-pub fn below_first_row(area: Rect, size: (u16, u16)) -> Rect {
-    let p = panel(area, size);
+/// The rows under the first inside a window of `height`, for what goes
+/// with a one-line input.
+pub fn below_first_row(area: Rect, height: Height) -> Rect {
+    let p = window::place(area, height);
+    let (w, h) = window::INSET;
     Rect::new(
-        p.x + 2,
+        p.x + w / 2,
         p.y + 2,
-        p.width.saturating_sub(4),
-        p.height.saturating_sub(3),
+        p.width.saturating_sub(w),
+        p.height.saturating_sub(h + 1),
     )
 }
 
-/// `render` in a box of `size` (columns, rows), shrunk to fit `area`;
-/// `submit` names what the submitting key does.
-pub fn render_sized(
-    frame: &mut Frame,
-    area: Rect,
-    input: &TextInput,
-    title: &str,
-    submit: &str,
-    t: &Theme,
-    size: (u16, u16),
-) {
-    render_with_keys(frame, area, input, title, submit, &[], t, size);
-}
-
-/// As `render_sized`, with `more` keys (key, what it does) named along the
-/// bottom of the box between the submit key and Esc.
+/// `render` with `submit` naming what the submitting key does, and `more`
+/// keys (key, what it does) named after it along the bottom.
 #[allow(clippy::too_many_arguments)]
 pub fn render_with_keys(
     frame: &mut Frame,
@@ -258,9 +244,9 @@ pub fn render_with_keys(
     submit: &str,
     more: &[(&str, &str)],
     t: &Theme,
-    size: (u16, u16),
+    height: Height,
 ) {
-    render_with_ghost(frame, area, input, title, submit, more, None, t, size);
+    render_with_ghost(frame, area, input, title, submit, more, None, t, height);
 }
 
 /// As `render_with_keys`, with `ghost` drawn in lighter text after the
@@ -275,44 +261,31 @@ pub fn render_with_ghost(
     more: &[(&str, &str)],
     ghost: Option<&str>,
     t: &Theme,
-    size: (u16, u16),
+    height: Height,
 ) {
-    let panel = panel(area, size);
-    frame.render_widget(Clear, panel);
-    let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(t.dim);
-    let mut hints = if input.multi_line {
-        vec![
-            Span::styled(" Ctrl-S", key),
-            Span::styled(format!(" {submit}  "), dim),
-            Span::styled("Enter", key),
-            Span::styled(" new line  ", dim),
-        ]
+    let mut keys = if input.multi_line {
+        vec![("Ctrl-S", submit), ("Enter", "new line")]
     } else {
-        vec![
-            Span::styled(" Enter", key),
-            Span::styled(format!(" {submit}  "), dim),
-        ]
+        vec![("Enter", submit)]
     };
-    for (k, what) in more {
-        hints.push(Span::styled(k.to_string(), key));
-        hints.push(Span::styled(format!(" {what}  "), dim));
-    }
-    hints.extend([Span::styled("Esc", key), Span::styled(" cancel ", dim)]);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.acc))
-        .title(format!(" {title} "))
-        .title_bottom(Line::from(hints).right_aligned())
-        // A space each side keeps the text off the border.
-        .padding(Padding::horizontal(1))
-        .style(Style::new().bg(t.panel).fg(t.fg));
-    let inner = block.inner(panel);
-    frame.render_widget(block, panel);
+    keys.extend_from_slice(more);
+    let panel = window::place(area, height);
+    let inner = window::draw(frame, panel, title, &keys, t);
+    draw_text(frame, inner, input, ghost, t);
+}
+
+/// The typed text in `inner`, scrolled to keep the cursor in view, with
+/// `ghost` in lighter text after the cursor, and the cursor placed.
+pub fn draw_text(
+    frame: &mut Frame,
+    inner: Rect,
+    input: &TextInput,
+    ghost: Option<&str>,
+    t: &Theme,
+) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-
     let (w, h) = (inner.width as usize, inner.height as usize);
     let (rows, cursor) = input.wrapped(w);
     let top = cursor.1.saturating_sub(h - 1);

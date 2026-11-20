@@ -10,13 +10,15 @@ use super::procs::{is_ancestor, pid_alive};
 use super::{Agent, AgentConn, Checkouts};
 use crate::model::AgentId;
 
-pub const LIST_PANES_FORMAT: &str = "#{session_name}|#{window_index}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{@claude_waiting}";
+pub const LIST_PANES_FORMAT: &str = "#{session_name}|#{window_index}|#{window_name}|#{@aq-group}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{@claude_waiting}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
     pub session: String,
     pub window_index: u32,
     pub window_name: String,
+    /// The window's `@aq-group` tag: the workspace aq opened it for, or empty.
+    pub group: String,
     pub pane_id: String,
     pub pane_pid: u32,
     pub command: String,
@@ -24,19 +26,20 @@ pub struct Pane {
     pub waiting: bool,
 }
 
-/// Parses `list-panes -F LIST_PANES_FORMAT` output. The first six fields are split
+/// Parses `list-panes -F LIST_PANES_FORMAT` output. The first seven fields are split
 /// from the left and the waiting flag from the right, so a `|` in the path survives.
-/// A `|` in the session or window name cannot be told apart and drops the line.
+/// A `|` in the session, window or group name cannot be told apart and drops the line.
 pub fn parse_list_panes(s: &str) -> Vec<Pane> {
     s.lines().filter_map(parse_line).collect()
 }
 
 fn parse_line(line: &str) -> Option<Pane> {
     let (rest, waiting) = line.rsplit_once('|')?;
-    let mut it = rest.splitn(7, '|');
+    let mut it = rest.splitn(8, '|');
     let session = it.next()?;
     let window_index = it.next()?.parse().ok()?;
     let window_name = it.next()?;
+    let group = it.next()?;
     let pane_id = it.next()?;
     let pane_pid = it.next()?.parse().ok()?;
     let command = it.next()?;
@@ -45,6 +48,7 @@ fn parse_line(line: &str) -> Option<Pane> {
         session: session.into(),
         window_index,
         window_name: window_name.into(),
+        group: group.into(),
         pane_id: pane_id.into(),
         pane_pid,
         command: command.into(),
@@ -174,6 +178,7 @@ fn join(
                 claude_pid: p.pid,
             },
             session: pane.session.clone(),
+            group: pane.group.clone(),
             window_index: pane.window_index,
             window_name: pane.window_name.clone(),
             cwd: pane.cwd.clone(),
@@ -208,6 +213,7 @@ fn asking_agent(pane: &Pane, menu: super::ScreenMenu) -> Agent {
             claude_pid: pane.pane_pid,
         },
         session: pane.session.clone(),
+        group: pane.group.clone(),
         window_index: pane.window_index,
         window_name: pane.window_name.clone(),
         cwd: pane.cwd.clone(),
@@ -488,18 +494,55 @@ pub fn popup_editor(dir: &Path, path: &Path, line: u32, look: &PopupLook) -> Res
         format!("./{shown}")
     };
     let command = format!("{editor} +{line} {}", shell_quote(&arg));
-    let title = format!(
-        " {} · quit the editor to go back ",
-        crate::visible::visible_code(&shown)
-    );
+    let title = format!(" {} ", crate::visible::visible_code(&shown));
     popup(dir, &title, Some(&command), look)
 }
 
-/// The key table the `/btw` popup's session uses: Ctrl-Q in it closes the
-/// popup, and every other key falls through to the root table as usual.
-const BTW_KEYS: &str = "aq-btw";
+/// The key table the sessions shown in aq's popups use: Ctrl-Q in it closes
+/// the popup, and every other key goes to the program as usual.
+const POPUP_KEYS: &str = "aq-popup";
 
-/// A session's own window in a popup over aq, as wide as the ? box, with `/btw `
+/// Runs a tmux command on aq's server.
+fn tmux_ok(args: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(args);
+    let (status, _, err) = super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(())
+}
+
+/// tmux session `view` in a popup over aq, through a tmux client of its
+/// own, so Ctrl-Q can close it whatever runs inside. Returns when the
+/// popup closes: on Ctrl-Q, or when the session ends.
+fn show_session(view: &str, title: &str, look: &PopupLook) -> Result<()> {
+    tmux_ok(&["set-option", "-t", view, "status", "off"])?;
+    tmux_ok(&["set-option", "-t", view, "key-table", POPUP_KEYS])?;
+    tmux_ok(&["bind-key", "-T", POPUP_KEYS, "C-q", "detach-client"])?;
+    let socket = std::env::var("TMUX").unwrap_or_default();
+    let socket = socket.split(',').next().unwrap_or_default();
+    anyhow::ensure!(!socket.is_empty(), "aq is not running inside tmux");
+    let attach = format!(
+        "TMUX= tmux -S {} attach -t {}",
+        shell_quote(socket),
+        shell_quote(&format!("={view}"))
+    );
+    let mut cmd = Command::new("tmux");
+    cmd.args(["display-popup", "-E", "-T", &look.title(title)])
+        .args(look.args(aq_origin()));
+    if let Ok(pane) = std::env::var("TMUX_PANE") {
+        cmd.args(["-t", &pane]);
+    }
+    cmd.arg(format_literal(&attach));
+    let out = cmd.output().context("running tmux display-popup")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// A session's own window in a popup over aq, in the same window as W's, with `/btw `
 /// typed in its box if `type_btw`. The popup attaches to a session of its
 /// own, grouped with the agent's, so the agent's tmux session stays on the
 /// window it shows. Ctrl-Q closes the popup and that session goes.
@@ -511,13 +554,7 @@ pub fn popup_btw(
     type_btw: bool,
     look: &PopupLook,
 ) -> Result<()> {
-    let tmux = |args: &[&str]| -> Result<()> {
-        let mut cmd = Command::new("tmux");
-        cmd.args(args);
-        let (status, _, err) = super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux")?;
-        anyhow::ensure!(status.success(), "{}", err.trim());
-        Ok(())
-    };
+    let tmux = tmux_ok;
     let view = format!("aq-btw-{}", std::process::id());
     let exact = format!("={view}");
     let _ = tmux(&["kill-session", "-t", &exact]);
@@ -537,36 +574,11 @@ pub fn popup_btw(
         .output()
         .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
     let shown = (|| {
-        tmux(&["set-option", "-t", &view, "status", "off"])?;
-        tmux(&["set-option", "-t", &view, "key-table", BTW_KEYS])?;
-        tmux(&["bind-key", "-T", BTW_KEYS, "C-q", "detach-client"])?;
         tmux(&["select-window", "-t", &format!("{view}:{window}")])?;
         if type_btw {
             tmux(&["send-keys", "-t", pane, "-l", "/btw "])?;
         }
-        // The popup runs a tmux client of its own on this server.
-        let socket = std::env::var("TMUX").unwrap_or_default();
-        let socket = socket.split(',').next().unwrap_or_default();
-        anyhow::ensure!(!socket.is_empty(), "aq is not running inside tmux");
-        let attach = format!(
-            "TMUX= tmux -S {} attach -t {}",
-            shell_quote(socket),
-            shell_quote(&exact)
-        );
-        let mut cmd = Command::new("tmux");
-        cmd.args(["display-popup", "-E", "-T", &format_literal(title)])
-            .args(look.args(aq_origin()));
-        if let Ok(pane) = std::env::var("TMUX_PANE") {
-            cmd.args(["-t", &pane]);
-        }
-        cmd.arg(format_literal(&attach));
-        let out = cmd.output().context("running tmux display-popup")?;
-        anyhow::ensure!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        Ok(())
+        show_session(&view, title, look)
     })();
     let _ = tmux(&["kill-session", "-t", &exact]);
     if let Some((w, h)) = size.as_deref().and_then(|s| s.split_once(' ')) {
@@ -591,8 +603,8 @@ pub fn popup_btw(
     shown
 }
 
-/// Where a popup goes over aq's pane, and its colours: those of the box
-/// `W` and `?` open, so every box over aq looks the same.
+/// Where a popup goes over aq's pane, and its colours: those of aq's own
+/// tall windows, so every window over aq looks the same.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PopupLook {
     /// Column and row in aq's pane, width and height, border included.
@@ -600,13 +612,30 @@ pub struct PopupLook {
     pub y: u16,
     pub width: u16,
     pub height: u16,
-    /// `#rrggbb`, or tmux's `default`.
+    /// `#rrggbb`, or tmux's `default`. The border and the title share a
+    /// colour; `key` and `dim` colour the close hint.
     pub border: String,
     pub bg: String,
     pub fg: String,
+    pub key: String,
+    pub dim: String,
 }
 
 impl PopupLook {
+    /// The popup's title as aq's own windows draw theirs: `title` at the
+    /// left in bold, `Ctrl-Q close` at the right. `title` is shown as
+    /// written, never run as a tmux format.
+    fn title(&self, title: &str) -> String {
+        let (key, what) = crate::ui::window::CLOSE;
+        format!(
+            "#[fg={},bold] {} #[default]#[align=right]#[fg={},bold] {key}#[default]#[fg={}] {what} ",
+            self.border,
+            format_literal(title.trim()),
+            self.key,
+            self.dim,
+        )
+    }
+
     /// `display-popup` flags for this look, over aq's pane whose top-left
     /// corner is at `origin` on the screen. tmux takes `-y` as the row
     /// below the popup.
@@ -671,29 +700,37 @@ fn btw_left(screen: &str) -> BtwLeft {
     }
 }
 
-/// A tmux popup over aq in `dir`, running `command` or else the shell.
+/// A tmux popup over aq in `dir`, running `command` or else the shell. The
+/// command runs in a tmux session of its own, so Ctrl-Q closes the popup
+/// as it does `b`'s; the session and what runs in it go with the popup.
 fn popup(dir: &Path, title: &str, command: Option<&str>, look: &PopupLook) -> Result<()> {
-    let title = format_literal(title);
-    let mut cmd = Command::new("tmux");
-    cmd.args(["display-popup", "-E", "-T", &title])
-        .args(look.args(aq_origin()))
-        .arg("-d")
-        // tmux expands formats in the start directory too, and a folder name
-        // is not ours to trust.
-        .arg(format_literal(&dir.to_string_lossy()));
-    if let Ok(pane) = std::env::var("TMUX_PANE") {
-        cmd.args(["-t", &pane]);
-    }
-    if let Some(c) = command {
-        cmd.arg(format_literal(c));
-    }
-    let out = cmd.output().context("running tmux display-popup")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr).trim()
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let view = format!("aq-popup-{}-{n}", std::process::id());
+    // tmux expands formats in the start directory, and a folder name is not
+    // ours to trust. The command is run as written.
+    let dir = format_literal(&dir.to_string_lossy());
+    let (w, h) = (
+        look.width.saturating_sub(2).max(1).to_string(),
+        look.height.saturating_sub(2).max(1).to_string(),
     );
-    Ok(())
+    let mut args = vec![
+        "new-session",
+        "-d",
+        "-s",
+        &view,
+        "-c",
+        &dir,
+        "-x",
+        &w,
+        "-y",
+        &h,
+    ];
+    args.extend(command);
+    tmux_ok(&args)?;
+    let shown = show_session(&view, title, look);
+    let _ = tmux_ok(&["kill-session", "-t", &format!("={view}")]);
+    shown
 }
 
 /// Startup files for the popup's zsh: they load the user's own, then put
@@ -752,25 +789,50 @@ pub fn new_claude(dir: &Path, prompt: Option<&str>, worktree: bool) -> Result<St
     Ok(out.trim().to_string())
 }
 
-/// Starts `claude` in `dir` in tmux session `session`, as a new window
-/// named after `dir`, or as the session's first if there is no such
-/// session yet; `system` is added to its system prompt. Returns the pane.
-/// `-d` leaves you where you are.
-pub fn new_claude_in(session: &str, dir: &Path, system: &str) -> Result<String> {
-    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+/// Starts `claude` in `dir` as a new window of aq's own tmux session,
+/// named after `dir` and tagged with workspace `group`; `system` is added
+/// to its system prompt. Returns the pane. `-d` leaves you where you are.
+pub fn new_claude_in(group: &str, dir: &Path, system: &str) -> Result<String> {
     let command = format!(
         "{} --append-system-prompt {}",
         claude_command(None, false),
         shell_quote(system)
     );
-    window_in(session, name.as_deref(), dir, &command)
+    let mut cmd = Command::new("tmux");
+    cmd.args(["new-window", "-d"]);
+    if let Some(name) = dir.file_name() {
+        // The name is expanded as a format, like the start directory.
+        cmd.arg("-n").arg(format_literal(&name.to_string_lossy()));
+    }
+    cmd.args(["-P", "-F", "#{pane_id}", "-c"])
+        .arg(format_literal(&dir.to_string_lossy()))
+        .arg(command);
+    let (status, out, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux new-window")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    let pane = out.trim().to_string();
+    tag_group(&pane, group)?;
+    Ok(pane)
 }
 
+/// Tags the window of `pane` with workspace `group`, so the sessions view
+/// gives the group's windows a row of their own.
+fn tag_group(pane: &str, group: &str) -> Result<()> {
+    tmux_ok(&["set-option", "-w", "-t", pane, GROUP_OPTION, group])
+}
+
+/// The window option that names a window's workspace.
+const GROUP_OPTION: &str = "@aq-group";
+
 /// Starts a saved session again with `claude --resume`, in a window of its
-/// old name in its old tmux session.
+/// old name in its old tmux session, tagged with its old workspace.
 pub fn resume_claude_in(s: &crate::persist::OpenSession) -> Result<String> {
     let command = format!("claude --resume {}", shell_quote(&s.session_id));
-    window_in(&s.tmux_session, Some(&s.window), &s.dir, &command)
+    let pane = window_in(&s.tmux_session, Some(&s.window), &s.dir, &command)?;
+    if !s.group.is_empty() {
+        tag_group(&pane, &s.group)?;
+    }
+    Ok(pane)
 }
 
 /// Runs `command` in `dir` in tmux session `session`, as a new window
@@ -1066,7 +1128,7 @@ mod tests {
     #[test]
     fn claude_panes_no_session_is_in_are_found() {
         let panes = parse_list_panes(
-            "main|1|api|%1|10|claude|/w/api|\nmain|2|new|%2|20|claude|/w/new|\nmain|3|sh|%3|30|zsh|/w|\n",
+            "main|1|api||%1|10|claude|/w/api|\nmain|2|new||%2|20|claude|/w/new|\nmain|3|sh||%3|30|zsh|/w|\n",
         );
         let menu = crate::agents::ScreenMenu {
             question: vec!["Accessing workspace:".into()],
@@ -1094,6 +1156,8 @@ mod tests {
             border: "#45475a".into(),
             bg: "#181825".into(),
             fg: "#cdd6f4".into(),
+            key: "#89dceb".into(),
+            dim: "#6c7086".into(),
         };
         assert_eq!(
             look.args((5, 1)),
@@ -1273,6 +1337,26 @@ mod tests {
     }
 
     #[test]
+    fn popup_titles_match_aqs_windows() {
+        let look = PopupLook {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+            border: "#7aa2f7".into(),
+            bg: "#16161e".into(),
+            fg: "#c0caf5".into(),
+            key: "#7dcfff".into(),
+            dim: "#565f89".into(),
+        };
+        assert_eq!(
+            look.title(" Shell in #(x) "),
+            "#[fg=#7aa2f7,bold] Shell in ##(x) #[default]#[align=right]\
+             #[fg=#7dcfff,bold] Ctrl-Q#[default]#[fg=#565f89] close "
+        );
+    }
+
+    #[test]
     fn strip_controls_keeps_only_newline_and_tab() {
         assert_eq!(
             strip_controls("a\x1b[201~b\x1bc\r\0d\u{9b}31m\u{80}\u{9f}e\x7f"),
@@ -1298,13 +1382,23 @@ mod tests {
 
     #[test]
     fn pipe_in_path_survives() {
-        let panes = parse_list_panes("main|1|w|%1|42|claude|/home/a|b/c|1\n");
+        let panes = parse_list_panes("main|1|w||%1|42|claude|/home/a|b/c|1\n");
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].cwd, PathBuf::from("/home/a|b/c"));
         assert!(panes[0].waiting);
-        let panes = parse_list_panes("main|1|w|%1|42|claude|/home/a|b/c|\n");
+        let panes = parse_list_panes("main|1|w||%1|42|claude|/home/a|b/c|\n");
         assert_eq!(panes[0].cwd, PathBuf::from("/home/a|b/c"));
         assert!(!panes[0].waiting);
+    }
+
+    #[test]
+    fn a_windows_workspace_tag_is_read() {
+        let panes = parse_list_panes(
+            "main|4|api|billing|%1|42|claude|/w/billing/api|\nmain|5|web||%2|43|claude|/w/web|\n",
+        );
+        assert_eq!(panes[0].group, "billing");
+        assert_eq!(panes[0].pane_id, "%1");
+        assert_eq!(panes[1].group, "");
     }
 
     fn fixture_procs() -> Vec<ClaudeProc> {

@@ -420,6 +420,7 @@ fn practice_agents() -> Vec<Agent> {
                     claude_pid: 0,
                 },
                 session: "main".into(),
+                group: String::new(),
                 window_index,
                 window_name: name.into(),
                 cwd: dir.clone(),

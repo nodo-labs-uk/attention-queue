@@ -10,15 +10,32 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use serde_json::Value;
 
 use crate::app::{App, Effect, Overlay};
+use crate::flag::Flag;
 use crate::ipc::HookReply;
+use crate::llm::{GIST_PROMPT, JobKind, LlmEvent, LlmJob};
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::visible::{push_visible, visible_lines, wrap};
+use crate::visible::{push_visible, visible_lines, wrap, wrap_words};
 
 /// What `n` sends when nothing is typed.
 pub const DENY_DEFAULT: &str = "Denied in aq.";
+/// What `n` sends on a held card when nothing is typed.
+pub const FLAG_DENY_DEFAULT: &str = "The developer refused this in aq. Do not try another way to do the same thing; ask them what they want instead.";
 /// Longest summary, in characters.
 const SUMMARY_MAX: usize = 200;
+/// Rows the card keeps for Haiku's summary. A blank row follows them.
+pub const GIST_ROWS: u16 = 4;
+/// Body rows a card must keep for the summary to show.
+const BODY_MIN: u16 = 4;
+
+/// What Haiku says the request does and is for.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Gist {
+    #[default]
+    Pending,
+    Done(String),
+    Failed(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PermissionCard {
@@ -26,7 +43,7 @@ pub struct PermissionCard {
     pub req_id: u64,
     pub tool_name: String,
     pub tool_input: Value,
-    /// One line for the status message: the command, the path, or compact JSON.
+    /// One line for the status message: the command, the path, or the fields.
     pub summary: String,
     /// `$TMUX_PANE` of the hook, for `g`.
     pub pane: Option<String>,
@@ -34,6 +51,17 @@ pub struct PermissionCard {
     pub scroll: usize,
     /// How far down the body the user has had on screen, in rows.
     pub seen: usize,
+    pub gist: Gist,
+    /// Set when the call is a flagged action that waits for this card.
+    pub held: Option<Held>,
+}
+
+/// Why a card holds a flagged call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    Flagged(Flag),
+    /// aq could not check the call; holds why.
+    Unchecked(String),
 }
 
 /// How a body line is drawn.
@@ -46,10 +74,31 @@ pub enum LineKind {
 
 /// The body rows and marker row the card gets on a screen of this size:
 /// `(width, height)` of the body.
-pub fn body_size(screen: (u16, u16)) -> (usize, usize) {
+pub fn body_size(screen: (u16, u16), held: bool) -> (usize, usize) {
     let area = Rect::new(0, 1, screen.0, screen.1.saturating_sub(2));
-    let body = areas(area)[1];
+    let body = card_areas(area, held)[2];
     (body.width as usize, body.height as usize)
+}
+
+/// Head, summary, body, "more" marker and key strip of the permission card.
+/// The summary keeps the same rows while it is awaited, so its arrival moves
+/// nothing. A screen too short for it and `BODY_MIN` body rows has none.
+/// A held card always has its band: on a short screen the band shrinks, and
+/// the body keeps at least one row unless the band would lose its first row.
+pub fn card_areas(area: Rect, held: bool) -> [Rect; 5] {
+    let [head, body, more, keys] = areas(area);
+    let gist = if body.height >= GIST_ROWS + 1 + BODY_MIN {
+        GIST_ROWS + 1
+    } else if held {
+        (GIST_ROWS + 1)
+            .min(body.height.saturating_sub(1))
+            .max(body.height.min(1))
+    } else {
+        0
+    };
+    let [gist, body] =
+        Layout::vertical([Constraint::Length(gist), Constraint::Fill(1)]).areas(body);
+    [head, gist, body, more, keys]
 }
 
 /// Head, body, "more" marker and key strip of the card inside the card area.
@@ -64,8 +113,31 @@ pub fn areas(area: Rect) -> [Rect; 4] {
 }
 
 impl PermissionCard {
+    /// The summary as at most `GIST_ROWS` rows of `width` columns; a longer
+    /// one ends in "…".
+    pub fn gist_rows(&self, width: usize) -> Vec<String> {
+        let text = match &self.gist {
+            Gist::Pending => "Haiku: summarising…".to_string(),
+            Gist::Done(s) => format!("Haiku: {s}"),
+            Gist::Failed(why) => format!("Haiku: no summary ({why})"),
+        };
+        let line = visible_lines(&text).join(" ");
+        let mut rows = Vec::new();
+        wrap_words(&line, width, &mut |row| rows.push(row));
+        if rows.len() > GIST_ROWS as usize {
+            rows.truncate(GIST_ROWS as usize);
+            let last = rows.last_mut().expect("GIST_ROWS is not zero");
+            while last.chars().map(crate::visible::cols).sum::<usize>() >= width.max(1) {
+                last.pop();
+            }
+            last.push('…');
+        }
+        rows
+    }
+
     /// What the card shows in full, as unwrapped lines: the whole command, the
-    /// path with the change as -/+ lines, or the input as pretty JSON.
+    /// path with the change as -/+ lines, and every other field as a
+    /// `key: value` line.
     /// Control characters are made visible and long blank runs collapsed.
     pub fn body_lines(&self) -> Vec<(LineKind, String)> {
         let input = &self.tool_input;
@@ -141,23 +213,22 @@ impl PermissionCard {
             _ => {}
         }
         // Whatever else the input holds, so the whole of it is on the card.
-        let rest: serde_json::Map<String, Value> = match input {
-            Value::Object(m) => m
-                .iter()
-                .filter(|(k, _)| !shown.borrow().contains(&k.as_str()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            _ => serde_json::Map::new(),
-        };
-        let all_extra = shown.borrow().is_empty();
-        if !rest.is_empty() || (all_extra && !input.is_object()) {
-            let json = if all_extra {
-                serde_json::to_string_pretty(input)
-            } else {
-                serde_json::to_string_pretty(&rest)
-            }
-            .unwrap_or_default();
+        let Value::Object(fields) = input else {
+            let json = serde_json::to_string_pretty(input).unwrap_or_default();
             put(LineKind::Plain, "", &json);
+            return out;
+        };
+        let mut rest = Vec::new();
+        for (k, v) in fields {
+            if !shown.borrow().contains(&k.as_str()) {
+                outline(&format!("{}:", visible_key(k)), v, 0, &mut rest);
+            }
+        }
+        if !rest.is_empty() {
+            if !shown.borrow().is_empty() {
+                put(LineKind::Plain, "", "");
+            }
+            put(LineKind::Plain, "", &rest.join("\n"));
         }
         out
     }
@@ -172,6 +243,53 @@ impl PermissionCard {
     }
 }
 
+/// A key of the input on one line.
+fn visible_key(key: &str) -> String {
+    let mut out = String::new();
+    key.chars().for_each(|c| push_visible(c, &mut out));
+    out
+}
+
+/// `v` after `head` (its `key:`, or the `-` of a list item) as lines indented
+/// by `pad`. The fields of an object and the items of a list go below `head`,
+/// two columns in. So do the lines of a string of several lines, each after
+/// `| `, so that none of them reads as a field.
+fn outline(head: &str, v: &Value, pad: usize, out: &mut Vec<String>) {
+    let ind = " ".repeat(pad);
+    match v {
+        Value::Object(m) if !m.is_empty() => {
+            out.push(format!("{ind}{head}"));
+            for (k, v) in m {
+                outline(&format!("{}:", visible_key(k)), v, pad + 2, out);
+            }
+        }
+        Value::Array(a) if !a.is_empty() => {
+            out.push(format!("{ind}{head}"));
+            for v in a {
+                outline("-", v, pad + 2, out);
+            }
+        }
+        Value::String(s) if s.contains('\n') => {
+            out.push(format!("{ind}{head}"));
+            out.extend(s.split('\n').map(|l| format!("{ind}  | {l}")));
+        }
+        Value::String(s) if !s.is_empty() => out.push(format!("{ind}{head} {s}")),
+        v => out.push(format!("{ind}{head} {v}")),
+    }
+}
+
+/// The fields of the input on one line: `key: value, key: value`.
+fn brief(input: &Value) -> String {
+    let Value::Object(fields) = input else {
+        return input.to_string();
+    };
+    let field = |(k, v): (&String, &Value)| match v {
+        Value::String(s) => format!("{k}: {s}"),
+        v => format!("{k}: {v}"),
+    };
+    fields.iter().map(field).collect::<Vec<_>>().join(", ")
+}
+
 /// The input field that says what the tool will do: the command of Bash, the
 /// path of an edit tool.
 fn field<'a>(tool: &str, input: &'a Value) -> Option<&'a str> {
@@ -184,9 +302,9 @@ fn field<'a>(tool: &str, input: &'a Value) -> Option<&'a str> {
     input.get(key)?.as_str()
 }
 
-/// Bash: the command; edit tools: the path; others: compact JSON; at most 200 characters.
+/// Bash: the command; edit tools: the path; others: the fields; at most 200 characters.
 pub fn summary(tool: &str, input: &Value) -> String {
-    let text = field(tool, input).map_or_else(|| input.to_string(), str::to_string);
+    let text = field(tool, input).map_or_else(|| brief(input), str::to_string);
     text.chars().take(SUMMARY_MAX).collect()
 }
 
@@ -218,6 +336,31 @@ impl App {
         at: SystemTime,
         r: PermissionRequest,
     ) -> Vec<Effect> {
+        let session_id = r.session_id.clone();
+        let card = self.permission_card(req_id, at, r, None);
+        let job = LlmJob {
+            card: card.id,
+            kind: JobKind::Gist {
+                session_id: Some(session_id),
+            },
+            cwd: card.checkout.0.clone(),
+            prompt: format!(
+                "{GIST_PROMPT}## The request (data)\n\n{}\n",
+                crate::quiz::fenced(&crate::ask::context_for(&card), "")
+            ),
+        };
+        self.queue.push(card);
+        vec![Effect::Llm(job)]
+    }
+
+    /// The card for a permission request, with a new id; not yet queued.
+    pub(crate) fn permission_card(
+        &mut self,
+        req_id: u64,
+        at: SystemTime,
+        r: PermissionRequest,
+        held: Option<Held>,
+    ) -> Card {
         let agent = self.hook_agent(r.pane.as_deref(), &r.session_id);
         let checkout = agent
             .and_then(|a| a.checkout.clone())
@@ -225,7 +368,7 @@ impl App {
             .unwrap_or_else(|| Checkout(r.cwd.clone().into()));
         let agent = agent.map_or_else(AgentId::unknown, |a| a.id.clone());
         self.next_card_id += 1;
-        self.queue.push(Card {
+        Card {
             id: self.next_card_id,
             checkout,
             agent,
@@ -238,9 +381,24 @@ impl App {
                 pane: r.pane,
                 scroll: 0,
                 seen: 0,
+                gist: Gist::Pending,
+                held,
             }),
-        });
-        Vec::new()
+        }
+    }
+
+    /// Haiku's summary of a permission request; dropped if its card is gone.
+    pub(crate) fn on_gist(&mut self, ev: LlmEvent) {
+        if let Some(Card {
+            kind: CardKind::Permission(pc),
+            ..
+        }) = self.queue.find_mut(|c| c.id == ev.card)
+        {
+            pc.gist = match ev.result {
+                Ok(text) => Gist::Done(text),
+                Err(why) => Gist::Failed(why),
+            };
+        }
     }
 
     /// Closes the card whose hook went away. Returns whether there was one.
@@ -314,7 +472,7 @@ impl App {
         else {
             return false;
         };
-        let Some((width, height)) = self.screen.map(body_size) else {
+        let Some((width, height)) = self.screen.map(|s| body_size(s, pc.held.is_some())) else {
             return false;
         };
         let total = pc.body_rows(width).len();
@@ -322,14 +480,15 @@ impl App {
     }
 
     fn scroll_permission(&mut self, code: KeyCode) {
-        let Some((width, height)) = self.screen.map(body_size) else {
-            return;
-        };
+        let screen = self.screen;
         let Some(Card {
             kind: CardKind::Permission(pc),
             ..
         }) = self.queue.current_mut()
         else {
+            return;
+        };
+        let Some((width, height)) = screen.map(|s| body_size(s, pc.held.is_some())) else {
             return;
         };
         let total = pc.body_rows(width).len();
@@ -366,7 +525,14 @@ impl App {
             return Vec::new();
         };
         let text = text.trim();
-        let reason = if text.is_empty() { DENY_DEFAULT } else { text };
+        let held = self.queue.iter().any(|c| {
+            c.id == draft.card && matches!(&c.kind, CardKind::Permission(p) if p.held.is_some())
+        });
+        let reason = match (text.is_empty(), held) {
+            (false, _) => text,
+            (true, true) => FLAG_DENY_DEFAULT,
+            (true, false) => DENY_DEFAULT,
+        };
         self.decide_permission(
             draft.card,
             HookReply::Deny {
@@ -394,10 +560,29 @@ impl App {
             .chars()
             .for_each(|c| push_visible(c, &mut what));
         self.set_status(format!("{verb} {}: {what}", pc.tool_name));
-        vec![Effect::Reply {
+        let log = pc.held.as_ref().map(|held| {
+            let label = match held {
+                Held::Flagged(f) => Some(f.label.as_str()),
+                Held::Unchecked(_) => None,
+            };
+            let answer = if decision == HookReply::Allow {
+                "allowed"
+            } else {
+                "denied"
+            };
+            Effect::LogFlag(crate::flagged::log_entry(
+                &pc.tool_name,
+                &pc.tool_input,
+                answer,
+                label,
+            ))
+        });
+        let mut effects = vec![Effect::Reply {
             req_id: pc.req_id,
             decision,
-        }]
+        }];
+        effects.extend(log);
+        effects
     }
 }
 
@@ -517,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_summary_is_path_and_others_are_compact_json() {
+    fn edit_summary_is_path_and_others_are_the_fields() {
         assert_eq!(
             summary("Edit", &json!({"file_path": "/a/b.rs", "old_string": "x"})),
             "/a/b.rs"
@@ -531,8 +716,8 @@ mod tests {
             "/a/n.ipynb"
         );
         assert_eq!(
-            summary("WebFetch", &json!({"url": "http://x"})),
-            r#"{"url":"http://x"}"#
+            summary("WebFetch", &json!({"url": "http://x", "depth": 2})),
+            "depth: 2, url: http://x"
         );
         let big = json!({"k": "y".repeat(500)});
         assert_eq!(summary("Other", &big).chars().count(), 200);
@@ -738,6 +923,70 @@ mod tests {
         assert!(a.status_text().unwrap().contains("No window"));
     }
 
+    #[test]
+    fn a_request_asks_haiku_for_a_summary_and_the_card_shows_it() {
+        let mut a = app();
+        let fx = ipc(
+            &mut a,
+            1,
+            ask("Bash", json!({"command": "cargo test"}), Some("%5"), "s5"),
+        );
+        let [Effect::Llm(job)] = fx.as_slice() else {
+            panic!("{fx:?}");
+        };
+        assert_eq!(
+            job.kind,
+            JobKind::Gist {
+                session_id: Some("s5".into())
+            }
+        );
+        assert_eq!(job.cwd, std::path::Path::new("/w/api"));
+        assert!(job.prompt.contains("cargo test") && job.prompt.contains("Bash"));
+        let done = |a: &mut App, card: u64, result: Result<String, String>| {
+            a.update(Msg::Llm(LlmEvent {
+                card,
+                kind: job.kind.clone(),
+                result,
+            }))
+        };
+        assert!(crate::ui::tests::render(&a, 80, 24).contains("Haiku: summarising…"));
+        // An answer for a card that is gone changes nothing.
+        done(&mut a, 99, Ok("x".into()));
+        assert_eq!(perm(&a).gist, Gist::Pending);
+        done(
+            &mut a,
+            job.card,
+            Ok("Runs the tests\nto check the fix.".into()),
+        );
+        let screen = crate::ui::tests::render(&a, 80, 24);
+        assert!(
+            screen.contains("Haiku: Runs the tests to check the fix."),
+            "{screen}"
+        );
+        done(&mut a, job.card, Err("not logged in".into()));
+        assert!(crate::ui::tests::render(&a, 80, 24).contains("Haiku: no summary (not logged in)"));
+    }
+
+    #[test]
+    fn the_summary_keeps_its_rows_and_a_short_screen_has_none() {
+        let area = |h| Rect::new(0, 1, 80, h);
+        let [_, gist, body, ..] = card_areas(area(22), false);
+        assert_eq!((gist.height, body.height), (5, 10));
+        let [_, gist, body, ..] = card_areas(area(14), false);
+        assert_eq!((gist.height, body.height), (0, 7));
+        // A held card keeps its band's first row even with one body row.
+        let [_, gist, body, ..] = card_areas(area(8), true);
+        assert_eq!((gist.height, body.height), (1, 0));
+        let [_, gist, body, ..] = card_areas(area(9), true);
+        assert_eq!((gist.height, body.height), (1, 1));
+        let mut pc = card_of("Bash", json!({"command": "ls"}));
+        assert_eq!(pc.gist_rows(40), ["Haiku: summarising…"]);
+        pc.gist = Gist::Done("word ".repeat(40));
+        let rows = pc.gist_rows(20);
+        assert_eq!(rows.len(), 4);
+        assert!(rows[3].ends_with('…') && rows[3].chars().count() <= 20);
+    }
+
     fn card_of(tool: &str, input: Value) -> PermissionCard {
         PermissionCard {
             summary: summary(tool, &input),
@@ -752,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn body_shows_the_full_command_path_or_pretty_json() {
+    fn body_shows_the_full_command_or_the_fields() {
         let long = "echo ".to_string() + &"a".repeat(300);
         assert_eq!(
             text(&card_of("Bash", json!({"command": long}))),
@@ -760,11 +1009,34 @@ mod tests {
         );
         let rows = card_of("Bash", json!({"command": long})).body_rows(80);
         assert_eq!(rows.len(), 4);
-        assert!(
-            card_of("WebFetch", json!({"url": "u"}))
-                .body_lines()
-                .iter()
-                .any(|(_, t)| t == "  \"url\": \"u\"")
+        assert_eq!(text(&card_of("WebFetch", json!({"url": "u"}))), ["url: u"]);
+    }
+
+    #[test]
+    fn other_fields_show_as_an_outline() {
+        let pc = card_of(
+            "Task",
+            json!({
+                "a": {"b": [1, "x"], "c": {}},
+                "d": "one\nf: two",
+                "e": "",
+                "g\nh": null,
+            }),
+        );
+        assert_eq!(
+            text(&pc),
+            [
+                "a:",
+                "  b:",
+                "    - 1",
+                "    - x",
+                "  c: {}",
+                "d:",
+                "  | one",
+                "  | f: two",
+                "e: \"\"",
+                "g^Jh: null",
+            ]
         );
     }
 
@@ -825,7 +1097,7 @@ mod tests {
     #[test]
     fn long_command_is_allowed_only_after_scrolling_to_the_end() {
         let (mut a, t) = long_command(5);
-        assert_eq!(body_size((80, 11)), (78, 2));
+        assert_eq!(body_size((80, 11), false), (78, 2));
         assert!(a.update(key('y', t)).is_empty());
         assert!(a.status_text().unwrap().contains("Scroll to the end"));
         a.update(key('j', t));
@@ -989,12 +1261,11 @@ mod tests {
             json!({"file_path": "/f", "old_string": "a", "new_string": "b", "sneaky": "rm -rf /"}),
         );
         let t = text(&pc);
-        assert_eq!(&t[..3], ["/f", "- a", "+ b"]);
-        assert!(t.iter().any(|l| l.contains("\"sneaky\": \"rm -rf /\"")));
+        assert_eq!(t, ["/f", "- a", "+ b", "", "sneaky: rm -rf /"]);
         assert!(!t.iter().any(|l| l.contains("old_string")));
         // A non-string value is not hidden either.
         let pc = card_of("Bash", json!({"command": "ls", "timeout": 5}));
-        assert!(text(&pc).iter().any(|l| l.contains("\"timeout\": 5")));
+        assert_eq!(text(&pc), ["ls", "", "timeout: 5"]);
         // A MultiEdit with an extra field on an edit shows the edits as JSON.
         let pc = card_of(
             "MultiEdit",

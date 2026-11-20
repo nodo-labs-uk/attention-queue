@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Map, Value};
 
 use crate::app::{App, Effect, Overlay};
+use crate::flag::FlagState;
 use crate::ipc::HookReply;
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::ui::input::{InputEvent, TextInput};
@@ -46,6 +47,8 @@ pub struct ChoiceCard {
     pub cursor: usize,
     /// Options ticked so far on a question that takes several.
     pub ticked: BTreeSet<usize>,
+    /// Whether answering may lead to a flagged action.
+    pub flag: FlagState,
 }
 
 impl ChoiceCard {
@@ -132,9 +135,11 @@ impl App {
                 answers: Vec::new(),
                 cursor: 0,
                 ticked: BTreeSet::new(),
+                flag: FlagState::None,
             }),
         });
-        Vec::new()
+        let session_id = Some(session_id.to_string());
+        self.check_question(self.next_card_id, session_id)
     }
 
     /// The hook went away: the menu was answered elsewhere or timed out.
@@ -401,7 +406,11 @@ mod tests {
     #[test]
     fn numbers_answer_each_question_and_the_hook_gets_them_all() {
         let (mut a, effects) = asked(menu());
-        assert!(effects.is_empty(), "the hook waits");
+        // "Review" is an action word, so the menu is checked for a flag.
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Reply { .. })),
+            "the hook waits: {effects:?}"
+        );
         let card = a.queue.current().unwrap();
         assert!(matches!(card.kind, CardKind::Choice(_)));
         assert_eq!(card.agent.pane, "%1", "found by its session");
