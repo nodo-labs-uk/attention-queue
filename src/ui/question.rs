@@ -29,6 +29,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
     let keys: Vec<(&str, &str)> = approve
         .into_iter()
         .chain([
+            ("d", "done"),
             ("Enter", "reply"),
             ("x", "stash"),
             ("r", "read fast"),

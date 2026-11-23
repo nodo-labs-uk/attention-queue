@@ -582,18 +582,20 @@ fn apply(
                 title,
                 session_id,
             } => Job::Shell(dir, title, session_id, crate::ui::popup_look(app)),
-            Effect::Btw {
+            Effect::SessionPopup {
                 session,
                 window,
                 pane,
                 title,
-                type_btw,
-            } => Job::Btw {
+                command,
+                type_it,
+            } => Job::SessionPopup {
                 session,
                 window,
                 pane,
                 title,
-                type_btw,
+                command,
+                type_it,
                 look: crate::ui::popup_look(app),
             },
             Effect::Edit { dir, path, line } => {
@@ -780,12 +782,13 @@ enum Job {
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>, PopupLook),
-    Btw {
+    SessionPopup {
         session: String,
         window: u32,
         pane: String,
         title: String,
-        type_btw: bool,
+        command: &'static str,
+        type_it: bool,
         look: PopupLook,
     },
     Edit(PathBuf, PathBuf, u32, PopupLook),
@@ -1050,22 +1053,24 @@ fn spawn_effect_worker(
                     None
                 }
                 // Waited on apart, as the shell is.
-                Job::Btw {
+                Job::SessionPopup {
                     session,
                     window,
                     pane,
                     title,
-                    type_btw,
+                    command,
+                    type_it,
                     look,
                 } => {
                     let tx = tx.clone();
                     std::thread::spawn(move || {
-                        let r = crate::agents::tmux::popup_btw(
-                            &session, window, &pane, &title, type_btw, &look,
+                        let r = crate::agents::tmux::popup_session(
+                            &session, window, &pane, &title, command, type_it, &look,
                         );
                         if let Err(e) = r {
-                            let _ =
-                                tx.send(Msg::EffectFailed(format!("Could not open /btw: {e:#}")));
+                            let _ = tx.send(Msg::EffectFailed(format!(
+                                "Could not open {command}: {e:#}"
+                            )));
                         }
                     });
                     None

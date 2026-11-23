@@ -108,6 +108,7 @@ This is the same list as aq's help page (`F1`).
 | Key | What it does |
 |---|---|
 | `a` | approve (sends "Approved, carry on.") |
+| `d` | done (sends "Done, continue."), once you have done what it asked |
 | `Enter` | reply in your own words |
 | `x` | stash the card |
 | `S` | the stashed questions: `Enter` brings one back, `x` drops it |
@@ -179,12 +180,14 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `Tab` | the session you last typed in; again for the one before |
 | `Enter` | message it |
 | `a` | approve: sends "Approved, carry on." |
+| `d` | done: sends "Done, continue." |
 | `A` | message every session in its tmux session |
 | `p` | ask it to open a PR |
 | `m` | switch its model |
 | `P` | switch its permission mode |
 | `r` | read its last reply fast |
 | `b` | the session in a popup, with `/btw` typed |
+| `c` | the session in a popup, with `/mcp` typed, to manage its MCP servers |
 | `x` | close its pane |
 | `Esc Esc` | stop it |
 | `Ctrl-U` `Ctrl-D`, `PgUp` `PgDn`, wheel | scroll its screen back |
