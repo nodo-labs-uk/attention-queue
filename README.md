@@ -18,7 +18,7 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 - **Permission prompts with a summary.** A line from Claude Haiku says what the call does and why; `y` allows it. [Permission card](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html)
 - **A hold on anything done in your name.** Merges, pushes to main, force pushes and comments posted as you wait for a yes, in every mode. [Flagged actions](https://nodo-labs-uk.github.io/attention-queue/cards/flagged.html)
 - **GitHub PR review.** `R` opens any open PR as a review card. Your comments go to the session to fix, or to GitHub as one review. [PR review](https://nodo-labs-uk.github.io/attention-queue/cards/pr-review.html)
-- **Every session on one screen.** When nothing is waiting, watch your sessions live in tabs. Message one, approve it, switch its model, or stop it. [Sessions view](https://nodo-labs-uk.github.io/attention-queue/sessions.html)
+- **Every session on one screen.** When nothing is waiting, watch your sessions live in tabs. Message one, approve it, tell it you're done, switch its model, open its `/btw` or `/mcp` in a popup, or stop it. [Sessions view](https://nodo-labs-uk.github.io/attention-queue/sessions.html)
 - **Quick answers without interrupting.** `W` asks a session where it's up to, `T` has Haiku sum up its latest turn, and `?` asks anything. A copy of the session answers, so the session never sees it. [Side questions](https://nodo-labs-uk.github.io/attention-queue/tools.html)
 - **New sessions and workspaces.** `N` starts a session, in a worktree of its own if you like. `O` starts one for each repo in a folder, in a row of tabs of their own. [New sessions](https://nodo-labs-uk.github.io/attention-queue/new-sessions.html)
 - **Sessions that ask each other.** A session runs `aq tell` to ask another for work, and you approve the message first. [Messages](https://nodo-labs-uk.github.io/attention-queue/cards/message.html)
@@ -77,6 +77,7 @@ Then run `aq` in a tmux window. The tour starts on its own.
 | Key | What it does |
 |---|---|
 | `y` `n` | allow or refuse an edit or a permission prompt |
+| `a` `d` | approve, or say you're done with what it asked ("Done, continue.") |
 | `c` `s` `a` | on a review: comment on a line, send the comments, approve |
 | `Enter` | reply to a question, or message the picked session |
 | `Space` | skip this card for now |
