@@ -1,10 +1,25 @@
 <h1 align="center"><img src="docs/media/banner.svg" width="640" alt="aq: an attention queue for Claude Code"></h1>
 
 <p align="center"><b>Every Claude Code session that needs you, in one queue in your terminal.</b><br>
-Diffs to review, edits to allow, permission prompts and questions, one card at a time.<br>
-<sub>Linux · tmux · Rust · MIT</sub></p>
+Diffs to review, edits to allow, permission prompts and questions, one card at a time.</p>
 
-<p align="center"><a href="#key-features">Key features</a> · <a href="#get-started">Get started</a> · <a href="#first-keys">First keys</a> · <a href="#see-it-work">See it work</a> · <a href="#compared-with-other-tools">Compared</a> · <a href="https://nodo-labs-uk.github.io/attention-queue/">Documentation</a></p>
+<p align="center">
+  <a href="https://github.com/nodo-labs-uk/attention-queue/releases/latest"><img src="https://img.shields.io/github/v/release/nodo-labs-uk/attention-queue?label=release&color=7aa2f7" alt="Latest release"></a>
+  <a href="https://github.com/nodo-labs-uk/attention-queue/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/nodo-labs-uk/attention-queue/release.yml?label=build" alt="Build status"></a>
+  <a href="https://nodo-labs-uk.github.io/attention-queue/"><img src="https://img.shields.io/badge/docs-book-9ece6a" alt="Documentation"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20tmux-bb9af7" alt="Linux and tmux">
+  <img src="https://img.shields.io/badge/made%20with-Rust-e0af68" alt="Made with Rust">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/nodo-labs-uk/attention-queue?color=565f89" alt="MIT licence"></a>
+</p>
+
+<p align="center">
+  <a href="#key-features">Key features</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#first-keys">First keys</a> ·
+  <a href="#see-it-work">See it work</a> ·
+  <a href="#compared-with-other-tools">Compared</a> ·
+  <a href="https://nodo-labs-uk.github.io/attention-queue/">Documentation</a>
+</p>
 
 I run several Claude Code sessions in tmux and kept losing track of which one was waiting on me. aq watches all of them and puts whatever needs me in one queue, shown one card at a time. A card that comes in while I'm on another waits its turn, so nothing takes the screen from under me.
 
@@ -12,24 +27,38 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 ## Key features
 
-- **One queue for every session.** Diffs, edits, permission prompts and questions from all your Claude sessions arrive as cards. [The queue](https://nodo-labs-uk.github.io/attention-queue/queue.html)
-- **Review like a pull request.** Comment on lines of a finished turn's diff and send them back as one message. [Review card](https://nodo-labs-uk.github.io/attention-queue/cards/review.html)
-- **As much checking as each project needs.** Each project has a mode: review each turn, approve each edit, get quizzed on the change, or check nothing. [Modes](https://nodo-labs-uk.github.io/attention-queue/modes.html)
-- **Permission prompts with a summary.** A line from Claude Haiku says what the call does and why; `y` allows it. [Permission card](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html)
-- **A hold on anything done in your name.** Merges, pushes to main, force pushes and comments posted as you wait for a yes, in every mode. [Flagged actions](https://nodo-labs-uk.github.io/attention-queue/cards/flagged.html)
-- **GitHub PR review.** `R` opens any open PR as a review card. Your comments go to the session to fix, or to GitHub as one review. [PR review](https://nodo-labs-uk.github.io/attention-queue/cards/pr-review.html)
-- **Every session on one screen.** When nothing is waiting, watch your sessions live in tabs. Message one, approve it, tell it you're done, switch its model, open its `/btw` or `/mcp` in a popup, or stop it. [Sessions view](https://nodo-labs-uk.github.io/attention-queue/sessions.html)
-- **Quick answers without interrupting.** `W` asks a session where it's up to, `T` has Haiku sum up its latest turn, and `?` asks anything. A copy of the session answers, so the session never sees it. [Side questions](https://nodo-labs-uk.github.io/attention-queue/tools.html)
-- **New sessions and workspaces.** `N` starts a session, in a worktree of its own if you like. `O` starts one for each repo in a folder, in a row of tabs of their own. [New sessions](https://nodo-labs-uk.github.io/attention-queue/new-sessions.html)
-- **Sessions that ask each other.** A session runs `aq tell` to ask another for work, and you approve the message first. [Messages](https://nodo-labs-uk.github.io/attention-queue/cards/message.html)
-- **Nothing lost on a restart.** Unsent comments survive aq restarting, and after a reboot aq reopens the sessions that were open.
-- **Keyboard first.** It has vim keys, and a short tour on the first run teaches them on made-up cards.
+### Check what Claude changes
 
-aq connects to Claude Code through hooks. If aq isn't running, the hooks do nothing and Claude carries on as normal. [Why it works this way](https://nodo-labs-uk.github.io/attention-queue/introduction.html#design-principles)
+| Feature | What you get |
+|---|---|
+| [**One queue**](https://nodo-labs-uk.github.io/attention-queue/queue.html) | Diffs, edits, permission prompts and questions from all your sessions arrive as cards, one at a time. |
+| [**Review like a PR**](https://nodo-labs-uk.github.io/attention-queue/cards/review.html) | Comment on lines of a finished turn's diff and send them back as one message. |
+| [**A mode per project**](https://nodo-labs-uk.github.io/attention-queue/modes.html) | Review each turn, approve each edit, get quizzed on the change, or check nothing. |
+| [**GitHub PR review**](https://nodo-labs-uk.github.io/attention-queue/cards/pr-review.html) | `R` opens any open PR as a review card. Comments go to the session to fix, or to GitHub as one review. |
+
+### Answer from one place
+
+| Feature | What you get |
+|---|---|
+| [**Permission prompts**](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html) | A line from Claude Haiku says what the call does and why. `y` allows it. |
+| [**Flagged actions**](https://nodo-labs-uk.github.io/attention-queue/cards/flagged.html) | Merges, pushes to main, force pushes and comments posted as you wait for a yes, in every mode. |
+| [**Questions**](https://nodo-labs-uk.github.io/attention-queue/cards/question.html) | A turn that ends with a question becomes a card. `a` approves, `d` says you did what it asked, `Enter` replies. |
+| [**Side questions**](https://nodo-labs-uk.github.io/attention-queue/tools.html) | `W` asks where a session is up to, `T` has Haiku sum up its latest turn, and `?` asks anything. A copy answers, so the session never sees it. |
+
+### Run many sessions
+
+| Feature | What you get |
+|---|---|
+| [**Sessions view**](https://nodo-labs-uk.github.io/attention-queue/sessions.html) | With nothing waiting, watch every session live in tabs. Message one, switch its model, open its `/btw` or `/mcp`, or stop it. |
+| [**New sessions**](https://nodo-labs-uk.github.io/attention-queue/new-sessions.html) | `N` starts a session, in a worktree of its own if you like. `O` opens one for each repo in a folder. |
+| [**Messages**](https://nodo-labs-uk.github.io/attention-queue/cards/message.html) | A session runs `aq tell` to ask another for work, and you approve the message first. |
+| **Restarts** | Unsent comments survive aq restarting, and after a reboot aq reopens the sessions that were open. |
+
+aq is keyboard first, with vim keys and a short tour on the first run. It connects to Claude Code through hooks; if aq isn't running, the hooks do nothing and Claude carries on as normal. [Why it works this way](https://nodo-labs-uk.github.io/attention-queue/introduction.html#design-principles)
 
 ## Get started
 
-aq needs Linux, tmux and Claude Code. The GitHub features also need `gh`, logged in as you.
+**You need** Linux, tmux and Claude Code. The GitHub features also need `gh`, logged in as you.
 
 > [!TIP]
 > **Quickest install: paste this into Claude Code and let it do the setup.**
@@ -74,17 +103,22 @@ Then run `aq` in a tmux window. The tour starts on its own.
 
 ## First keys
 
+**On a card**
+
 | Key | What it does |
 |---|---|
 | `y` `n` | allow or refuse an edit or a permission prompt |
-| `a` `d` | approve, or say you're done with what it asked ("Done, continue.") |
 | `c` `s` `a` | on a review: comment on a line, send the comments, approve |
-| `Enter` | reply to a question, or message the picked session |
+| `a` `d` `Enter` | on a question: approve, say you're done ("Done, continue."), or reply |
 | `Space` | skip this card for now |
 | `M` | switch this project's mode: review, step, quiz, vibe |
+
+**Anywhere**
+
+| Key | What it does |
+|---|---|
 | `W` `T` `?` | where is the session up to, sum up its last turn, ask it anything |
-| `N` | start a new Claude session |
-| `R` | review a GitHub PR |
+| `N` `R` | start a new Claude session, review a GitHub PR |
 | `!` | a shell in a popup, with Claude's last `! command` typed in |
 | `Ctrl-Q` | close any window or popup |
 | `F1` `F2` `F3` | every key, the tour again, the keys row along the bottom |
