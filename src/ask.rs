@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 
 use crate::app::{App, Effect, Overlay};
 use crate::edit::EditPreview;
-use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, valid_session_id};
+use crate::llm::{FALLBACK_NOTE, JobKind, LlmEvent, LlmJob, Speed, valid_session_id};
 use crate::model::{Card, CardKind, Checkout};
 use crate::pr::PrInfo;
 use crate::quiz::{QuizState, diff_text, fenced};
@@ -141,7 +141,11 @@ impl AskState {
             kind: JobKind::Ask {
                 index,
                 session_id: self.session_id.clone(),
-                haiku: self.entries[index].question == SUMMARISE,
+                speed: match self.entries[index].question.as_str() {
+                    SUMMARISE => Speed::Haiku,
+                    WHERE_ARE_WE => Speed::LowEffort,
+                    _ => Speed::Normal,
+                },
             },
             cwd: self.checkout.0.clone(),
             prompt: ask_prompt(&self.context, &self.entries[index].question),
@@ -670,7 +674,7 @@ mod tests {
                 JobKind::Ask {
                     index: i,
                     session_id: Some("s1".into()),
-                    haiku: false,
+                    speed: Speed::Normal,
                 }
             );
             assert!(!j.prompt.contains("one") || i == 0);
@@ -681,7 +685,7 @@ mod tests {
                 kind: JobKind::Ask {
                     index,
                     session_id: Some("s1".into()),
-                    haiku: false,
+                    speed: Speed::Normal,
                 },
                 result: r,
             })
@@ -721,7 +725,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: None,
-                haiku: false,
+                speed: Speed::Normal,
             },
             result: Ok("run \u{1b}[2J\u{202e}now".into()),
         }));
@@ -752,7 +756,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
-                haiku: false,
+                speed: Speed::Normal,
             },
             result: Ok("api is half done".into()),
         }));
@@ -765,7 +769,7 @@ mod tests {
         a.agents = vec![agent("%1", 1, "api", "/a", true)];
         let haiku_fork = |e: &[Effect]| {
             matches!(e, [Effect::Llm(j)] if j.prompt.contains(SUMMARISE)
-                && matches!(&j.kind, JobKind::Ask { index: 0, session_id: Some(s), haiku: true } if s == "s1"))
+                && matches!(&j.kind, JobKind::Ask { index: 0, session_id: Some(s), speed: Speed::Haiku } if s == "s1"))
         };
         assert!(haiku_fork(&press(&mut a, KeyCode::Char('T'))));
         a.update(Msg::Llm(LlmEvent {
@@ -773,7 +777,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
-                haiku: true,
+                speed: Speed::Haiku,
             },
             result: Err("timed out".into()),
         }));
@@ -800,7 +804,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
-                haiku: false,
+                speed: Speed::Normal,
             },
             result: Ok("half done".into()),
         }));
@@ -852,7 +856,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session.map(Into::into),
-                haiku: false,
+                speed: Speed::Normal,
             },
             cwd: "/".into(),
             prompt: "p".into(),
@@ -884,12 +888,12 @@ mod tests {
                 JobKind::Ask {
                     index: 0,
                     session_id: Some("sid".into()),
-                    haiku: false,
+                    speed: Speed::Normal,
                 },
                 JobKind::Ask {
                     index: 0,
                     session_id: None,
-                    haiku: false,
+                    speed: Speed::Normal,
                 },
             ]
         );
@@ -950,7 +954,7 @@ mod tests {
                 kind: JobKind::Ask {
                     index: 0,
                     session_id: None,
-                    haiku: false,
+                    speed: Speed::Normal,
                 },
                 result: Ok(text),
             })
