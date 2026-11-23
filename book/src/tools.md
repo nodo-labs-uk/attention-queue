@@ -8,6 +8,16 @@
 
 `T` sums up the latest turn only: what you last asked for, what Claude did, and what it said at the end. It runs on Claude Haiku, through your own `claude` login, so it is quick and cheap. Haiku gets no tools: it reads the conversation and nothing else.
 
+The answer comes in a short window titled TL;DR, as three labelled lines:
+
+```text
+Asked  improve the layout of the T card.
+Did    read src/ui/ask.rs and src/ask.rs, and made no changes yet.
+Said   nothing yet; I was still looking at the code.
+```
+
+`?` in that window asks a follow-up question about the same session.
+
 ## Shell
 
 `!` opens a shell in a tmux popup, in the project's folder. Use it for things Claude cannot run itself: `sudo`, logins, or commands its permissions block.
