@@ -1,19 +1,21 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::input;
 use super::window::{self, Height};
-use crate::ask::{AskState, LineKind};
+use crate::ask::{AskState, LABEL_WIDTH, LineKind, SUMMARISE};
 use crate::theme::Theme;
 
 /// The questions and answers in a panel over the card, with the question
 /// being typed in a box along its bottom edge.
 pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
-    let panel = window::place(area, Height::Tall);
-    let title = if ask.card == crate::ask::NO_CARD {
+    let tldr = !ask.entries.is_empty() && ask.entries.iter().all(|e| e.question == SUMMARISE);
+    let title = if tldr {
+        "TL;DR"
+    } else if ask.card == crate::ask::NO_CARD {
         "Ask this session"
     } else {
         "Ask about this card"
@@ -21,7 +23,21 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
     let keys: &[(&str, &str)] = if ask.input.is_some() {
         &[("Enter", "ask")]
     } else {
-        &[]
+        &[("?", "ask more")]
+    };
+    // A short window while the answers fit in one, as `T`'s do.
+    let short = window::place(area, Height::Short);
+    let text_rows = usize::from(short.height.saturating_sub(window::INSET.1));
+    let fits = ask.input.is_none()
+        && ask
+            .lines(usize::from(short.width.saturating_sub(window::INSET.0)))
+            .0
+            .len()
+            <= text_rows;
+    let panel = if fits {
+        short
+    } else {
+        window::place(area, Height::Tall)
     };
     let inner = window::draw(frame, panel, title, keys, t);
     if inner.width == 0 || inner.height == 0 {
@@ -44,14 +60,29 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
         .into_iter()
         .skip(scroll)
         .take(h)
-        .map(|(kind, text)| {
-            let style = match kind {
-                LineKind::Question => Style::new().fg(t.acc).add_modifier(Modifier::BOLD),
-                LineKind::Answer => Style::new().fg(t.fg),
-                LineKind::Pending => Style::new().fg(t.dim),
-                LineKind::Error => Style::new().fg(t.hi),
-            };
-            Line::styled(text, style)
+        .map(|(kind, text)| match kind {
+            LineKind::Question => {
+                Line::styled(text, Style::new().fg(t.acc).add_modifier(Modifier::BOLD))
+            }
+            LineKind::Answer => with_code(&text, Style::new().fg(t.fg), t),
+            LineKind::Pending => Line::styled(text, Style::new().fg(t.dim)),
+            LineKind::Error => Line::styled(text, Style::new().fg(t.hi)),
+            LineKind::Labelled => {
+                let (label, rest) = text.split_at(
+                    text.char_indices()
+                        .nth(LABEL_WIDTH)
+                        .map_or(text.len(), |(i, _)| i),
+                );
+                let mut line = with_code(rest, Style::new().fg(t.fg), t);
+                line.spans.insert(
+                    0,
+                    Span::styled(
+                        label.to_string(),
+                        Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
+                    ),
+                );
+                line
+            }
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), text);
@@ -67,6 +98,30 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
         let typed = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
         input::draw_text(frame, typed, i, None, t);
     }
+}
+
+/// `text` in `style`, with each `code` span between backticks in the key
+/// colour and its backticks dropped. A row with an odd backtick is shown as is.
+fn with_code(text: &str, style: Style, t: &Theme) -> Line<'static> {
+    let parts: Vec<&str> = text.split('`').collect();
+    if parts.len().is_multiple_of(2) {
+        return Line::styled(text.to_string(), style);
+    }
+    Line::from(
+        parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.is_empty())
+            .map(|(i, p)| {
+                let s = if i % 2 == 1 {
+                    Style::new().fg(t.key)
+                } else {
+                    style
+                };
+                Span::styled(p.to_string(), s)
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(test)]
@@ -114,6 +169,48 @@ mod tests {
         ] {
             assert!(screen.contains(want), "{want} in\n{screen}");
         }
+    }
+
+    #[test]
+    fn a_tldr_shows_its_labelled_lines_in_a_short_window() {
+        let mut a = app();
+        a.queue
+            .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
+        a.update(key('T'));
+        let Some(Overlay::Ask(ask)) = &mut a.overlay else {
+            panic!()
+        };
+        ask.entries[0].answer = Answer::Done(
+            "Asked: tidy the T window.\nDid: changed `src/ui/ask.rs`.\nSaid: it is done.".into(),
+        );
+        let screen = render(&a, 120, 30);
+        for want in [
+            "TL;DR",
+            "Asked  tidy the T window.",
+            "Did    changed src/ui/ask.rs.",
+            "Said   it is done.",
+        ] {
+            assert!(screen.contains(want), "{want} in\n{screen}");
+        }
+        let rows = screen.lines().filter(|l| l.contains('│')).count();
+        assert!(rows <= 12, "a short window, not a tall one:\n{screen}");
+    }
+
+    #[test]
+    fn a_tldr_in_another_shape_is_shown_as_it_came() {
+        let mut a = app();
+        a.queue
+            .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
+        a.update(key('T'));
+        let Some(Overlay::Ask(ask)) = &mut a.overlay else {
+            panic!()
+        };
+        ask.entries[0].answer = Answer::Done("You asked for a fix and I made it.".into());
+        let screen = render(&a, 120, 30);
+        assert!(
+            screen.contains("You asked for a fix and I made it."),
+            "{screen}"
+        );
     }
 
     fn key(c: char) -> Msg {
