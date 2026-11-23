@@ -18,7 +18,7 @@ pub use crate::new_session::NewSessionDraft;
 use crate::permission::{DenyDraft, PermissionRequest};
 use crate::queue::Queue;
 use crate::quiz::{AnswerDraft, CodeRequest, Snippet};
-use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
+use crate::review::{self, APPROVE_MESSAGE, Comment, DONE_MESSAGE, LastRound, ReviewCard, Target};
 use crate::shell::{Shell, Snapshot, SnapshotRequest};
 use crate::step::{PendingEdit, ReasonDraft, SearchList, Steps};
 use crate::theme::Theme;
@@ -409,13 +409,15 @@ pub enum Effect {
         line: u32,
     },
     /// Show a session's own window in a tmux popup over aq, the size of the ? box,
-    /// with `/btw ` typed in its box if `type_btw`.
-    Btw {
+    /// with `command` (`/btw` or `/mcp`) typed in its box if `type_it` and
+    /// the box is empty when the popup opens.
+    SessionPopup {
         session: String,
         window: u32,
         pane: String,
         title: String,
-        type_btw: bool,
+        command: &'static str,
+        type_it: bool,
     },
     /// Open a shell in a tmux popup over aq, gone when the shell exits.
     Shell {
@@ -909,7 +911,8 @@ impl App {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
             KeyCode::Char('p') => return self.ask_for_pr(current),
-            KeyCode::Char('b') => return self.open_btw(),
+            KeyCode::Char('b') => return self.open_slash("/btw"),
+            KeyCode::Char('c') => return self.open_slash("/mcp"),
             KeyCode::Char('r') => return self.read_reply_fast(),
             KeyCode::Char('m') => self.open_model(current),
             KeyCode::Char('P') => self.overlay = Some(Overlay::PermissionMode(current)),
@@ -925,6 +928,7 @@ impl App {
                 }));
             }
             KeyCode::Char('a') => return self.send_prompt(current, APPROVE_MESSAGE.to_string()),
+            KeyCode::Char('d') => return self.send_prompt(current, DONE_MESSAGE.to_string()),
             KeyCode::Char('A') => {
                 let group = self.picked_agent().map(|a| a.row().to_string());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
@@ -1210,27 +1214,35 @@ impl App {
         }]
     }
 
-    /// `b` on the sessions view: the picked session in a popup across the
-    /// top, `/btw ` typed in its box when the box is empty, for a side
-    /// question the session answers without adding it to the conversation.
-    fn open_btw(&mut self) -> Vec<Effect> {
+    /// `b` and `c` on the sessions view: the picked session in a popup over
+    /// aq, `command` typed in its box when the box is empty. `/btw` asks a
+    /// side question the session answers without adding it to the
+    /// conversation; `/mcp` manages its MCP servers.
+    fn open_slash(&mut self, command: &'static str) -> Vec<Effect> {
         if !self.practice_agents.is_empty() {
-            self.set_status("The tour's sessions are made up: b works on real ones");
+            self.set_status(format!(
+                "The tour's sessions are made up: {command} works on real ones"
+            ));
             return Vec::new();
         }
         let Some(a) = self.picked_agent() else {
             return Vec::new();
         };
-        let type_btw = a.input == InputBox::Empty;
-        let effect = Effect::Btw {
+        // A working session's box is not read until the popup opens, so
+        // only text aq has seen in it stops the command being typed.
+        let type_it = !matches!(a.input, InputBox::Holding(_));
+        let effect = Effect::SessionPopup {
             session: a.session.clone(),
             window: a.window_index,
             pane: a.id.pane.clone(),
-            title: format!("/btw in {}", a.window_name),
-            type_btw,
+            title: format!("{command} in {}", a.window_name),
+            command,
+            type_it,
         };
-        if !type_btw {
-            self.set_status("Its box is not empty, so /btw is not typed in");
+        if !type_it {
+            self.set_status(format!(
+                "Its box is not empty, so {command} is not typed in"
+            ));
         }
         vec![effect]
     }
@@ -3594,23 +3606,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn b_opens_the_session_with_btw_typed_when_its_box_is_empty() {
+    fn b_and_c_open_the_session_with_btw_or_mcp_typed_when_its_box_is_empty() {
         let mut a = App::new(Config::default(), builtin_themes());
         let mut api = agent("%1", 3, "api", "/w/api", true);
         api.input = InputBox::Empty;
         a.agents = vec![api];
-        let btw = |type_btw| Effect::Btw {
+        let popup = |command: &'static str, type_it| Effect::SessionPopup {
             session: "main".into(),
             window: 3,
             pane: "%1".into(),
-            title: "/btw in api".into(),
-            type_btw,
+            title: format!("{command} in api"),
+            command,
+            type_it,
         };
-        assert_eq!(a.update(key('b')), vec![btw(true)]);
+        assert_eq!(a.update(key('b')), vec![popup("/btw", true)]);
+        assert_eq!(a.update(key('c')), vec![popup("/mcp", true)]);
         // Half a message typed: shown as it is, with nothing added to it.
         a.agents[0].input = InputBox::Holding("half".into());
-        assert_eq!(a.update(key('b')), vec![btw(false)]);
+        assert_eq!(a.update(key('b')), vec![popup("/btw", false)]);
         assert!(a.status_text().unwrap().contains("not typed"));
+        assert_eq!(a.update(key('c')), vec![popup("/mcp", false)]);
     }
 
     #[test]
@@ -3864,6 +3879,21 @@ pub(crate) mod tests {
             [Effect::Send {
                 agent: idle.id,
                 text: APPROVE_MESSAGE.into(),
+                card: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn d_on_the_empty_screen_tells_the_picked_session_it_is_done() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        let idle = agent("%1", 1, "api", "/w/api", true);
+        a.agents = vec![idle.clone()];
+        assert_eq!(
+            a.update(key('d')),
+            [Effect::Send {
+                agent: idle.id,
+                text: DONE_MESSAGE.into(),
                 card: None,
             }]
         );

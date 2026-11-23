@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, Effect, Overlay, PromptDraft};
 use crate::flag::FlagState;
 use crate::model::{AgentId, Card, CardKind, Checkout};
-use crate::review::APPROVE_MESSAGE;
+use crate::review::{APPROVE_MESSAGE, DONE_MESSAGE};
 use crate::ui::input::TextInput;
 use crate::visible::visible_lines;
 
@@ -383,7 +383,8 @@ impl App {
         }
     }
 
-    /// `a` or `y` approves a question that asks for a go-ahead, Enter or `i` writes a reply, `x` stashes the
+    /// `a` or `y` approves a question that asks for a go-ahead, `d` says
+    /// you did what it asked, Enter or `i` writes a reply, `x` stashes the
     /// card, `g` goes to the session's window; the rest scroll.
     pub(crate) fn on_question_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let Some(card) = self.queue.current() else {
@@ -406,6 +407,13 @@ impl App {
                     return Vec::new();
                 }
                 return self.send_prompt(agent, APPROVE_MESSAGE.to_string());
+            }
+            KeyCode::Char('d') if !ctrl => {
+                if !self.settled(id) {
+                    self.too_quick("question");
+                    return Vec::new();
+                }
+                return self.send_prompt(agent, DONE_MESSAGE.to_string());
             }
             KeyCode::Enter | KeyCode::Char('i' | 'c') => {
                 let suggestion = self.agent(&agent).and_then(|a| a.suggestion.clone());
@@ -575,6 +583,24 @@ mod tests {
             [Effect::Send {
                 agent: a.agents[0].id.clone(),
                 text: "Approved, carry on.".into(),
+                card: None,
+            }]
+        );
+        assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn d_says_done_even_to_an_open_question() {
+        let mut a = app();
+        said(
+            &mut a,
+            "Run `sudo make install`, then tell me when it's done.",
+        );
+        assert_eq!(
+            a.update(key('d')),
+            [Effect::Send {
+                agent: a.agents[0].id.clone(),
+                text: "Done, continue.".into(),
                 card: None,
             }]
         );

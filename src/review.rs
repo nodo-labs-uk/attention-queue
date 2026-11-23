@@ -10,6 +10,8 @@ use crate::git::{DiffLine, FileDiff, FileStatus};
 
 /// Sent by `a` when the agent is waiting.
 pub const APPROVE_MESSAGE: &str = "Approved, carry on.";
+/// Sent by `d`, when you have done what the session asked of you.
+pub const DONE_MESSAGE: &str = "Done, continue.";
 const QUOTE_MAX: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

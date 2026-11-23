@@ -123,6 +123,7 @@ draft, to choose between two ways), its message becomes a card.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words;
      Claude's suggestion shows in lighter text, Tab or Ctrl-F fills it in
      a is there only when it asks for a go-ahead or names its pick
+  d  done (sends: Done, continue.), once you have done what it asked
   x  stash the card      g  go to the session's window   j/k scroll
   S  the stashed questions: Enter brings one back, x drops it
   r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
@@ -163,10 +164,14 @@ session is the one picked.
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in
   a      approve: sends Approved, carry on. now, or once it is idle
+  d      done: sends Done, continue. now, or once it is idle; for when
+         it asked you to do something first
   A      message every session in its row, each once idle
   r      read its last reply fast, as r on a question card
   b      /btw: the session's own window in a popup over aq,
          /btw typed in its box; ask, read the answer, Ctrl-Q closes it
+  c      /mcp: the same popup with /mcp typed in; Enter opens its MCP
+         servers to connect, reconnect or turn off; Ctrl-Q closes it
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
          (/model, which also makes it the default for new sessions)

@@ -542,16 +542,18 @@ fn show_session(view: &str, title: &str, look: &PopupLook) -> Result<()> {
     Ok(())
 }
 
-/// A session's own window in a popup over aq, in the same window as W's, with `/btw `
-/// typed in its box if `type_btw`. The popup attaches to a session of its
+/// A session's own window in a popup over aq, in the same window as W's, with
+/// `command` (`/btw` or `/mcp`) and a space typed in its box if `type_it`
+/// and the box is empty. The popup attaches to a session of its
 /// own, grouped with the agent's, so the agent's tmux session stays on the
 /// window it shows. Ctrl-Q closes the popup and that session goes.
-pub fn popup_btw(
+pub fn popup_session(
     session: &str,
     window: u32,
     pane: &str,
     title: &str,
-    type_btw: bool,
+    command: &str,
+    type_it: bool,
     look: &PopupLook,
 ) -> Result<()> {
     let tmux = tmux_ok;
@@ -575,8 +577,15 @@ pub fn popup_btw(
         .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
     let shown = (|| {
         tmux(&["select-window", "-t", &format!("{view}:{window}")])?;
-        if type_btw {
-            tmux(&["send-keys", "-t", pane, "-l", "/btw "])?;
+        // aq reads a working session's box only now, so it is read here.
+        let empty = Command::new("tmux")
+            .args(["capture-pane", "-p", "-e", "-t", pane])
+            .output()
+            .is_ok_and(|o| {
+                super::read_input_box(&String::from_utf8_lossy(&o.stdout)) == super::InputBox::Empty
+            });
+        if type_it && empty {
+            tmux(&["send-keys", "-t", pane, "-l", &format!("{command} ")])?;
         }
         show_session(&view, title, look)
     })();
@@ -588,17 +597,23 @@ pub fn popup_btw(
             let _ = tmux(&["set-option", "-wu", "-t", pane, "window-size"]);
         }
     }
-    // The popup showed the session's own pane, so /btw ran in the session.
-    // Its panel takes the place of the input box until closed, so it is
-    // closed here; a `/btw ` aq typed and nobody used is taken out again.
-    match capture_pane(pane, &[]).map(|s| btw_left(&s)) {
-        Ok(BtwLeft::Panel) => {
-            let _ = press(pane, "Escape", &[]);
+    // The popup showed the session's own pane, so the command ran in the
+    // session. Its panel takes the place of the input box until closed, so
+    // it is closed here, one Esc per level of /mcp's menus; a command aq
+    // typed and nobody used is taken out again.
+    for _ in 0..4 {
+        match capture_pane(pane, &[]).map(|s| slash_left(&s, command)) {
+            Ok(SlashLeft::Panel) => {
+                let _ = press(pane, "Escape", &[]);
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Ok(SlashLeft::Typed) => {
+                let n = (command.chars().count() + 1).to_string();
+                let _ = tmux(&["send-keys", "-t", pane, "-N", &n, "BSpace"]);
+                break;
+            }
+            _ => break,
         }
-        Ok(BtwLeft::Typed) => {
-            let _ = tmux(&["send-keys", "-t", pane, "-N", "5", "BSpace"]);
-        }
-        _ => {}
     }
     shown
 }
@@ -672,31 +687,49 @@ fn aq_origin() -> (u16, u16) {
         .unwrap_or((0, 0))
 }
 
-/// What a `/btw` popup left in its session.
+/// What a `/btw` or `/mcp` popup left in its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BtwLeft {
-    /// Claude Code's /btw panel, open or still answering.
+enum SlashLeft {
+    /// Claude Code's /btw panel or one of /mcp's menus, still open.
     Panel,
-    /// The `/btw ` aq typed, still alone in the input box.
+    /// The command aq typed, still alone in the input box.
     Typed,
     Nothing,
 }
 
-fn btw_left(screen: &str) -> BtwLeft {
+fn slash_left(screen: &str, command: &str) -> SlashLeft {
     let rows: Vec<&str> = screen.lines().collect();
     if let Some(p) = super::input_row(&rows) {
         let typed = rows[p].trim_start_matches('❯').replace('\u{a0}', " ");
-        return match typed.trim() {
-            "/btw" | "/btw [question]" => BtwLeft::Typed,
-            _ => BtwLeft::Nothing,
+        let typed = typed.trim();
+        // Claude Code greys in what the command takes, as `[question]`.
+        let alone = typed == command
+            || typed
+                .strip_prefix(command)
+                .is_some_and(|rest| rest.trim_start().starts_with('['));
+        return if alone {
+            SlashLeft::Typed
+        } else {
+            SlashLeft::Nothing
         };
     }
     let footer = rows.iter().rev().find(|r| !r.trim().is_empty());
-    let asked = rows.iter().any(|r| r.trim_start().starts_with("/btw "));
-    if asked && footer.is_some_and(|f| f.contains("Esc to close")) {
-        BtwLeft::Panel
+    let open = match command {
+        "/btw" => {
+            rows.iter().any(|r| r.trim_start().starts_with("/btw "))
+                && footer.is_some_and(|f| f.contains("Esc to close"))
+        }
+        "/mcp" => {
+            rows.iter()
+                .any(|r| matches!(r.trim(), "MCP servers" | "MCP server"))
+                && footer.is_some_and(|f| f.contains("Esc to"))
+        }
+        _ => false,
+    };
+    if open {
+        SlashLeft::Panel
     } else {
-        BtwLeft::Nothing
+        SlashLeft::Nothing
     }
 }
 
@@ -1188,15 +1221,33 @@ mod tests {
         let typed = format!("{rule}\n❯\u{a0}/btw [question]\n{rule}\n  -- INSERT --\n");
         let own = format!("{rule}\n❯ /btw why is the build slow?\n{rule}\n");
         let idle = format!("{rule}\n❯ \n{rule}\n  Esc to close is not a footer here\n");
-        assert_eq!(btw_left(panel), BtwLeft::Panel);
-        assert_eq!(btw_left(answering), BtwLeft::Panel);
-        assert_eq!(btw_left(&typed), BtwLeft::Typed);
+        let btw_left = |s: &str| slash_left(s, "/btw");
+        assert_eq!(btw_left(panel), SlashLeft::Panel);
+        assert_eq!(btw_left(answering), SlashLeft::Panel);
+        assert_eq!(btw_left(&typed), SlashLeft::Typed);
         assert_eq!(
             btw_left(&own),
-            BtwLeft::Nothing,
+            SlashLeft::Nothing,
             "a question you typed stays"
         );
-        assert_eq!(btw_left(&idle), BtwLeft::Nothing);
+        assert_eq!(btw_left(&idle), SlashLeft::Nothing);
+    }
+
+    #[test]
+    fn what_an_mcp_popup_left_behind_is_seen() {
+        let rule = "─".repeat(20);
+        let list = "▔▔▔▔\n  MCP servers\n  24 servers\n  ❯ ✔ playwright   25 tools\n  ↑/↓ to navigate · Enter to view · Esc to close\n";
+        let server = "▔▔▔▔\n  playwright\n  MCP server\n  Status: ✔ connected\n  ❯ View tools\n  ↑/↓ to navigate · Enter to select · Esc to go back\n";
+        let typed = format!(
+            "{rule}\n❯ /mcp  [reconnect (<server>|all)|enable|disable [<server>|all]]\n{rule}\n"
+        );
+        let own = format!("{rule}\n❯ /mcp reconnect twenty\n{rule}\n");
+        let mcp_left = |s: &str| slash_left(s, "/mcp");
+        assert_eq!(mcp_left(list), SlashLeft::Panel);
+        assert_eq!(mcp_left(server), SlashLeft::Panel);
+        assert_eq!(mcp_left(&typed), SlashLeft::Typed);
+        assert_eq!(mcp_left(&own), SlashLeft::Nothing);
+        assert_eq!(slash_left(list, "/btw"), SlashLeft::Nothing);
     }
 
     #[test]

@@ -21,12 +21,14 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 | `g` | go to its window |
 | `Enter` | message it: sent now, or once it is idle (`Esc` cancels) |
 | `a` | approve: sends "Approved, carry on." now, or once it is idle |
+| `d` | done: sends "Done, continue." now, or once it is idle, for when it asked you to do something first |
 | `A` | message every session in its row, each once idle |
 | `W` | ask where it is up to |
 | `T` | Haiku sums up its latest turn |
 | `?` | ask it a [side question](tools.md#side-questions) |
 | `r` | [read its last reply fast](tools.md#fast-reading) |
 | `b` | that session in a popup over aq, with `/btw ` typed in its box for a side question; Ctrl-Q closes it, and the side-question panel in the session with it |
+| `c` | the same popup with `/mcp ` typed in; Enter shows the session's MCP servers, to connect, reconnect or turn one off. Ctrl-Q closes it, and the menu in the session with it |
 | `p` | ask an idle session to open a PR (`/create-pr`) and go there |
 | `m` | switch its model: `f` fable, `o` opus, `s` sonnet, `h` haiku |
 | `P` | switch its permission mode: `a` auto, `m` manual, `e` accept edits, `p` plan |

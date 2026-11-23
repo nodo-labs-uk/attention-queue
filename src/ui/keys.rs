@@ -294,6 +294,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             .then_some(("a", "approve".into()))
             .into_iter()
             .chain([
+                ("d", "done".into()),
                 ("Enter", "reply".into()),
                 ("x", "stash".into()),
                 ("r", "read fast".into()),
@@ -331,11 +332,13 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             ("Tab", "last messaged".into()),
             ("Enter", "message".into()),
             ("a", "approve".into()),
+            ("d", "done".into()),
             ("A", "message group".into()),
             ("W", "where are we".into()),
             ("T", "sum up last turn".into()),
             ("r", "read reply fast".into()),
             ("b", "/btw".into()),
+            ("c", "/mcp".into()),
             ("?", "ask".into()),
             ("g", "go to window".into()),
             ("p", "open PR".into()),

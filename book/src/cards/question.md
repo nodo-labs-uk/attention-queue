@@ -9,6 +9,7 @@ When a session ends its turn by asking you something, such as approving a draft 
 | Key | What it does |
 |---|---|
 | `a` | approve: sends "Approved, carry on." (only when the question asks for a go-ahead or names its own pick) |
+| `d` | done: sends "Done, continue.", once you have done what it asked |
 | `Enter` | reply in your own words; Claude's suggested next prompt shows in lighter text, and `Tab` or `Ctrl-F` fills it in |
 | `x` | stash the card |
 | `r` | [read it fast](../tools.md#fast-reading), a word at a time |
