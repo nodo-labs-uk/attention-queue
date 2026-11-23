@@ -27,6 +27,17 @@ pub const TIMEOUT: Duration = Duration::from_secs(180);
 /// How long a flag job may take: the card waits for it.
 pub const FLAG_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How a side question runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Speed {
+    /// The session's model, thinking as it would.
+    Normal,
+    /// The session's model at low effort: `W`, which only sums up.
+    LowEffort,
+    /// The small model with no tools: `T`.
+    Haiku,
+}
+
 /// What a job is for, so its result finds its way back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobKind {
@@ -35,12 +46,12 @@ pub enum JobKind {
     /// Judge the free-text answer to question `question`.
     Judge { question: usize },
     /// A side question, number `index` of the ask overlay. With a session it
-    /// is a fork of that live session; without, a plain call. With `haiku`,
-    /// it runs on the small model with no tools.
+    /// is a fork of that live session; without, a plain call. `speed` picks
+    /// the model and how hard it thinks.
     Ask {
         index: usize,
         session_id: Option<String>,
-        haiku: bool,
+        speed: Speed,
     },
     /// Say what a permission card's tool call does and what it is for, on the
     /// small model. With a session it is a fork of that live session.
@@ -66,10 +77,10 @@ impl JobKind {
     /// The same job as a plain call.
     fn without_session(&self) -> JobKind {
         match self {
-            JobKind::Ask { index, haiku, .. } => JobKind::Ask {
+            JobKind::Ask { index, speed, .. } => JobKind::Ask {
                 index: *index,
                 session_id: None,
-                haiku: *haiku,
+                speed: *speed,
             },
             JobKind::Gist { .. } => JobKind::Gist { session_id: None },
             JobKind::Flag { .. } => JobKind::Flag { session_id: None },
@@ -283,12 +294,26 @@ pub fn claude_command(job: &LlmJob) -> Command {
         JobKind::Gist { .. }
             | JobKind::Flag { .. }
             | JobKind::FlagQuestion { .. }
-            | JobKind::Ask { haiku: true, .. }
+            | JobKind::Ask {
+                speed: Speed::Haiku,
+                ..
+            }
     ) {
         // Not plan mode: in it Claude Code runs Sonnet in place of Haiku.
         cmd.args(["--model", "haiku", "--tools", ""]);
     } else {
         cmd.args(["--permission-mode", "plan", "--tools", "Read,Grep,Glob"]);
+    }
+    // The session's own model and tools, so the fork still reads the
+    // session's prompt cache; less thinking is what makes it quicker.
+    if matches!(
+        job.kind,
+        JobKind::Ask {
+            speed: Speed::LowEffort,
+            ..
+        }
+    ) {
+        cmd.args(["--effort", "low"]);
     }
     cmd.args([
         "--no-session-persistence",
@@ -544,14 +569,14 @@ mod tests {
     }
 
     #[test]
-    fn only_a_haiku_side_question_runs_on_haiku() {
-        let args = |haiku| -> Vec<String> {
+    fn t_runs_on_haiku_and_w_at_low_effort() {
+        let args = |speed| -> Vec<String> {
             let job = LlmJob {
                 card: 1,
                 kind: JobKind::Ask {
                     index: 0,
                     session_id: Some("abc-123".into()),
-                    haiku,
+                    speed,
                 },
                 cwd: "/tmp".into(),
                 prompt: String::new(),
@@ -561,17 +586,26 @@ mod tests {
                 .map(|a| a.to_string_lossy().into())
                 .collect()
         };
-        let small = args(true);
+        let small = args(Speed::Haiku);
         assert!(
             small.windows(2).any(|w| w == ["--model", "haiku"]),
             "{small:?}"
         );
         assert!(small.windows(2).any(|w| w == ["--tools", ""]), "{small:?}");
-        let full = args(false);
+        let full = args(Speed::Normal);
         assert!(!full.iter().any(|a| a == "haiku"), "{full:?}");
+        assert!(!full.iter().any(|a| a == "--effort"), "{full:?}");
         assert!(
             full.windows(2).any(|w| w == ["--tools", "Read,Grep,Glob"]),
             "{full:?}"
+        );
+        // W keeps the session's model and tools, so its cache still counts.
+        let low = args(Speed::LowEffort);
+        assert!(low.windows(2).any(|w| w == ["--effort", "low"]), "{low:?}");
+        assert!(!low.iter().any(|a| a == "haiku"), "{low:?}");
+        assert!(
+            low.windows(2).any(|w| w == ["--tools", "Read,Grep,Glob"]),
+            "{low:?}"
         );
     }
 
@@ -696,7 +730,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session_id.map(Into::into),
-                haiku: false,
+                speed: Speed::Normal,
             },
             cwd: "/tmp".into(),
             prompt: String::new(),
@@ -798,7 +832,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some(id),
-                haiku: false,
+                speed: Speed::Normal,
             },
             cwd: dir.into(),
             prompt: "what word did I ask you to remember?".into(),

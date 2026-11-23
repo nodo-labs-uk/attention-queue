@@ -4,7 +4,7 @@
 
 `?` asks the session a side question about what is on screen: a card, or the picked session in the sessions view. aq starts a copy of the session (`claude --resume --fork-session`) and asks the copy. The session itself never sees the question or the answer, so its conversation and context are not changed.
 
-`W` asks the same kind of copy where the session is up to: a short summary of what is done and what is left.
+`W` asks the same kind of copy where the session is up to: a short summary of what is done and what is left. It runs at low effort, so it answers in about half the time; the copy still uses the session's own model and its prompt cache, so it costs no more.
 
 `T` sums up the latest turn only: what you last asked for, what Claude did, and what it said at the end. It runs on Claude Haiku, through your own `claude` login, so it is quick and cheap. Haiku gets no tools: it reads the conversation and nothing else.
 
