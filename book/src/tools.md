@@ -26,6 +26,12 @@ The last `! command` Claude suggested is copied and, in zsh, already typed in, s
 
 ![Claude asks for a command that needs sudo; ! opens a shell with it typed in](media/shell.svg)
 
+## Quick session
+
+`E` opens a new Claude session in a popup over aq, for a small job that has nothing to do with the work on screen, such as writing an email or looking something up. It runs in a folder of its own, away from your projects: `~/.local/share/aq/quick`, or `aq/quick` under `$XDG_DATA_HOME` if that is set. Every quick session uses the same folder, so Claude asks you to trust it only the first time.
+
+The quick session is kept out of aq: it has no tab, and its prompts and questions show in the popup, not as cards. `Ctrl-Q` closes the popup and ends the session. If the folder is empty, aq then deletes it. If the session left files there, such as a draft, aq keeps them and says where; the next quick session starts with them in its folder.
+
 ## Fast reading
 
 `r` shows a text one word at a time, in the same place, so your eyes do not move. It works on question cards, on messages between sessions, and on a session's last reply in the sessions view.

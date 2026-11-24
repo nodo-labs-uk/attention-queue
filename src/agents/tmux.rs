@@ -111,7 +111,11 @@ impl TmuxConn {
         let (status, out, _) =
             super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux list-panes")?;
         anyhow::ensure!(status.success(), "tmux list-panes failed");
-        Ok(parse_list_panes(&out))
+        // aq's own popups, a quick session among them, are not sessions to queue.
+        Ok(parse_list_panes(&out)
+            .into_iter()
+            .filter(|p| !p.session.starts_with(POPUP_PREFIX))
+            .collect())
     }
 
     /// Runs tmux with `args` and `input` on stdin, for at most `TMUX_TIMEOUT`.
@@ -733,13 +737,39 @@ fn slash_left(screen: &str, command: &str) -> SlashLeft {
     }
 }
 
+/// How the tmux sessions behind aq's popups are named. Their panes are left
+/// out of the session list, so a quick session makes no tab or cards.
+const POPUP_PREFIX: &str = "aq-popup-";
+
+/// `E`: a new Claude session in a popup over aq, in `dir`, made for it.
+/// One folder for every quick session, so Claude asks to trust it only the
+/// first time. aq's hooks are off in it, so its prompts show in the popup.
+/// When the popup closes, the folder goes if it is empty; if the session
+/// left files, they stay and the note returned says where.
+pub fn popup_quick(dir: &Path, look: &PopupLook) -> Result<Option<String>> {
+    std::fs::create_dir_all(dir)?;
+    // A socket that is not there: aq's hooks let Claude go on as without aq.
+    let shown = popup(
+        dir,
+        "Quick session",
+        Some("AQ_SOCKET=/nonexistent/aq.sock claude"),
+        look,
+    );
+    let empty = std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_none());
+    if empty {
+        let _ = std::fs::remove_dir(dir);
+    }
+    shown?;
+    Ok((!empty).then(|| format!("The quick session left files in {}", dir.display())))
+}
+
 /// A tmux popup over aq in `dir`, running `command` or else the shell. The
 /// command runs in a tmux session of its own, so Ctrl-Q closes the popup
 /// as it does `b`'s; the session and what runs in it go with the popup.
 fn popup(dir: &Path, title: &str, command: Option<&str>, look: &PopupLook) -> Result<()> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let view = format!("aq-popup-{}-{n}", std::process::id());
+    let view = format!("{POPUP_PREFIX}{}-{n}", std::process::id());
     // tmux expands formats in the start directory, and a folder name is not
     // ours to trust. The command is run as written.
     let dir = format_literal(&dir.to_string_lossy());

@@ -17,6 +17,7 @@ This is the same list as aq's help page (`F1`).
 | `W` | where are we: a short summary of what is done and what is left |
 | `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a shell in a popup, in this project |
+| `E` | a quick, throwaway Claude session in a popup |
 | `N` | a new Claude session in this project |
 | `O` | open a workspace |
 | drag | select text; letting go copies it |

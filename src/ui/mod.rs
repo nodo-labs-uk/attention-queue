@@ -335,6 +335,7 @@ pub fn draw(frame: &mut Frame, app: &App, hl: &mut Highlighter) {
 pub fn kind_label(kind: &CardKind) -> &'static str {
     match kind {
         CardKind::Permission(_) => "permission",
+        CardKind::Question(q) if !q.asks() => "your move",
         CardKind::Question(_) | CardKind::Choice(_) => "question",
         CardKind::Tell(_) => "message",
         CardKind::Menu(_) => "menu",

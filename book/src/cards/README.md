@@ -10,6 +10,7 @@ Each kind of card has its own keys. These keys work on every card:
 | `W` | where are we: a short summary of what is done and what is left |
 | `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a [shell](../tools.md#shell) in a popup, in this project |
+| `E` | a [quick session](../tools.md#quick-session): a throwaway Claude in a popup |
 | `N` | a [new Claude session](../new-sessions.md) in this project |
 | `O` | open a [workspace](../new-sessions.md#workspaces) |
 | `M` | next [mode](../modes.md) for this project |

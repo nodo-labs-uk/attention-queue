@@ -1,16 +1,19 @@
-# Question and option menu
+# Question, your move and option menu
 
-## Question card
+## Question and your move cards
 
 When a session ends its turn by asking you something, such as approving a draft or choosing between two ways, its last message becomes a question card. If a message of yours is already waiting to go to that session, it answers the question, so no card comes up.
+
+A turn that ends without a question still waits for you, so its last message becomes a "Your move" card with the same keys. Work through the queue and every session that finished gets its next step, with no need to go through the tabs. `Space` leaves one for later. In a vibe project only real questions come up as cards.
 
 ![A session asks to approve a PR draft and a approves it; then Claude's option menu is answered from a card](../media/questions.svg)
 
 | Key | What it does |
 |---|---|
-| `a` | approve: sends "Approved, carry on." (only when the question asks for a go-ahead or names its own pick) |
+| `a` | approve: sends "Approved, carry on." (on a question, only when it asks for a go-ahead or names its own pick) |
 | `d` | done: sends "Done, continue.", once you have done what it asked |
 | `Enter` | reply in your own words; Claude's suggested next prompt shows in lighter text, and `Tab` or `Ctrl-F` fills it in |
+| `T` | [TL;DR](../tools.md#side-questions): Haiku sums up the session's latest turn |
 | `x` | stash the card |
 | `r` | [read it fast](../tools.md#fast-reading), a word at a time |
 | `g` | go to the session's window |
@@ -39,6 +42,7 @@ When Claude asks with its own menu of options (its `AskUserQuestion` tool), the 
 | `j` `k` and `Enter` | the same |
 | `Space` or `1`-`9` | tick an option, where several apply; `Enter` answers |
 | `o` | answer in your own words |
+| `T` | [TL;DR](../tools.md#side-questions): Haiku sums up the session's latest turn |
 | `u` | back a question |
 | `x` | let the menu show in the session's window instead |
 | `g` | the same, and go there |

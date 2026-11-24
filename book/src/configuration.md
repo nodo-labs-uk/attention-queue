@@ -54,6 +54,10 @@ One line for each GitHub action aq checked: what Claude ran, why it was flagged 
 
 `~/.local/state/aq/pr/` holds the worktrees aq makes to review PRs, one folder per PR, named `<owner>-<repo>-<number>`. `XDG_STATE_HOME` moves it. aq removes a worktree when you close the PR review or post the review, if it has no uncommitted changes and no session is working in it.
 
+## Quick sessions
+
+`~/.local/share/aq/quick/` is where `E`'s [quick sessions](tools.md#quick-session) run. `XDG_DATA_HOME` moves it. aq deletes the folder when a quick session closes, if the session left nothing in it.
+
 ## Socket
 
 The hooks reach aq over a Unix socket: `$XDG_RUNTIME_DIR/aq.sock`, or `/tmp/aq-$UID/aq.sock`. `AQ_SOCKET` overrides it. The socket's folder must be private to you; aq refuses to start if other users can open it.

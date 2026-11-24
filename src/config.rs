@@ -98,6 +98,8 @@ pub struct Paths {
     pub config_file: PathBuf,
     pub themes_dir: PathBuf,
     pub state_dir: PathBuf,
+    /// Where `E`'s quick sessions run.
+    pub quick_dir: PathBuf,
     pub socket: PathBuf,
 }
 
@@ -119,6 +121,10 @@ pub fn paths_with(env: impl Fn(&str) -> Option<String>) -> Paths {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".local/state"))
         .join("aq");
+    let quick_dir = get("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join("aq/quick");
     let socket = match (get("AQ_SOCKET"), get("XDG_RUNTIME_DIR")) {
         (Some(s), _) => PathBuf::from(s),
         (None, Some(r)) => PathBuf::from(r).join("aq.sock"),
@@ -128,6 +134,7 @@ pub fn paths_with(env: impl Fn(&str) -> Option<String>) -> Paths {
         config_file: config_dir.join("config.toml"),
         themes_dir: config_dir.join("themes"),
         state_dir,
+        quick_dir,
         socket,
     }
 }

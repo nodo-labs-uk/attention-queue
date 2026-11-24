@@ -31,6 +31,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
         .chain([
             ("d", "done"),
             ("Enter", "reply"),
+            ("T", "TL;DR"),
             ("x", "stash"),
             ("r", "read fast"),
             ("g", "go to window"),
@@ -38,7 +39,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
             ("?", "ask"),
         ])
         .collect();
-    render_text(frame, area, app, card, qc, "Claude is asking", &keys);
+    let title = if qc.asks() {
+        "Claude is asking"
+    } else {
+        "Your move: it finished its turn"
+    };
+    render_text(frame, area, app, card, qc, title, &keys);
 }
 
 /// `S`: the stashed questions, one row each: where it came from and its

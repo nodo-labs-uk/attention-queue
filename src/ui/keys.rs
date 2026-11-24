@@ -52,6 +52,7 @@ fn every_card(app: &App) -> Vec<(&'static str, String)> {
     keys.extend([
         ("M", "mode".into()),
         ("!", "shell".into()),
+        ("E", "quick session".into()),
         ("N", "new session".into()),
     ]);
     keys
@@ -352,6 +353,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             ("R", "review PR".into()),
             ("O", "workspace".into()),
             ("!", "shell".into()),
+            ("E", "quick session".into()),
         ]
         .into_iter()
         .chain(stashed(app))

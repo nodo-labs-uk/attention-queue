@@ -582,6 +582,7 @@ fn apply(
                 title,
                 session_id,
             } => Job::Shell(dir, title, session_id, crate::ui::popup_look(app)),
+            Effect::QuickSession => Job::QuickSession(crate::ui::popup_look(app)),
             Effect::SessionPopup {
                 session,
                 window,
@@ -782,6 +783,7 @@ enum Job {
     SwitchModel(AgentId, &'static str),
     SetPermissionMode(AgentId, &'static str),
     Shell(PathBuf, String, Option<String>, PopupLook),
+    QuickSession(PopupLook),
     SessionPopup {
         session: String,
         window: u32,
@@ -1028,6 +1030,21 @@ fn spawn_effect_worker(
                 Job::Copy(text) => crate::agents::tmux::copy(&text)
                     .err()
                     .map(|e| Msg::EffectFailed(format!("Could not copy: {e:#}"))),
+                // Waited on apart, as the shell is.
+                Job::QuickSession(look) => {
+                    let tx = tx.clone();
+                    let dir = paths.quick_dir.clone();
+                    std::thread::spawn(move || {
+                        let note =
+                            crate::agents::tmux::popup_quick(&dir, &look).unwrap_or_else(|e| {
+                                Some(format!("Could not open a quick session: {e:#}"))
+                            });
+                        if let Some(note) = note {
+                            let _ = tx.send(Msg::EffectFailed(note));
+                        }
+                    });
+                    None
+                }
                 // The popup lasts as long as the shell, so it is waited on
                 // apart from the other jobs.
                 Job::Shell(dir, title, session_id, look) => {

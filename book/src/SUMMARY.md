@@ -18,7 +18,7 @@
   - [Shell change](cards/shell-change.md)
   - [Permission](cards/permission.md)
   - [Flagged action](cards/flagged.md)
-  - [Question and option menu](cards/question.md)
+  - [Question, your move and option menu](cards/question.md)
   - [Message between sessions](cards/message.md)
   - [Quiz](cards/quiz.md)
 - [Sessions view](sessions.md)

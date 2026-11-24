@@ -8,7 +8,7 @@ Cards are shown in this order:
 
 1. Permission prompts and Claude's option menus. A session is stuck until you answer these.
 2. Step and shell-change cards, grouped by project.
-3. Everything else (reviews, questions, quizzes, messages), oldest first.
+3. Everything else (reviews, questions, your move cards, quizzes, messages), oldest first.
 
 A card that comes in while you are on another one joins the queue. It never takes the screen from the card you are on.
 
