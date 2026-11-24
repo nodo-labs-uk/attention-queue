@@ -419,6 +419,9 @@ pub enum Effect {
         command: &'static str,
         type_it: bool,
     },
+    /// A new Claude session in a popup over aq, in a folder of its own,
+    /// gone when it closes.
+    QuickSession,
     /// Open a shell in a tmux popup over aq, gone when the shell exits.
     Shell {
         dir: PathBuf,
@@ -1860,6 +1863,7 @@ impl App {
             KeyCode::Char('W') => self.ask_where_are_we(),
             KeyCode::Char('T') => self.summarise_turn(),
             KeyCode::Char('!') => self.open_shell(),
+            KeyCode::Char('E') => self.open_quick_session(),
             KeyCode::Char('N') => {
                 // With no session to start from, aq's own folder.
                 let here = self.here().map(|(dir, name, _)| (dir, name)).or_else(|| {
@@ -2016,6 +2020,16 @@ impl App {
             title: format!("Shell in {name}"),
             session_id,
         }]
+    }
+
+    /// `E`: a quick, throwaway Claude session in a popup, for a small job
+    /// such as writing an email.
+    fn open_quick_session(&mut self) -> Vec<Effect> {
+        if !self.practice_agents.is_empty() {
+            self.set_status("The tour's sessions are made up: E works outside the tour");
+            return Vec::new();
+        }
+        vec![Effect::QuickSession]
     }
 
     fn next_theme(&mut self) -> Vec<Effect> {
@@ -4034,6 +4048,12 @@ pub(crate) mod tests {
             matches!(&e[..], [Effect::Shell { dir, .. }] if dir == std::path::Path::new("/w/web")),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn e_opens_a_quick_session() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        assert_eq!(a.update(key('E')), vec![Effect::QuickSession]);
     }
 
     #[test]

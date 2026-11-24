@@ -48,6 +48,10 @@ finished turn; the card on screen stays as it is.
   !    a shell in a popup, in this project; for sudo, logins, or commands
        Claude may not run. Claude's last suggested `! command` is copied
        and, in zsh, typed in ready to run. Ctrl-Q or exit closes it
+  E    a quick Claude session in a popup, for a small job such as an
+       email, in a folder of its own (~/.local/share/aq/quick), with no
+       tab or cards. Ctrl-Q ends it; the folder goes if it is empty, and
+       if it left files aq says where they are
   R    review a pull request              M    next mode for this project
   t    next theme                         Ctrl-Q close any window or popup (Esc too)
   F1   this help                          Q    quit aq
@@ -119,7 +123,9 @@ in aq's state folder.
 
 # Question card
 When a session ends its turn by asking you something (to approve a
-draft, to choose between two ways), its message becomes a card.
+draft, to choose between two ways), its message becomes a card. A turn
+that asks nothing becomes a Your move card with the same keys, except
+in vibe mode.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words;
      Claude's suggestion shows in lighter text, Tab or Ctrl-F fills it in
      a is there only when it asks for a go-ahead or names its pick

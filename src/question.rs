@@ -40,15 +40,22 @@ pub enum Kind {
 pub type Row = Vec<(Kind, String)>;
 
 impl QuestionCard {
-    /// Whether a yes answers the question: it asks for a go-ahead, or
-    /// names its own pick, in its last lines. "How long did it take?"
-    /// does not, and has no approve.
+    /// Whether the turn ended by asking you something. If not, the card
+    /// only says the session waits for your next move.
+    pub fn asks(&self) -> bool {
+        asks(&self.text)
+    }
+
+    /// Whether a yes answers the card: the turn did not ask anything, or it
+    /// asks for a go-ahead or names its own pick in its last lines. "How
+    /// long did it take?" does not, and has no approve.
     pub fn approvable(&self) -> bool {
-        spoken(&self.text)
-            .iter()
-            .rev()
-            .take(TAIL)
-            .any(|l| wants_go_ahead(l))
+        !self.asks()
+            || spoken(&self.text)
+                .iter()
+                .rev()
+                .take(TAIL)
+                .any(|l| wants_go_ahead(l))
     }
 
     /// The line that does the asking: the last one with a question mark
@@ -333,7 +340,10 @@ impl App {
         // question the moment it is sent, so a card would only flash up.
         let answered =
             self.prompts.contains_key(&agent) || self.held.values().any(|(a, _)| *a == agent);
-        if answered || !asks(&text) {
+        // A turn that asks nothing still waits for your next move, unless
+        // its project checks nothing.
+        let vibe = self.config.mode_for(&checkout) == crate::model::Mode::Vibe;
+        if answered || (vibe && !asks(&text)) {
             return Vec::new();
         }
         self.next_card_id += 1;
@@ -792,10 +802,37 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_turn_waits_for_your_move_except_in_vibe_mode() {
+        let mut a = app();
+        said(&mut a, "Done. The form keeps its state now.");
+        let Some(crate::model::Card {
+            kind: CardKind::Question(q),
+            ..
+        }) = a.queue.current()
+        else {
+            panic!("a Your move card")
+        };
+        assert!(!q.asks() && q.approvable());
+        assert_eq!(
+            crate::ui::kind_label(&a.queue.current().unwrap().kind),
+            "your move"
+        );
+        let effects = a.update(key('a'));
+        assert!(
+            matches!(&effects[..], [Effect::Send { text, .. }] if text == "Approved, carry on.")
+        );
+        assert!(a.queue.is_empty());
+        a.config
+            .set_mode(&Checkout("/w/api".into()), crate::model::Mode::Vibe);
+        said(&mut a, "Done again.");
+        assert!(a.queue.is_empty(), "vibe mode checks nothing");
+        said(&mut a, "Shall I push?");
+        assert_eq!(a.queue.len(), 1, "but a question still comes");
+    }
+
+    #[test]
     fn a_question_lasts_only_while_its_session_waits_on_it() {
         let mut a = app();
-        said(&mut a, "Done.");
-        assert!(a.queue.is_empty(), "nothing asked");
         said(&mut a, "Shall I go on?");
         // A finished turn asks for its last message, whatever the mode.
         let mut busy = a.agents.clone();

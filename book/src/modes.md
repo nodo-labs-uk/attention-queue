@@ -11,7 +11,9 @@ The tab shows the mode when it is not review. A new mode applies from the sessio
 | Review (the default) | When a session finishes a turn, its diff becomes a [review card](cards/review.md). |
 | Step by step | Each edit waits for you before it is applied, as a [step card](cards/step.md). A shell command that changed files becomes a [shell change card](cards/shell-change.md). |
 | Quiz | When a session finishes, you explain pieces of its diff in your own words on a [quiz card](cards/quiz.md). |
-| Vibe | Nothing is checked. A finished turn makes no card. |
+| Vibe | Nothing is checked. A finished turn makes no card unless it asks you something. |
+
+Outside vibe mode, a finished turn that asks nothing also makes a [your move card](cards/question.md), so each session that stopped gets its next step from the queue.
 
 In every mode, permission prompts, questions, option menus, messages between sessions and [flagged actions](cards/flagged.md) still come to the queue.
 

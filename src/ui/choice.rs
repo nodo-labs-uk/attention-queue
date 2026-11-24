@@ -94,7 +94,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, cc: &Choice
 }
 
 /// The keys the card takes, and what each does.
-fn key_hints(cc: &ChoiceCard) -> [(&'static str, &'static str); 5] {
+fn key_hints(cc: &ChoiceCard) -> [(&'static str, &'static str); 6] {
     let multi = cc.current().is_some_and(|q| q.multi);
     [
         if multi {
@@ -104,6 +104,7 @@ fn key_hints(cc: &ChoiceCard) -> [(&'static str, &'static str); 5] {
         },
         ("Enter", "answer"),
         ("o", "own words"),
+        ("T", "TL;DR"),
         ("u", "back"),
         ("x", "answer in the window"),
     ]
