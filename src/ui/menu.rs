@@ -42,7 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, mc: &MenuCa
         } else {
             " ".into()
         };
-        let mark = if i == mc.menu.cursor { "❯" } else { " " };
+        let mark = if i == mc.sel { "❯" } else { " " };
         // The option as drawn starts with the same number as its key.
         let text = option
             .strip_prefix(&format!("{}.", i + 1))

@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding};
 use crate::theme::Theme;
 
 /// The widest a window gets: text this wide reads in one sweep.
-const WIDTH: u16 = 100;
+pub const WIDTH: u16 = 100;
 
 /// Rows of a short window, border included.
 const SHORT_ROWS: u16 = 12;
@@ -45,7 +45,7 @@ pub fn place(area: Rect, height: Height) -> Rect {
 }
 
 /// Columns and rows the border and padding take from a window.
-pub const INSET: (u16, u16) = (4, 2);
+pub const INSET: (u16, u16) = (6, 2);
 
 /// `keys` (key, what it does) as a line of hints.
 pub fn hints(keys: &[(&str, &str)], t: &Theme) -> Line<'static> {
@@ -83,7 +83,7 @@ pub fn draw(frame: &mut Frame, panel: Rect, title: &str, keys: &[(&str, &str)], 
             ),
         ]))
         .title(at_right(&[CLOSE]))
-        .padding(Padding::horizontal(1))
+        .padding(Padding::horizontal(2))
         .style(Style::new().bg(t.panel).fg(t.fg));
     if !keys.is_empty() {
         block = block.title_bottom(at_right(keys));

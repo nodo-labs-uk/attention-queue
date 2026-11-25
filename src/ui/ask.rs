@@ -13,17 +13,11 @@ use crate::theme::Theme;
 /// being typed in a box along its bottom edge.
 pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
     let tldr = !ask.entries.is_empty() && ask.entries.iter().all(|e| e.question == SUMMARISE);
-    let title = if tldr {
-        "TL;DR"
-    } else if ask.card == crate::ask::NO_CARD {
-        "Ask this session"
-    } else {
-        "Ask about this card"
-    };
+    let title = if tldr { "TL;DR" } else { "Ask this session" };
     let keys: &[(&str, &str)] = if ask.input.is_some() {
         &[("Enter", "ask")]
     } else {
-        &[("?", "ask more")]
+        &[("b", "/btw")]
     };
     // A short window while the answers fit in one, as `T`'s do.
     let short = window::place(area, Height::Short);
@@ -137,7 +131,7 @@ mod tests {
         let mut a = app();
         a.queue
             .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
-        a.update(key('?'));
+        a.update(key('b'));
         let Some(Overlay::Ask(ask)) = &mut a.overlay else {
             panic!()
         };
@@ -147,22 +141,25 @@ mod tests {
                 question: "why?".into(),
                 answer: Answer::Pending,
                 fallback: false,
+                btw: true,
             },
             Entry {
                 question: "how?".into(),
                 answer: Answer::Failed("took too long".into()),
                 fallback: false,
+                btw: true,
             },
             Entry {
                 question: "who?".into(),
                 answer: Answer::Done("Kiwi did.".into()),
                 fallback: false,
+                btw: false,
             },
         ];
         let screen = render(&a, 80, 24);
         for want in [
-            "why?",
-            "Asking…",
+            "/btw why?",
+            "Claude is answering in its window…",
             "took too long",
             "r to retry",
             "Kiwi did.",

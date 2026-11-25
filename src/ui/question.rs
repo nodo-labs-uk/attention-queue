@@ -20,7 +20,7 @@ pub const TELL_KEYS: [(&str, &str); 7] = [
     ("n", "drop"),
     ("r", "read fast"),
     ("B", "move to back"),
-    ("?", "ask"),
+    ("b", "/btw"),
     ("j/k", "scroll"),
 ];
 
@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
             ("r", "read fast"),
             ("g", "go to window"),
             ("B", "move to back"),
-            ("?", "ask"),
+            ("b", "/btw"),
         ])
         .collect();
     let title = if qc.asks() {
@@ -258,6 +258,7 @@ mod tests {
                     options: vec!["1. Yes".into(), "2. No, keep planning".into()],
                     cursor: 0,
                 },
+                sel: 0,
                 picked: false,
             }),
             10,

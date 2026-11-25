@@ -39,7 +39,7 @@ Comment as on any review card. `s` sends every comment to the Claude session in 
 
 ## Asking about a PR
 
-`?` asks Claude a [side question](../tools.md#side-questions) about the PR, on your own PR or someone else's. The PR's description goes with the question.
+`W` asks a copy of the session where the PR stands, with the PR's description, on your own PR or someone else's. `b` asks a [side question](../tools.md#side-questions) with `/btw` when a session works in the PR's folder.
 
 ## Someone else's PR
 

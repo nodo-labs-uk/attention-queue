@@ -283,7 +283,7 @@ pub fn flag_band(frame: &mut Frame, body: Rect, app: &App, state: &FlagState) ->
 pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
     let t = app.theme();
     let [band, caption, body, gist, more, keys] =
-        crate::permission::card_areas(area, pc.held.is_some());
+        crate::permission::card_areas(area, pc.held.is_some(), pc.gist_max());
     // The panel starts under the band's rows; rows the band leaves unused
     // go below the body, which keeps the height the scrolling counts on.
     let mut lift = 0;
@@ -315,7 +315,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         );
         frame.render_widget(Block::new().style(Style::new().bg(t.panel)), panel);
         frame.render_widget(
-            Paragraph::new(visible_code(&pc.tool_name)).style(Style::new().fg(t.dim)),
+            Paragraph::new(visible_code(&pc.caption())).style(Style::new().fg(t.dim)),
             caption,
         );
     }
@@ -338,13 +338,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
     if pc.held.is_none() && gist.height > 0 {
         // Straight under the panel, after a blank row.
         let y = body.y + shown_rows + 1;
-        let height = GIST_ROWS.min(gist.bottom().saturating_sub(y));
+        let height = (gist.height - 1).min(gist.bottom().saturating_sub(y));
         let style = match pc.gist {
-            Gist::Done(_) => Style::new().fg(t.dim).add_modifier(Modifier::ITALIC),
+            Gist::Done(_) => Style::new().fg(t.fg).add_modifier(Modifier::ITALIC),
             Gist::Pending | Gist::Failed(_) => Style::new().fg(t.dim),
         };
         let gist_rows: Vec<Line> = pc
-            .gist_rows(body.width as usize)
+            .gist_rows(body.width as usize, usize::from(height))
             .into_iter()
             .map(Line::from)
             .collect();
@@ -367,7 +367,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         ("y", "allow"),
         ("n", "deny"),
         ("g", "go to window"),
-        ("?", "ask"),
+        ("b", "/btw"),
     ] {
         spans.extend(super::keys::cap(k, label, t));
     }
@@ -511,18 +511,20 @@ mod tests {
             let band = row("SOMEONE ELSE");
             let tint = t.tint(t.others);
             assert_ne!(tint, t.bg, "{}", t.name);
-            // Across the card's width, past the end of the text.
-            assert_eq!(buf[(0, band)].bg, tint, "{}", t.name);
-            assert_eq!(buf[(95, band)].bg, tint, "{}", t.name);
-            assert_eq!(buf[(1, band)].fg, t.others, "{}", t.name);
+            // Across the card's column (two columns in on this screen),
+            // past the end of the text.
+            assert_eq!(buf[(2, band)].bg, tint, "{}", t.name);
+            assert_eq!(buf[(97, band)].bg, tint, "{}", t.name);
+            assert_eq!(buf[(1, band)].bg, t.bg, "the margin stays clear");
+            assert_eq!(buf[(3, band)].fg, t.others, "{}", t.name);
             let conflict = row("Conflict");
-            assert_eq!(buf[(1, conflict)].fg, t.del, "{}", t.name);
-            assert_eq!(buf[(30, conflict)].fg, t.del, "{}", t.name);
-            assert_eq!(buf[(1, row("Who"))].bg, t.bg, "the facts are off the strip");
+            assert_eq!(buf[(3, conflict)].fg, t.del, "{}", t.name);
+            assert_eq!(buf[(32, conflict)].fg, t.del, "{}", t.name);
+            assert_eq!(buf[(3, row("Who"))].bg, t.bg, "the facts are off the strip");
             let command = row("gh pr merge");
-            assert_eq!(buf[(1, row("Bash"))].bg, t.panel, "{}", t.name);
-            assert_eq!(buf[(2, command)].bg, t.panel, "{}", t.name);
-            assert_eq!(buf[(2, command)].fg, t.key, "{}", t.name);
+            assert_eq!(buf[(3, row("Bash"))].bg, t.panel, "{}", t.name);
+            assert_eq!(buf[(4, command)].bg, t.panel, "{}", t.name);
+            assert_eq!(buf[(4, command)].fg, t.key, "{}", t.name);
         }
     }
 

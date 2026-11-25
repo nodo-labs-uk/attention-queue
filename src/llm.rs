@@ -14,6 +14,7 @@ use anyhow::{Context, Result, anyhow, bail};
 pub const QUIZ_PROMPT: &str = include_str!("../prompts/quiz.md");
 pub const JUDGE_PROMPT: &str = include_str!("../prompts/judge.md");
 pub const GIST_PROMPT: &str = include_str!("../prompts/gist.md");
+pub const PLAN_GIST_PROMPT: &str = include_str!("../prompts/plan-gist.md");
 pub const FLAG_PROMPT: &str = include_str!("../prompts/flag.md");
 pub const FLAG_QUESTION_PROMPT: &str = include_str!("../prompts/flag-question.md");
 pub const QUIZ_SCHEMA: &str = include_str!("../schemas/quiz.json");
@@ -30,8 +31,6 @@ pub const FLAG_TIMEOUT: Duration = Duration::from_secs(30);
 /// How a side question runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Speed {
-    /// The session's model, thinking as it would.
-    Normal,
     /// The session's model at low effort: `W`, which only sums up.
     LowEffort,
     /// The small model with no tools: `T`.
@@ -592,13 +591,6 @@ mod tests {
             "{small:?}"
         );
         assert!(small.windows(2).any(|w| w == ["--tools", ""]), "{small:?}");
-        let full = args(Speed::Normal);
-        assert!(!full.iter().any(|a| a == "haiku"), "{full:?}");
-        assert!(!full.iter().any(|a| a == "--effort"), "{full:?}");
-        assert!(
-            full.windows(2).any(|w| w == ["--tools", "Read,Grep,Glob"]),
-            "{full:?}"
-        );
         // W keeps the session's model and tools, so its cache still counts.
         let low = args(Speed::LowEffort);
         assert!(low.windows(2).any(|w| w == ["--effort", "low"]), "{low:?}");
@@ -730,7 +722,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session_id.map(Into::into),
-                speed: Speed::Normal,
+                speed: Speed::LowEffort,
             },
             cwd: "/tmp".into(),
             prompt: String::new(),
@@ -832,7 +824,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some(id),
-                speed: Speed::Normal,
+                speed: Speed::LowEffort,
             },
             cwd: dir.into(),
             prompt: "what word did I ask you to remember?".into(),

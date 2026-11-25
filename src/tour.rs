@@ -747,14 +747,17 @@ impl App {
             }
             "W" => {
                 self.overlay = Some(Overlay::Ask(Box::new(AskState {
+                    id: 0,
                     card: NO_CARD,
                     checkout,
                     session_id: None,
+                    pane: None,
                     context: String::new(),
                     entries: vec![Entry {
                         question: WHERE_ARE_WE.into(),
                         answer: crate::ask::Answer::Done(WHERE_WEB_IS.into()),
                         fallback: false,
+                        btw: false,
                     }],
                     input: None,
                     scroll: 0,

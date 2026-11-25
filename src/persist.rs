@@ -31,6 +31,8 @@ pub struct SavedState {
     /// The Claude sessions open in tmux when aq last looked, to reopen
     /// when aq starts and none are open, as after the machine restarts.
     pub sessions: Vec<OpenSession>,
+    /// Zen mode was on.
+    pub zen: bool,
 }
 
 /// A Claude session in a tmux window, enough to start it again there with
@@ -198,6 +200,7 @@ impl App {
         state.quizzes.retain(|q| mode(&q.card) == Mode::Quiz);
         self.rounds = state.rounds.clone();
         self.open_sessions = state.sessions.clone();
+        self.zen = state.zen;
         self.unclaimed = Unclaimed {
             drafts: state.drafts.clone(),
             quizzes: state.quizzes.clone(),
@@ -212,6 +215,7 @@ impl App {
             drafts: self.unclaimed.drafts.clone(),
             quizzes: self.unclaimed.quizzes.clone(),
             sessions: self.open_sessions.clone(),
+            zen: self.zen,
         };
         for card in self.queue.iter().filter(|c| !crate::tour::is_practice(c)) {
             match &card.kind {

@@ -13,7 +13,7 @@ This is the same list as aq's help page (`F1`).
 | `t` | next theme |
 | `Ctrl-Q` | close any window or popup; `Esc` closes aq's own windows too |
 | `Q` | quit aq |
-| `?` | ask the session a side question; a copy answers |
+| `b` | ask the session a side question with `/btw`; only the answer shows (on a step card, `b` moves back a word) |
 | `W` | where are we: a short summary of what is done and what is left |
 | `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a shell in a popup, in this project |
@@ -67,7 +67,6 @@ This is the same list as aq's help page (`F1`).
 | `R` | list open PRs, or open one by number or link |
 | `i` | read the PR's description |
 | `D` | close the PR review |
-| `?` | ask Claude about the PR |
 | `s` | on someone else's PR, post the comments as a review |
 | `a` `X` | on someone else's PR, post and approve, or post and request changes |
 | `r` | on someone else's PR, check it out again |
@@ -109,7 +108,7 @@ This is the same list as aq's help page (`F1`).
 | Key | What it does |
 |---|---|
 | `a` | approve (sends "Approved, carry on.") |
-| `d` | done (sends "Done, continue."), once you have done what it asked |
+| `d` | done for now: closes the card and sends nothing, so the session waits |
 | `Enter` | reply in your own words |
 | `x` | stash the card |
 | `S` | the stashed questions: `Enter` brings one back, `x` drops it |
@@ -135,6 +134,7 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | Key | What it does |
 |---|---|
 | `1`-`9` | pick that option |
+| `↑` `↓` (`j` `k`) and `Enter` | move to an option and pick it |
 | `g` | go to the session's window |
 | `x` | leave the menu to be answered in the window |
 
@@ -181,13 +181,12 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `Tab` | the session you last typed in; again for the one before |
 | `Enter` | message it |
 | `a` | approve: sends "Approved, carry on." |
-| `d` | done: sends "Done, continue." |
 | `A` | message every session in its tmux session |
+| `z` | zen mode: hide the tabs and show the session in the cards' column |
 | `p` | ask it to open a PR |
 | `m` | switch its model |
 | `P` | switch its permission mode |
 | `r` | read its last reply fast |
-| `b` | the session in a popup, with `/btw` typed |
 | `c` | the session in a popup, with `/mcp` typed, to manage its MCP servers |
 | `x` | close its pane |
 | `Esc Esc` | stop it |

@@ -7,10 +7,14 @@ When nothing is waiting, aq shows a tab for each Claude session, with the picked
 ## Tabs
 
 - `●` means the session is waiting for you; `○` means it is working. A session with only background jobs running counts as waiting, so messages still reach it.
-- Each tab shows the session's permission mode (auto, plan, accept edits) as its footer does, and the project's mode when it is not review.
+- Each tab shows the session's permission mode when it is not auto (manual, plan, accept edits), and the project's mode when it is not review. The caption over the session's screen always shows its permission mode. Tabs share one width, so they line up in columns.
 - Each [workspace](new-sessions.md#workspaces) gets a row of its own, and so does each other tmux session, led by its name.
 
 While aq's window is showing, tmux's own status line is hidden, since the tabs list the sessions. It shows on your other windows, and comes back when aq quits.
+
+## Zen mode
+
+`z` hides the tabs and shows the picked session in the same centred column as the cards, under its caption. `h` and `l` still switch sessions, and `z` again brings the tabs back. aq remembers the setting when it restarts.
 
 ## Keys
 
@@ -21,14 +25,13 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 | `g` | go to its window |
 | `Enter` | message it: sent now, or once it is idle (`Esc` cancels) |
 | `a` | approve: sends "Approved, carry on." now, or once it is idle |
-| `d` | done: sends "Done, continue." now, or once it is idle, for when it asked you to do something first |
 | `A` | message every session in its row, each once idle |
+| `z` | zen mode: hide the tabs and show the session in the cards' column |
 | `W` | ask where it is up to |
 | `T` | Haiku sums up its latest turn |
-| `?` | ask it a [side question](tools.md#side-questions) |
+| `b` | ask it a [side question](tools.md#side-questions) with `/btw`; only the answer shows |
 | `r` | [read its last reply fast](tools.md#fast-reading) |
-| `b` | that session in a popup over aq, with `/btw ` typed in its box for a side question; Ctrl-Q closes it, and the side-question panel in the session with it |
-| `c` | the same popup with `/mcp ` typed in; Enter shows the session's MCP servers, to connect, reconnect or turn one off. Ctrl-Q closes it, and the menu in the session with it |
+| `c` | the session's own window in a popup over aq, with `/mcp ` typed in; Enter shows the session's MCP servers, to connect, reconnect or turn one off. Ctrl-Q closes it, and the menu in the session with it |
 | `p` | ask an idle session to open a PR (`/create-pr`) and go there |
 | `m` | switch its model: `f` fable, `o` opus, `s` sonnet, `h` haiku |
 | `P` | switch its permission mode: `a` auto, `m` manual, `e` accept edits, `p` plan |
