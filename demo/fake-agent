@@ -2,28 +2,53 @@
 # Stands in for a Claude Code session in the demo recordings: shows a
 # conversation and an input box like Claude Code's, and answers each line
 # pasted into it with the next line of $2.
+# A menu written to "$1.menu" shows in place of the input box once the
+# agent gets SIGUSR1 (its pid is in "$1.pid"); Enter answers it, and the
+# next reply follows.
 # usage: fake-agent <conversation file> [replies file]
 log=$(mktemp)
 cat "$1" >"$log"
 replies=${2:-/dev/null}
+menu="$1.menu"
+echo $$ >"$1.pid"
 n=0
 stty -echo 2>/dev/null
 draw() {
     printf '\033[H\033[2J'
     cat "$log"
     rule=$(printf '─%.0s' $(seq 1 "$(tput cols)"))
+    if [ -s "$menu" ]; then
+        printf '\n\033[2m%s\033[0m\n' "$rule"
+        cat "$menu"
+        return
+    fi
     printf '\n\033[2m%s\033[0m\n❯ \n\033[2m%s\033[0m\n' "$rule" "$rule"
     printf '  \033[2m⏵⏵ accept edits on\033[0m\n'
 }
+reply() {
+    n=$((n + 1))
+    sed -n "${n}p" "$replies"
+}
+trap draw USR1
 draw
-while IFS= read -r line; do
+while true; do
+    IFS= read -r line
+    status=$?
+    # A signal interrupts the read: read again.
+    [ $status -gt 128 ] && continue
+    [ $status -ne 0 ] && break
+    if [ -s "$menu" ]; then
+        : >"$menu"
+        printf '\n● %s\n' "$(reply)" >>"$log"
+        draw
+        continue
+    fi
     # A pasted message arrives as several lines in quick succession.
     msg="❯ $line"
     while IFS= read -r -t 0.3 more; do
         msg+=$'\n'"  $more"
     done
-    n=$((n + 1))
-    reply=$(sed -n "${n}p" "$replies")
-    printf '\n\033[1m%s\033[0m\n\n● %s\n' "$msg" "${reply:-On it.}" >>"$log"
+    r=$(reply)
+    printf '\n\033[1m%s\033[0m\n\n● %s\n' "$msg" "${r:-On it.}" >>"$log"
     draw
 done

@@ -153,9 +153,21 @@ Moving around works as in vim. [Every key](https://nodo-labs-uk.github.io/attent
 </details>
 
 <details>
+<summary>Approve a plan from its card</summary>
+
+![A plan comes up as a card with Haiku's key points; y approves it and picks yes in Claude Code's own plan menu](docs/media/plan.svg)
+</details>
+
+<details>
 <summary>Switch between sessions and message one</summary>
 
 ![Switching between sessions, messaging one, and asking where it's up to](docs/media/sessions.svg)
+</details>
+
+<details>
+<summary>Zen mode: one session, no tabs</summary>
+
+![z hides the tabs and shows the picked session in a centred column; h and l still switch sessions](docs/media/zen.svg)
 </details>
 
 <details>

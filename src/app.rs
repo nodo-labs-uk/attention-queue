@@ -947,7 +947,7 @@ impl App {
             KeyCode::Char('z') => {
                 self.zen = !self.zen;
                 self.set_status(if self.zen {
-                    "Zen mode: the tabs are hidden, h/l still switch; z shows them again"
+                    "Zen mode: z shows the tabs again"
                 } else {
                     "Zen mode off"
                 });
