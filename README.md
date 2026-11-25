@@ -111,6 +111,7 @@ Then run `aq` in a tmux window. The tour starts on its own.
 | `y` `n` | allow or refuse an edit or a permission prompt |
 | `c` `s` `a` | on a review: comment on a line, send the comments, approve |
 | `a` `d` `Enter` | on a question: approve, stop for now (closes the card, sends nothing), or reply |
+| `c` | on a question, message or permission card: copy its last web link |
 | `Space` | skip this card for now |
 | `M` | switch this project's mode: review, step, quiz, vibe |
 

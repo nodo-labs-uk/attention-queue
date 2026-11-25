@@ -114,6 +114,7 @@ Someone else's PR:
      Haiku's key points on screen, and y picks Yes, and use auto
      mode in Claude's plan menu)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
+  c  copy the last web link on the card
 
 # Flagged action card
 A risky action Claude runs (a push, a merge, a PR comment, a release) is
@@ -121,6 +122,7 @@ held in every mode on a permission card with a band: ▌▌ SOMEONE ELSE or
 AS YOU, or ▲ MAIN BRANCH, TAG, RELEASE, FORCE PUSH, DELETE BRANCH...
   y  allow (once you have scrolled to the end)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
+  c  copy the last web link on the card
 A card whose band reads aq could not check this is held too.
 An unanswered call is refused, never allowed. The log is flags.jsonl
 in aq's state folder.
@@ -135,6 +137,8 @@ in vibe mode.
      a is there only when it asks for a go-ahead or names its pick
   d  done for now: closes the card and sends nothing
   x  stash the card      g  go to the session's window   j/k scroll
+  c  copy the last web link on the card, as on message, permission,
+     choice and menu cards
   S  the stashed questions: Enter brings one back, x drops it
   r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
      number and Enter set the words a minute, ←/→ go back or on

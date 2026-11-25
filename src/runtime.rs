@@ -72,8 +72,11 @@ pub async fn run(paths: Paths, conn: Arc<dyn AgentConn>) -> Result<()> {
     let mut terminal = ratatui::try_init().context("starting the terminal")?;
     // For the wheel. Selecting text then takes Shift, as in most TUIs.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    // A paste then arrives whole, never as keys that could act on a card.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let (result, background) = event_loop(&mut terminal, &mut app, &paths, conn, listener).await;
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     let _ = std::fs::remove_file(&paths.socket);
     if let Some(e) = background.finish(QUIT_WAIT) {
@@ -568,6 +571,7 @@ fn apply(
                 dirs,
                 system,
             } => Job::OpenWorkspace(group, dirs, system),
+            Effect::CopyText(text) => Job::Copy(text),
             Effect::Copy(sel) => {
                 let text = workers
                     .screen
@@ -1712,6 +1716,7 @@ fn spawn_key_reader(tx: UnboundedSender<Msg>) {
         while let Ok(ev) = event::read() {
             let msg = match ev {
                 Event::Key(key) => Msg::Key(key, std::time::Instant::now()),
+                Event::Paste(text) => Msg::Paste(text, std::time::Instant::now()),
                 Event::Mouse(m) => match m.kind {
                     event::MouseEventKind::ScrollUp => Msg::Wheel { up: true },
                     event::MouseEventKind::ScrollDown => Msg::Wheel { up: false },

@@ -111,6 +111,7 @@ This is the same list as aq's help page (`F1`).
 | `d` | done for now: closes the card and sends nothing, so the session waits |
 | `Enter` | reply in your own words |
 | `x` | stash the card |
+| `c` | copy the last web link on the card (also on message, permission, choice and menu cards) |
 | `S` | the stashed questions: `Enter` brings one back, `x` drops it |
 | `r` | read it fast |
 | `g` | go to the session's window |
@@ -204,3 +205,5 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `Alt-Backspace` | the same, up to punctuation |
 | `Ctrl-A` `Ctrl-E` | line start or end |
 | `Alt-B` `Alt-F` | word back or forward |
+
+Pasting puts the text into the box. In a one-line box, line breaks become spaces, so a paste never sends the message. With no box open, aq ignores a paste, so pasted text never acts as keys.

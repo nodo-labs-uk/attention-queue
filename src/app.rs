@@ -71,6 +71,8 @@ pub enum Msg {
         row: u16,
         at: Instant,
     },
+    /// Text pasted into the terminal, all at once.
+    Paste(String, Instant),
     /// The mouse wheel turned one notch.
     Wheel {
         up: bool,
@@ -418,6 +420,8 @@ pub enum Effect {
     /// Copy the screen's text under a selection (row by row, as a terminal
     /// selects) to the tmux buffer, and so the clipboard.
     Copy(Selection),
+    /// Copy `text` to the tmux buffer, and so the clipboard.
+    CopyText(String),
     /// Open `path` at `line` in $VISUAL or $EDITOR, in a tmux popup over aq.
     Edit {
         dir: PathBuf,
@@ -1294,6 +1298,71 @@ impl App {
             .map(|(_, said)| said)
     }
 
+    /// `c` on a card: copies the last web link in it.
+    fn copy_last_link(&mut self) -> Vec<Effect> {
+        let Some(card) = self.queue.current() else {
+            return Vec::new();
+        };
+        match last_link(&crate::ask::context_for(card)) {
+            Some(link) => {
+                self.set_status(format!("Copied {link}"));
+                vec![Effect::CopyText(link)]
+            }
+            None => {
+                self.set_status("No web link on this card");
+                Vec::new()
+            }
+        }
+    }
+
+    /// The text box being typed in, if any.
+    fn typing_in(&self) -> Option<&TextInput> {
+        use crate::workspace::Stage;
+        Some(match self.overlay.as_ref()? {
+            Overlay::Ask(a) => a.input.as_ref()?,
+            Overlay::Comment(d) => &d.input,
+            Overlay::StepReason(d) => &d.input,
+            Overlay::OwnAnswer(d) => &d.input,
+            Overlay::Deny(d) => &d.input,
+            Overlay::QuizAnswer(d) => &d.input,
+            Overlay::Prompt(d) => &d.input,
+            Overlay::NewSession(d) => d.folder.as_ref().map_or(&d.input, |f| &f.input),
+            Overlay::Workspace(d) => match &d.stage {
+                Stage::Folder(f) => &f.input,
+                _ => return None,
+            },
+            Overlay::PrFinder(f) => &f.filter,
+            Overlay::PrSubmit { input, .. } => input,
+            _ => return None,
+        })
+    }
+
+    /// A paste goes into the box being typed in, as if typed: a line break
+    /// is a space in a one-line box, so the paste never sends it. With no
+    /// box open it is ignored, so pasted text never acts as keys.
+    fn on_paste(&mut self, text: &str, at: Instant) -> Vec<Effect> {
+        let Some(multi) = self.typing_in().map(TextInput::is_multi_line) else {
+            self.set_status("Paste into a text box: nothing here takes text");
+            return Vec::new();
+        };
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let mut effects = Vec::new();
+        for c in text.trim_end().chars() {
+            let code = match c {
+                '\n' if multi => KeyCode::Enter,
+                '\n' | '\t' => KeyCode::Char(' '),
+                c if c.is_control() => continue,
+                c => KeyCode::Char(c),
+            };
+            effects.extend(self.update(Msg::Key(KeyEvent::from(code), at)));
+            // A key that closed the box ends the paste.
+            if self.typing_in().is_none() {
+                break;
+            }
+        }
+        effects
+    }
+
     /// The wheel scrolls what is under it: the live view, the help page,
     /// or the card. Boxes being typed in ignore it.
     fn on_wheel(&mut self, up: bool) -> Vec<Effect> {
@@ -1528,6 +1597,7 @@ impl App {
                 self.on_conversation_read()
             }
             Msg::Agents(agents) => self.on_agents(agents),
+            Msg::Paste(text, at) => self.on_paste(&text, at),
             Msg::Wheel { up } => self.on_wheel(up),
             Msg::Mouse { kind, col, row, at } => self.on_mouse(kind, (col, row), at),
             Msg::PaneCaptured { pane, text } => {
@@ -1899,6 +1969,20 @@ impl App {
             KeyCode::Char('q') => {
                 self.overlay = None;
                 Vec::new()
+            }
+            KeyCode::Char('c')
+                if matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(
+                        CardKind::Question(_)
+                            | CardKind::Tell(_)
+                            | CardKind::Permission(_)
+                            | CardKind::Choice(_)
+                            | CardKind::Menu(_)
+                    )
+                ) =>
+            {
+                self.copy_last_link()
             }
             // Not on a step card, where b moves back a word.
             KeyCode::Char('b')
@@ -2834,6 +2918,20 @@ pub fn mode_label(mode: Mode) -> &'static str {
         Mode::Quiz => "quiz",
         Mode::Vibe => "vibe: nothing checked",
     }
+}
+
+/// The last `http://` or `https://` link in `text`, without the brackets,
+/// quotes or full stop around it.
+fn last_link(text: &str) -> Option<String> {
+    let start = text.rfind("https://").max(text.rfind("http://"))?;
+    let link: String = text[start..]
+        .chars()
+        .take_while(|c| {
+            !c.is_whitespace() && !matches!(c, '<' | '>' | '"' | '\'' | '`' | ')' | ']')
+        })
+        .collect();
+    let link = link.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+    (link.len() > "https://".len()).then(|| link.to_string())
 }
 
 #[cfg(test)]
@@ -3946,6 +4044,51 @@ pub(crate) mod tests {
                 card: None,
             }]
         );
+    }
+
+    #[test]
+    fn the_last_link_is_found_without_what_surrounds_it() {
+        assert_eq!(
+            last_link("see http://a.io/x, then (https://b.io/y?z=1)."),
+            Some("https://b.io/y?z=1".into())
+        );
+        assert_eq!(last_link("`https://c.io/p`"), Some("https://c.io/p".into()));
+        assert_eq!(last_link("no link, only https://"), None);
+        assert_eq!(last_link("plain text"), None);
+    }
+
+    #[test]
+    fn a_paste_goes_into_the_open_box_and_never_acts_as_keys() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        let paste = |a: &mut App, text: &str| a.update(Msg::Paste(text.into(), Instant::now()));
+        // No box: ignored, though it holds keys that would act.
+        assert!(paste(&mut a, "x\nQ").is_empty());
+        assert_eq!(a.overlay, None);
+        assert!(!a.quit);
+        // A one-line box: line breaks become spaces, so nothing is sent.
+        a.update(key('i'));
+        assert!(paste(&mut a, "first line\r\nsecond\tline\n").is_empty());
+        let Some(Overlay::Prompt(d)) = &a.overlay else {
+            panic!("{:?}", a.overlay)
+        };
+        assert_eq!(d.input.text(), "first line second line");
+        // A multi-line box keeps them.
+        a.overlay = Some(Overlay::Comment(CommentDraft {
+            card: 1,
+            target: crate::review::Target {
+                path: "a.rs".into(),
+                line: 1,
+                end_line: 1,
+                side: crate::review::Side::New,
+            },
+            input: TextInput::multi_line(),
+        }));
+        paste(&mut a, "one\ntwo");
+        let Some(Overlay::Comment(d)) = &a.overlay else {
+            panic!()
+        };
+        assert_eq!(d.input.text(), "one\ntwo");
     }
 
     #[test]

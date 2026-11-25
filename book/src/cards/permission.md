@@ -30,6 +30,7 @@ The summary is a model's reading of the request and it can be wrong. The request
 | `PgUp` `PgDn` | scroll a page |
 | `G` | go to the end |
 | `g` | go to the session's window |
+| `c` | copy the last web link in the request |
 
 `y` works only once you have seen the whole request, so a long command cannot hide something at the end.
 
