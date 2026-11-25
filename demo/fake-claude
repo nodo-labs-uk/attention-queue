@@ -60,6 +60,11 @@ Needs you: is a burst of 10 right for the public API?"""
 GIST = ("Runs the project's database migration against the dev database. "
         "The agent added a migration for the new column and wants to apply it before testing.")
 
+PLAN_POINTS = """- Replaces the shared 60-a-minute window with a token bucket per API key.
+- Allows bursts of up to 10 calls, refilling at per_minute.
+- Rewrites tests/test_limiter.py for the new behaviour.
+- Changes only limiter.py and its tests; nothing leaves the repo."""
+
 args = sys.argv[1:]
 if args[:1] == ["agents"]:
     sys.exit("fake-claude: aq reads the agent list from AQ_AGENTS_JSON in the demo")
@@ -72,6 +77,8 @@ elif '"verdict"' in schema:
     # The first try gets a leading question; the next is right.
     first = "Earlier tries" not in prompt
     out = {"is_error": False, "structured_output": NOT_YET if first else VERDICT}
+elif "haiku" in args and "key points of the plan" in prompt:
+    out = {"is_error": False, "result": PLAN_POINTS}
 elif "haiku" in args:
     out = {"is_error": False, "result": GIST}
 else:

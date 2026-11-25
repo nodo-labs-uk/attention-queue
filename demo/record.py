@@ -15,6 +15,7 @@ usage: demo/record.py [scene ...]     (default: every scene)
 import html
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -884,6 +885,77 @@ DOCS_WORKING = """\033[1m❯ add a page on the new export format\033[0m
 """
 
 
+PLAN = """## Rate limit per key
+
+The limiter shares one 60-calls-a-minute window between every caller, so one
+busy key can lock out the rest.
+
+1. Replace the window in limiter.py with a token bucket per key: 10 tokens,
+   refilled at per_minute.
+2. Keep the per_minute argument, so callers do not change.
+3. Rewrite tests/test_limiter.py: a burst of 10 passes, the 11th is refused,
+   and one key's burst leaves another key alone.
+4. Run the tests."""
+
+PLAN_TALK = """\033[1m❯ the API's rate limit is one shared window; plan a token bucket per key\033[0m
+
+● Reading limiter.py and tests/test_limiter.py…
+
+● Updated plan
+  ⎿  /plan to preview
+"""
+
+PLAN_MENU = """ Ready to code?
+ Here is Claude's plan:
+""" + "".join(f"   {line}\n" for line in PLAN.splitlines()) + """
+ Claude has written up a plan and is ready to execute. Would you like to proceed?
+ ❯ 1. Yes, and use auto mode
+   2. Yes, manually approve edits
+   3. Tell Claude what to change
+"""
+
+
+def scene_plan():
+    w = World([dict(name="api", talk=PLAN_TALK, waiting=False,
+                    replies=["Auto mode on. Replacing the window in limiter.py with a token "
+                             "bucket per key…"])])
+    talk = w.base / "api.talk"
+    w.see("○")
+    with Recorder(w) as rec:
+        time.sleep(1.5)
+        # Claude Code asks aq through its hook, and draws its own menu too.
+        approval = w.hook("permission", {
+            "session_id": SESSION_ID, "transcript_path": "", "cwd": str(w.repos["api"]),
+            "hook_event_name": "PermissionRequest", "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": PLAN}, "permission_suggestions": []})
+        Path(f"{talk}.menu").write_text(PLAN_MENU)
+        os.kill(int(Path(f"{talk}.pid").read_text()), signal.SIGUSR1)
+        w.see("Haiku's key points")
+        time.sleep(5)
+        # y approves the plan and picks yes in Claude Code's menu.
+        w.keys("y")
+        approval.wait(timeout=10)
+        w.see("Auto mode on")
+        time.sleep(3.5)
+    return w, rec
+
+
+def scene_zen():
+    w = World([
+        dict(name="api", talk=API_TALK, waiting=True),
+        dict(name="web", talk=WEB_TALK),
+        dict(name="docs", talk=DOCS_TALK, waiting=True),
+    ])
+    w.see("each key now gets")
+    with Recorder(w) as rec:
+        time.sleep(2.5)
+        w.keys("z", gap=3)
+        w.keys("l", gap=2.5)
+        w.keys("l", gap=2.5)
+        w.keys("z", gap=2.5)
+    return w, rec
+
+
 def scene_hero():
     """The README's first video: what aq is for, start to end, captioned."""
     w = World([
@@ -987,7 +1059,7 @@ def scene_new():
 
 
 SCENES = {"hero": scene_hero, "review": scene_review, "questions": scene_questions, "new": scene_new, "step": scene_step, "quiz": scene_quiz, "shell": scene_shell,
-          "tour": scene_tour,
+          "tour": scene_tour, "plan": scene_plan, "zen": scene_zen,
           "sessions": scene_sessions}
 
 

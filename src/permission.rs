@@ -679,7 +679,11 @@ impl App {
         };
         // Claude Code asks again in its own menu, which aq then answers.
         if pc.is_plan() && decision == HookReply::Allow {
-            let pane = pc.pane.clone().unwrap_or(agent.pane);
+            // The session's pane; the hook's own when its session is not known.
+            let pane = match pc.pane.clone() {
+                Some(hook) if agent.pane == "?" => hook,
+                _ => agent.pane,
+            };
             // A card for that menu, made before this one found its session,
             // goes: the next look at the screen answers the menu.
             let menus: Vec<u64> = self

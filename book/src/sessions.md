@@ -14,6 +14,8 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 
 ## Zen mode
 
+![z hides the tabs and shows the picked session in a centred column; h and l still switch sessions](media/zen.svg)
+
 `z` hides the tabs and shows the picked session in the same centred column as the cards, under its caption. `h` and `l` still switch sessions, and `z` again brings the tabs back. aq remembers the setting when it restarts.
 
 ## Keys

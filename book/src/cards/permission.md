@@ -14,6 +14,8 @@ On a plan, Haiku lists the plan's key points instead, one per line under `Haiku'
 
 ## Approving a plan
 
+![A plan comes up as a card with Haiku's key points; y approves it and picks yes in Claude Code's own plan menu](../media/plan.svg)
+
 Claude Code shows its own "Would you like to proceed?" menu for a plan as well as asking aq. aq keeps that menu off the queue while the plan's card waits. `y` approves the plan and picks "Yes, and use auto mode" in the menu for you. `n` sends your reason, and Claude stays in plan mode and changes the plan. To pick another option, such as approving edits by hand, answer the menu in the session's window.
 
 The summary is a model's reading of the request and it can be wrong. The request above it is what Claude will run, and `y` still needs you to have seen all of it. A screen too short to show both leaves the summary out.
