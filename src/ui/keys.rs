@@ -288,6 +288,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             ("o", "own words".into()),
             ("u", "back".into()),
             ("x", "answer in the window".into()),
+            ("c", "copy link".into()),
             ("g", "go to window".into()),
         ],
         (
@@ -305,6 +306,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
                 ("Enter", "reply".into()),
                 ("x", "stash".into()),
                 ("r", "read fast".into()),
+                ("c", "copy link".into()),
                 ("g", "go to window".into()),
                 ("j/k", "scroll".into()),
                 ("Space", "skip".into()),
@@ -384,6 +386,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
                 ("↑↓ Enter", "move and pick".into()),
                 ("g", "go to window".into()),
                 ("x", "answer it there".into()),
+                ("c", "copy link".into()),
             ]
         }
         (None, None) => vec![

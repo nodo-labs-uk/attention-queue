@@ -430,7 +430,7 @@ impl App {
                     self.window_name(&agent)
                 ));
             }
-            KeyCode::Enter | KeyCode::Char('i' | 'c') => {
+            KeyCode::Enter | KeyCode::Char('i') => {
                 let suggestion = self.agent(&agent).and_then(|a| a.suggestion.clone());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
                     agent,
@@ -602,6 +602,28 @@ mod tests {
             }]
         );
         assert!(a.queue.is_empty());
+    }
+
+    #[test]
+    fn c_copies_the_last_link_in_the_card() {
+        let mut a = app();
+        said(
+            &mut a,
+            "The PR is open: [#12](https://github.com/o/r/pull/12). Docs are at \
+             <https://example.org/docs/limits>.",
+        );
+        assert_eq!(
+            a.update(key('c')),
+            [Effect::CopyText("https://example.org/docs/limits".into())]
+        );
+        assert_eq!(
+            a.status_text(),
+            Some("Copied https://example.org/docs/limits")
+        );
+        let mut b = app();
+        said(&mut b, "All done, nothing to link.");
+        assert!(b.update(key('c')).is_empty());
+        assert_eq!(b.status_text(), Some("No web link on this card"));
     }
 
     #[test]

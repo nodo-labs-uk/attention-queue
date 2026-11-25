@@ -14,11 +14,12 @@ use crate::question::{Kind, QuestionCard};
 use crate::tell::{TellCard, tell_name};
 
 /// The keys of a tell card, on the card and along the bottom.
-pub const TELL_KEYS: [(&str, &str); 7] = [
+pub const TELL_KEYS: [(&str, &str); 8] = [
     ("y", "send"),
     ("e", "edit first"),
     ("n", "drop"),
     ("r", "read fast"),
+    ("c", "copy link"),
     ("B", "move to back"),
     ("b", "/btw"),
     ("j/k", "scroll"),
@@ -34,6 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, card: &Card, qc: &Questi
             ("T", "TL;DR"),
             ("x", "stash"),
             ("r", "read fast"),
+            ("c", "copy link"),
             ("g", "go to window"),
             ("B", "move to back"),
             ("b", "/btw"),

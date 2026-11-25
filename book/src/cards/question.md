@@ -15,6 +15,7 @@ A turn that ends without a question still waits for you, so its last message bec
 | `Enter` | reply in your own words; Claude's suggested next prompt shows in lighter text, and `Tab` or `Ctrl-F` fills it in |
 | `T` | [TL;DR](../tools.md#side-questions): Haiku sums up the session's latest turn |
 | `x` | stash the card |
+| `c` | copy the last web link on the card |
 | `r` | [read it fast](../tools.md#fast-reading), a word at a time |
 | `g` | go to the session's window |
 | `j` `k` | scroll |

@@ -12,5 +12,5 @@ expression: text
 "    Bash                                                    "
 "    gh pr merge 5 --squash                                  "
 "                                                            "
-"    y  allow   n  deny   g  go to window   b  /btw          "
+"    y  allow   n  deny   g  go to window   c  copy link     "
 "                                                            "

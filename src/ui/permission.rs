@@ -367,6 +367,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         ("y", "allow"),
         ("n", "deny"),
         ("g", "go to window"),
+        ("c", "copy link"),
         ("b", "/btw"),
     ] {
         spans.extend(super::keys::cap(k, label, t));

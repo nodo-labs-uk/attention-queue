@@ -57,6 +57,10 @@ impl TextInput {
         }
     }
 
+    pub fn is_multi_line(&self) -> bool {
+        self.multi_line
+    }
+
     pub fn text(&self) -> String {
         self.lines.join("\n")
     }
