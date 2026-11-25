@@ -547,7 +547,7 @@ fn show_session(view: &str, title: &str, look: &PopupLook) -> Result<()> {
 }
 
 /// A session's own window in a popup over aq, in the same window as W's, with
-/// `command` (`/btw` or `/mcp`) and a space typed in its box if `type_it`
+/// `command` (`/mcp`) and a space typed in its box if `type_it`
 /// and the box is empty. The popup attaches to a session of its
 /// own, grouped with the agent's, so the agent's tmux session stays on the
 /// window it shows. Ctrl-Q closes the popup and that session goes.
@@ -561,7 +561,7 @@ pub fn popup_session(
     look: &PopupLook,
 ) -> Result<()> {
     let tmux = tmux_ok;
-    let view = format!("aq-btw-{}", std::process::id());
+    let view = format!("aq-slash-{}", std::process::id());
     let exact = format!("={view}");
     let _ = tmux(&["kill-session", "-t", &exact]);
     tmux(&[
@@ -582,12 +582,8 @@ pub fn popup_session(
     let shown = (|| {
         tmux(&["select-window", "-t", &format!("{view}:{window}")])?;
         // aq reads a working session's box only now, so it is read here.
-        let empty = Command::new("tmux")
-            .args(["capture-pane", "-p", "-e", "-t", pane])
-            .output()
-            .is_ok_and(|o| {
-                super::read_input_box(&String::from_utf8_lossy(&o.stdout)) == super::InputBox::Empty
-            });
+        let empty =
+            capture_styled(pane).is_ok_and(|s| super::read_input_box(&s) == super::InputBox::Empty);
         if type_it && empty {
             tmux(&["send-keys", "-t", pane, "-l", &format!("{command} ")])?;
         }
@@ -620,6 +616,148 @@ pub fn popup_session(
         }
     }
     shown
+}
+
+/// How long a `/btw` answer may take.
+const BTW_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Asks `question` with Claude Code's own `/btw` in `pane` and returns the
+/// answer. The question is typed into the session's box, which must be
+/// empty; once answered, the panel's `c` copies the whole answer into a tmux
+/// buffer, which is read and deleted, and Esc closes the panel.
+pub fn ask_btw(pane: &str, question: &str) -> Result<String> {
+    anyhow::ensure!(
+        super::read_input_box(&capture_styled(pane)?) == super::InputBox::Empty,
+        "its box is not empty, or not on screen"
+    );
+    let typed = format!("/btw {}", question.replace(['\n', '\r'], " ").trim());
+    tmux_ok(&["send-keys", "-t", pane, "-l", &typed])?;
+    std::thread::sleep(Duration::from_millis(150));
+    tmux_ok(&["send-keys", "-t", pane, "Enter"])?;
+    let start = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let screen = capture_pane(pane, &[])?;
+        match btw_panel(&screen) {
+            BtwPanel::Answered => break,
+            BtwPanel::Answering => {}
+            BtwPanel::Closed if start.elapsed() > Duration::from_secs(5) => {
+                // The question may still be in the box, unsent: take it out.
+                if capture_styled(pane).is_ok_and(|s| {
+                    super::read_input_box(&s) == super::InputBox::Holding(typed.clone())
+                }) {
+                    let n = typed.chars().count().to_string();
+                    let _ = tmux_ok(&["send-keys", "-t", pane, "-N", &n, "BSpace"]);
+                }
+                anyhow::bail!("the /btw panel did not open, or closed before it answered")
+            }
+            BtwPanel::Closed => {}
+        }
+        if start.elapsed() > BTW_TIMEOUT {
+            close_btw(pane);
+            anyhow::bail!("no answer after {} s", BTW_TIMEOUT.as_secs());
+        }
+    }
+    let before = buffer_names();
+    press(pane, "c", &[])?;
+    let copied = (0..20).find_map(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        buffer_names().into_iter().find(|b| !before.contains(b))
+    });
+    let answer = copied
+        .context("the /btw panel did not copy its answer")
+        .and_then(|name| show_buffer(&name).context("reading the copied answer"));
+    close_btw(pane);
+    // Claude Code can copy it twice; every new buffer holding it goes.
+    if let Ok(text) = &answer {
+        for name in buffer_names().into_iter().filter(|b| !before.contains(b)) {
+            if show_buffer(&name).as_ref() == Some(text) {
+                let _ = tmux_ok(&["delete-buffer", "-b", &name]);
+            }
+        }
+    }
+    answer
+}
+
+/// The text of tmux paste buffer `name`.
+fn show_buffer(name: &str) -> Option<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["show-buffer", "-b", name]);
+    match super::run_for(cmd, "", TMUX_TIMEOUT) {
+        Ok((status, out, _)) if status.success() => Some(out),
+        _ => None,
+    }
+}
+
+/// The names of tmux's paste buffers.
+fn buffer_names() -> Vec<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["list-buffers", "-F", "#{buffer_name}"]);
+    super::run_for(cmd, "", TMUX_TIMEOUT)
+        .map(|(_, out, _)| out.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Closes the `/btw` panel in `pane` if it is open. Escape is pressed once
+/// only: a second one would reach the session and stop its turn.
+fn close_btw(pane: &str) {
+    let open = |pane: &str| {
+        capture_pane(pane, &[]).is_ok_and(|s| slash_left(&s, "/btw") == SlashLeft::Panel)
+    };
+    if !open(pane) {
+        return;
+    }
+    let _ = press(pane, "Escape", &[]);
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(100));
+        if !open(pane) {
+            return;
+        }
+    }
+}
+
+/// `pane`'s screen with its colours, on aq's server.
+fn capture_styled(pane: &str) -> Result<String> {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["capture-pane", "-p", "-e", "-t", pane]);
+    let (status, out, err) =
+        super::run_for(cmd, "", TMUX_TIMEOUT).context("running tmux capture-pane")?;
+    anyhow::ensure!(status.success(), "{}", err.trim());
+    Ok(out)
+}
+
+/// How far a `/btw` panel on a screen has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtwPanel {
+    Closed,
+    Answering,
+    /// Done: its footer offers `c to copy`.
+    Answered,
+}
+
+/// The last two rows with text, as one line: the `/btw` panel's footer
+/// wraps onto a second row on a narrow screen, as while the session works.
+fn btw_footer(screen: &str) -> String {
+    let mut rows: Vec<&str> = screen
+        .lines()
+        .rev()
+        .filter(|r| !r.trim().is_empty())
+        .take(2)
+        .map(str::trim)
+        .collect();
+    rows.reverse();
+    rows.join(" ")
+}
+
+fn btw_panel(screen: &str) -> BtwPanel {
+    if slash_left(screen, "/btw") != SlashLeft::Panel {
+        return BtwPanel::Closed;
+    }
+    if btw_footer(screen).contains("c to copy") {
+        BtwPanel::Answered
+    } else {
+        BtwPanel::Answering
+    }
 }
 
 /// Where a popup goes over aq's pane, and its colours: those of aq's own
@@ -721,7 +859,7 @@ fn slash_left(screen: &str, command: &str) -> SlashLeft {
     let open = match command {
         "/btw" => {
             rows.iter().any(|r| r.trim_start().starts_with("/btw "))
-                && footer.is_some_and(|f| f.contains("Esc to close"))
+                && btw_footer(screen).contains("Esc to close")
         }
         "/mcp" => {
             rows.iter()
@@ -1251,6 +1389,14 @@ mod tests {
         let typed = format!("{rule}\n❯\u{a0}/btw [question]\n{rule}\n  -- INSERT --\n");
         let own = format!("{rule}\n❯ /btw why is the build slow?\n{rule}\n");
         let idle = format!("{rule}\n❯ \n{rule}\n  Esc to close is not a footer here\n");
+        assert_eq!(btw_panel(panel), BtwPanel::Answered);
+        // While the session works the footer is longer and wraps.
+        let wrapped = "▔▔▔▔\n    /btw what is 2+2?\n      Four\n  ↑/↓ to scroll · ⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to\n  close\n";
+        assert_eq!(btw_panel(wrapped), BtwPanel::Answered);
+        let copied = wrapped.replace("c to copy", "Copied to clipboard");
+        assert_eq!(slash_left(&copied, "/btw"), SlashLeft::Panel);
+        assert_eq!(btw_panel(answering), BtwPanel::Answering);
+        assert_eq!(btw_panel(&typed), BtwPanel::Closed);
         let btw_left = |s: &str| slash_left(s, "/btw");
         assert_eq!(btw_left(panel), SlashLeft::Panel);
         assert_eq!(btw_left(answering), SlashLeft::Panel);

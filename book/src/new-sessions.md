@@ -39,6 +39,7 @@ When Claude Code draws a menu in a session and waits, such as whether to trust a
 | Key | What it does |
 |---|---|
 | `1`-`9` | pick that option |
+| `↑` `↓` (`j` `k`) and `Enter` | move to an option and pick it |
 | `g` | go to the session's window |
 | `x` | leave it to be answered in the window, such as a menu where several options can be ticked |
 

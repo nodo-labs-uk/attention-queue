@@ -2,9 +2,9 @@
 
 ## Side questions
 
-`?` asks the session a side question about what is on screen: a card, or the picked session in the sessions view. aq starts a copy of the session (`claude --resume --fork-session`) and asks the copy. The session itself never sees the question or the answer, so its conversation and context are not changed.
+`b` asks the session a side question with Claude Code's own `/btw`: the session of the card on screen, or the picked session in the sessions view. You type the question in aq's window. aq types `/btw` and your question into the session's box, waits for the answer, copies it out of the `/btw` panel and closes the panel, so only the answer shows in aq. `/btw` answers from the conversation without adding to it, even while the session is working. The session's box must be empty: aq never types over a half-written message. The panel's copy also puts the answer on your clipboard.
 
-`W` asks the same kind of copy where the session is up to: a short summary of what is done and what is left. It runs at low effort, so it answers in about half the time; the copy still uses the session's own model and its prompt cache, so it costs no more.
+`W` asks a copy of the session (`claude --resume --fork-session`) where it is up to: a short summary of what is done and what is left. It runs at low effort, so it answers in about half the time; the copy still uses the session's own model and its prompt cache, so it costs no more.
 
 `T` sums up the latest turn only: what you last asked for, what Claude did, and what it said at the end. It runs on Claude Haiku, through your own `claude` login, so it is quick and cheap. Haiku gets no tools: it reads the conversation and nothing else.
 
@@ -16,7 +16,7 @@ Did    read src/ui/ask.rs and src/ask.rs, and made no changes yet.
 Said   nothing yet; I was still looking at the code.
 ```
 
-`?` in that window asks a follow-up question about the same session.
+`b` in that window asks a `/btw` question of the same session, and `W` and `T` ask again.
 
 ## Shell
 

@@ -28,7 +28,9 @@ finished turn; the card on screen stays as it is.
                  A gap the judge finds becomes keep-as-is or send-a-fix
 
 # Every card
-  ?    ask the agent a side question      Space  skip this card
+  b    /btw: ask the session a side question; only the answer shows,
+       and the session's conversation is not added to (b on a step
+       card moves back a word)            Space  skip this card
                                           B      move it to the back of the queue
   W    where are we: a short summary of what is done and what is left
   T    Haiku sums up the latest turn: what you asked, what Claude did
@@ -80,7 +82,7 @@ own PR is reviewed in the folder that has its branch, else in a worktree
 aq makes. Someone else's (a teammate's too) is checked out on its head
 commit, with no branch.
   c  comment as on any review card   i  read the PR description
-  ?  ask Claude about the PR
+  W  ask where the PR stands, with its description
   D  close the PR review (removes a worktree aq made, if it is clean
      and no session runs in it)
 Your PR:  s  send the comments to the session in that folder, which fixes
@@ -108,7 +110,9 @@ Someone else's PR:
   j/k line   ]c/[c change   H/L or tab file   v view   f file list
 
 # Permission card
-  y  allow (once you have scrolled to the end)   n  deny with a reason
+  y  allow (once you have scrolled to the end; a plan only needs
+     Haiku's key points on screen, and y picks Yes, and use auto
+     mode in Claude's plan menu)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
 
 # Flagged action card
@@ -129,7 +133,7 @@ in vibe mode.
   a  approve (sends: Approved, carry on.)   Enter  reply in your own words;
      Claude's suggestion shows in lighter text, Tab or Ctrl-F fills it in
      a is there only when it asks for a go-ahead or names its pick
-  d  done (sends: Done, continue.), once you have done what it asked
+  d  done for now: closes the card and sends nothing
   x  stash the card      g  go to the session's window   j/k scroll
   S  the stashed questions: Enter brings one back, x drops it
   r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
@@ -170,21 +174,22 @@ session is the one picked.
          Claude suggests next shows in lighter text, and Tab or Ctrl-F
          fills it in
   a      approve: sends Approved, carry on. now, or once it is idle
-  d      done: sends Done, continue. now, or once it is idle; for when
-         it asked you to do something first
   A      message every session in its row, each once idle
+  z      zen mode: no tabs, the session in the cards' column; h/l
+         still switch, z again shows the tabs
   r      read its last reply fast, as r on a question card
-  b      /btw: the session's own window in a popup over aq,
-         /btw typed in its box; ask, read the answer, Ctrl-Q closes it
-  c      /mcp: the same popup with /mcp typed in; Enter opens its MCP
+  b      /btw: type a side question; aq asks it with Claude Code's
+         /btw in the session and shows only the answer
+  c      /mcp: the session's own window in a popup over aq, with /mcp
+         typed in; Enter opens its MCP
          servers to connect, reconnect or turn off; Ctrl-Q closes it
   p      ask an idle session to open a PR (/create-pr) and go there
   m      switch an idle session's model: f fable, o opus, s sonnet, h haiku
          (/model, which also makes it the default for new sessions)
   P      switch its permission mode: a auto, m manual, e accept edits,
          p plan (presses Shift+Tab in the session until it shows)
-  ?  W  ask it a side question, or where it is up to; a copy of the
-         session answers, so the session itself never sees it
+  W      ask where it is up to; a copy of the session answers, so the
+         session itself never sees it
   T      Haiku sums up its latest turn, in the same box as W
   x      close the session's pane, after a yes (claude --resume reopens it)
   Esc Esc  stop what it is doing, as Esc in Claude Code; also drops a

@@ -11,7 +11,7 @@ A turn that ends without a question still waits for you, so its last message bec
 | Key | What it does |
 |---|---|
 | `a` | approve: sends "Approved, carry on." (on a question, only when it asks for a go-ahead or names its own pick) |
-| `d` | done: sends "Done, continue.", once you have done what it asked |
+| `d` | done for now: closes the card and sends nothing, so the session waits until you message it |
 | `Enter` | reply in your own words; Claude's suggested next prompt shows in lighter text, and `Tab` or `Ctrl-F` fills it in |
 | `T` | [TL;DR](../tools.md#side-questions): Haiku sums up the session's latest turn |
 | `x` | stash the card |

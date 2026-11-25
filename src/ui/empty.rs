@@ -27,6 +27,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new(lines), block);
         return;
     };
+    if app.zen {
+        // No tabs; the session sits in the cards' column, with its caption.
+        let column = super::text_card_area(area);
+        let [cap, live] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(column);
+        frame.render_widget(Paragraph::new(caption(app, picked, cap.width)), cap);
+        render_live(frame, live, app);
+        return;
+    }
     let rows = tab_rows(app, &picked.id, area.width);
     // A row of the strip's colour above and below the tabs sets them apart.
     let [strip, live] = Layout::vertical([
@@ -67,9 +76,18 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
             .unwrap_or(0)
             + 2
     };
+    let labels: Vec<String> = agents.iter().map(|a| tab_label(app, a)).collect();
+    // Every tab as wide as the widest, so the tabs of each row line up in
+    // columns; a label too wide for the screen keeps its own width.
+    let cell = labels
+        .iter()
+        .map(|l| Span::raw(l.as_str()).width())
+        .max()
+        .unwrap_or(0)
+        .min((width as usize).saturating_sub(lead + 8));
     let mut rows: Vec<Line> = Vec::new();
     let mut group: Option<&str> = None;
-    for a in agents {
+    for (a, label) in agents.iter().zip(labels) {
         if group != Some(a.row()) {
             group = Some(a.row());
             let name = if one_row {
@@ -78,7 +96,7 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
                 visible(a.row())
             };
             rows.push(Line::from(vec![
-                Span::raw(" "),
+                Span::raw("  "),
                 Span::styled(
                     format!("{name:<lead$}"),
                     Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
@@ -87,33 +105,8 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
         }
         let on = &a.id == picked;
         let dot = if a.waiting { "●" } else { "○" };
-        // A program can name its own window, so names are shown as visible text.
-        let name = visible(&a.window_name);
-        let project = visible(&agent_project(a));
-        let mut label = format!(" {} {name}", a.window_index);
-        if project != name {
-            label.push_str(&format!(" {project}"));
-        }
-        // Review is the default; any other mode is worth knowing at a glance,
-        // vibe most of all, since it never makes a card.
-        let mode = a.checkout.as_ref().map(|c| app.config.mode_for(c));
-        if let Some(m @ (Mode::Step | Mode::Quiz | Mode::Vibe)) = mode {
-            label.push_str(match m {
-                Mode::Step => " · step",
-                Mode::Quiz => " · quiz",
-                _ => " · vibe",
-            });
-        }
-        label.push_str(permission_mark(a));
-        if app.prompt_waiting(&a.id) {
-            // Typed text in its box holds the message back: say so.
-            label.push_str(if app.prompt_has_text(&a.id) {
-                " queued: clear its prompt"
-            } else {
-                " queued"
-            });
-        }
-        label.push(' ');
+        let pad = cell.saturating_sub(Span::raw(label.as_str()).width());
+        let label = format!("{label}{} ", " ".repeat(pad));
         let spans = if on {
             let style = Style::new().fg(t.bg).bg(t.acc).add_modifier(Modifier::BOLD);
             vec![
@@ -132,14 +125,50 @@ fn tab_rows(app: &App, picked: &AgentId, width: u16) -> Vec<Line<'static>> {
         };
         let w: usize = spans.iter().map(Span::width).sum();
         let row = rows.last_mut().expect("a row");
-        if row.width() + w > width as usize && row.width() > 1 + lead {
-            rows.push(Line::raw(" ".repeat(1 + lead)));
+        if row.width() + w > width as usize && row.width() > 2 + lead {
+            rows.push(Line::raw(" ".repeat(2 + lead)));
         }
         let row = rows.last_mut().expect("a row");
         row.spans.extend(spans);
-        row.spans.push(Span::raw(" "));
+        row.spans.push(Span::raw("  "));
     }
     rows
+}
+
+/// A tab's text: window number, name, project when it differs, a mode
+/// other than review, a permission mode other than auto, and a queued
+/// message.
+fn tab_label(app: &App, a: &Agent) -> String {
+    // A program can name its own window, so names are shown as visible text.
+    let name = visible(&a.window_name);
+    let project = visible(&agent_project(a));
+    let mut label = format!(" {} {name}", a.window_index);
+    if project != name {
+        label.push_str(&format!(" {project}"));
+    }
+    // Review is the default; any other mode is worth knowing at a glance,
+    // vibe most of all, since it never makes a card.
+    let mode = a.checkout.as_ref().map(|c| app.config.mode_for(c));
+    if let Some(m @ (Mode::Step | Mode::Quiz | Mode::Vibe)) = mode {
+        label.push_str(match m {
+            Mode::Step => " · step",
+            Mode::Quiz => " · quiz",
+            _ => " · vibe",
+        });
+    }
+    // Auto is how sessions usually run: only another mode is shown.
+    if a.permission_mode != Some("auto") {
+        label.push_str(permission_mark(a));
+    }
+    if app.prompt_waiting(&a.id) {
+        // Typed text in its box holds the message back: say so.
+        label.push_str(if app.prompt_has_text(&a.id) {
+            " queued: clear its prompt"
+        } else {
+            " queued"
+        });
+    }
+    label
 }
 
 /// Claude Code's permission mode, with the mark its footer uses, after a

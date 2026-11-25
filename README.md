@@ -40,16 +40,16 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 | Feature | What you get |
 |---|---|
-| [**Permission prompts**](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html) | A line from Claude Haiku says what the call does and why. `y` allows it. |
+| [**Permission prompts**](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html) | A line from Claude Haiku says what the call does and why, or a plan's key points. `y` allows it, and approves a plan in Claude's own menu too. |
 | [**Flagged actions**](https://nodo-labs-uk.github.io/attention-queue/cards/flagged.html) | Merges, pushes to main, force pushes and comments posted as you wait for a yes, in every mode. |
-| [**Questions and your move**](https://nodo-labs-uk.github.io/attention-queue/cards/question.html) | Every finished turn becomes a card, so you never go hunting through tabs. `a` approves, `d` says you did what it asked, `Enter` replies, `T` sums up the turn, `Space` leaves it for later. |
-| [**Side questions**](https://nodo-labs-uk.github.io/attention-queue/tools.html) | `W` asks where a session is up to, `T` has Haiku sum up its latest turn, and `?` asks anything. A copy answers, so the session never sees it. |
+| [**Questions and your move**](https://nodo-labs-uk.github.io/attention-queue/cards/question.html) | Every finished turn becomes a card, so you never go hunting through tabs. `a` approves, `d` stops for now, `Enter` replies, `T` sums up the turn, `Space` leaves it for later. |
+| [**Side questions**](https://nodo-labs-uk.github.io/attention-queue/tools.html) | `W` asks where a session is up to and `T` has Haiku sum up its latest turn. `b` asks anything with Claude Code's own `/btw`, and only the answer shows. None of them adds to the session's conversation. |
 
 ### Run many sessions
 
 | Feature | What you get |
 |---|---|
-| [**Sessions view**](https://nodo-labs-uk.github.io/attention-queue/sessions.html) | With nothing waiting, watch every session live in tabs. Message one, switch its model, open its `/btw` or `/mcp`, or stop it. |
+| [**Sessions view**](https://nodo-labs-uk.github.io/attention-queue/sessions.html) | With nothing waiting, watch every session live in tabs, or in zen mode (`z`) with no tabs. Message one, switch its model, open its `/mcp`, or stop it. |
 | [**New sessions**](https://nodo-labs-uk.github.io/attention-queue/new-sessions.html) | `N` starts a session, in a worktree of its own if you like. `O` opens one for each repo in a folder. |
 | [**Quick sessions**](https://nodo-labs-uk.github.io/attention-queue/tools.html#quick-session) | `E` opens a throwaway Claude in a popup for a small job, such as an email, in a folder of its own away from your projects. |
 | [**Messages**](https://nodo-labs-uk.github.io/attention-queue/cards/message.html) | A session runs `aq tell` to ask another for work, and you approve the message first. |
@@ -110,7 +110,7 @@ Then run `aq` in a tmux window. The tour starts on its own.
 |---|---|
 | `y` `n` | allow or refuse an edit or a permission prompt |
 | `c` `s` `a` | on a review: comment on a line, send the comments, approve |
-| `a` `d` `Enter` | on a question: approve, say you're done ("Done, continue."), or reply |
+| `a` `d` `Enter` | on a question: approve, stop for now (closes the card, sends nothing), or reply |
 | `Space` | skip this card for now |
 | `M` | switch this project's mode: review, step, quiz, vibe |
 
@@ -118,7 +118,7 @@ Then run `aq` in a tmux window. The tour starts on its own.
 
 | Key | What it does |
 |---|---|
-| `W` `T` `?` | where is the session up to, sum up its last turn, ask it anything |
+| `W` `T` `b` | where is the session up to, sum up its last turn, ask it anything with `/btw` |
 | `N` `R` | start a new Claude session, review a GitHub PR |
 | `!` `E` | a shell in a popup, or a quick throwaway Claude session for a small job |
 | `Ctrl-Q` | close any window or popup |

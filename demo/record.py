@@ -755,7 +755,7 @@ def scene_shell():
             text = (aq_files / name).read_text().replace(str(aq_files), str(mine))
             (mine / name).write_text(text)
         (mine / "typed").write_text("sudo systemctl restart api")
-        w.tmux("new-window", "-d", "-n", "popup", "-c", str(repo),
+        w.tmux("new-window", "-d", "-t", "demo:", "-n", "popup", "-c", str(repo),
                f"env HOME={base} ZDOTDIR={mine} AQ_ZDOTDIR={base} zsh")
         w.tmux("set-option", "-w", "-t", "demo:popup", "window-size", "manual")
         w.tmux("resize-window", "-t", "demo:popup", "-x", str(POP_W - 2), "-y", str(POP_H - 2))

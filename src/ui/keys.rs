@@ -43,11 +43,17 @@ fn review_keys(rc: &ReviewCard) -> Vec<(&'static str, String)> {
 /// The keys that work on any card, after the card's own: the least likely
 /// last, so a short screen cuts these first.
 fn every_card(app: &App) -> Vec<(&'static str, String)> {
-    let mut keys = vec![
-        ("?", "ask".into()),
+    // On a step card b moves back a word.
+    let step = matches!(
+        app.queue.current().map(|c| &c.kind),
+        Some(CardKind::Step(_))
+    );
+    let mut keys: Vec<(&'static str, String)> =
+        (!step).then(|| ("b", "/btw".into())).into_iter().collect();
+    keys.extend([
         ("W", "where are we".into()),
         ("T", "sum up last turn".into()),
-    ];
+    ]);
     keys.extend(stashed(app));
     keys.extend([
         ("M", "mode".into()),
@@ -81,7 +87,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
         (Some(Overlay::Ask(_)), _) => vec![
             ("j/k", "scroll".into()),
             ("PgUp/PgDn", "page".into()),
-            ("?", "ask again".into()),
+            ("b", "/btw".into()),
             ("W", "where are we".into()),
             ("T", "sum up last turn".into()),
             ("r", "retry".into()),
@@ -333,14 +339,13 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             ("Tab", "last messaged".into()),
             ("Enter", "message".into()),
             ("a", "approve".into()),
-            ("d", "done".into()),
             ("A", "message group".into()),
+            ("z", "zen".into()),
             ("W", "where are we".into()),
             ("T", "sum up last turn".into()),
             ("r", "read reply fast".into()),
             ("b", "/btw".into()),
             ("c", "/mcp".into()),
-            ("?", "ask".into()),
             ("g", "go to window".into()),
             ("p", "open PR".into()),
             ("m", "model".into()),
@@ -365,11 +370,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
                 kind: CardKind::Tell(_),
                 ..
             }),
-        ) => TELL_KEYS
-            .iter()
-            .filter(|(k, _)| *k != "?")
-            .map(|(k, l)| (*k, l.to_string()))
-            .collect(),
+        ) => TELL_KEYS.iter().map(|(k, l)| (*k, l.to_string())).collect(),
         (
             None,
             Some(Card {
@@ -380,6 +381,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             let n = mc.menu.options.len().min(9);
             vec![
                 (if n == 2 { "1 2" } else { "1-9" }, "pick".into()),
+                ("↑↓ Enter", "move and pick".into()),
                 ("g", "go to window".into()),
                 ("x", "answer it there".into()),
             ]

@@ -18,7 +18,7 @@ pub use crate::new_session::NewSessionDraft;
 use crate::permission::{DenyDraft, PermissionRequest};
 use crate::queue::Queue;
 use crate::quiz::{AnswerDraft, CodeRequest, Snippet};
-use crate::review::{self, APPROVE_MESSAGE, Comment, DONE_MESSAGE, LastRound, ReviewCard, Target};
+use crate::review::{self, APPROVE_MESSAGE, Comment, LastRound, ReviewCard, Target};
 use crate::shell::{Shell, Snapshot, SnapshotRequest};
 use crate::step::{PendingEdit, ReasonDraft, SearchList, Steps};
 use crate::theme::Theme;
@@ -180,6 +180,14 @@ pub enum Msg {
         result: Result<Vec<GrepHit>, String>,
     },
     Llm(LlmEvent),
+    /// The answer to a `/btw` question, entry `index` of ask window
+    /// `window`, asked in `pane`.
+    Btw {
+        window: u64,
+        index: usize,
+        pane: String,
+        result: Result<String, String>,
+    },
     /// A `Send` for a review card reached the agent.
     SendDone {
         card: u64,
@@ -286,6 +294,14 @@ pub enum Effect {
         decision: HookReply,
     },
     Llm(LlmJob),
+    /// Ask `question` with Claude Code's `/btw` in `pane`; the answer comes
+    /// back as `Msg::Btw`.
+    Btw {
+        window: u64,
+        index: usize,
+        pane: String,
+        question: String,
+    },
     /// Look up the user and the facts for `action`, for a question card.
     FlagFacts {
         card: u64,
@@ -408,8 +424,8 @@ pub enum Effect {
         path: PathBuf,
         line: u32,
     },
-    /// Show a session's own window in a tmux popup over aq, the size of the ? box,
-    /// with `command` (`/btw` or `/mcp`) typed in its box if `type_it` and
+    /// Show a session's own window in a tmux popup over aq, the size of a tall
+    /// window, with `command` (`/mcp`) typed in its box if `type_it` and
     /// the box is empty when the popup opens.
     SessionPopup {
         session: String,
@@ -469,7 +485,8 @@ pub enum Effect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
-    /// `?`: side questions about the current card.
+    /// `W`, `T` and `b`: side questions about the session of the current
+    /// card or the picked session.
     Ask(Box<crate::ask::AskState>),
     /// `c` on the review board: typing a comment.
     Comment(CommentDraft),
@@ -568,6 +585,10 @@ pub struct App {
     /// Panes whose menu was let go to the window: it makes no menu card
     /// until it leaves the screen.
     pub(crate) menus_in_window: BTreeSet<String>,
+    /// Panes whose plan was approved on its card, with the agent polls
+    /// left to wait for Claude Code's own plan menu: it ignores the hook's
+    /// answer and asks again, and aq picks yes in it for you.
+    pub(crate) plans_approved: BTreeMap<String, u8>,
     pub steps: Steps,
     /// Terminal size as last reported by the runtime.
     pub(crate) screen: Option<(u16, u16)>,
@@ -626,6 +647,12 @@ pub struct App {
     /// 0: the live view shows the picked agent's screen. More: it shows
     /// its conversation, scrolled up this many rows less one from the end.
     pub live_scroll: usize,
+    /// Zen mode: the session screen hides its tabs and shows the session in
+    /// the cards' column. `z` turns it on and off; kept across restarts.
+    pub zen: bool,
+    /// Ask windows opened so far: each one's id, so a `/btw` answer for a
+    /// closed window never lands in a later one.
+    pub(crate) asks_opened: u64,
     /// Text being selected with the mouse: from where the button went down
     /// to where it is now. Drawn reversed; copied when the button comes up.
     pub selection: Option<Selection>,
@@ -740,6 +767,7 @@ impl App {
             held: BTreeMap::new(),
             pending_trust: VecDeque::new(),
             menus_in_window: BTreeSet::new(),
+            plans_approved: BTreeMap::new(),
             steps: Steps::default(),
             screen: None,
             shell: Shell::default(),
@@ -765,6 +793,8 @@ impl App {
             prompts: BTreeMap::new(),
             touched: BTreeMap::new(),
             live_scroll: 0,
+            zen: false,
+            asks_opened: 0,
             selection: None,
             last_click: None,
             practice: None,
@@ -914,7 +944,14 @@ impl App {
                 return vec![Effect::GoToWindow { pane: current.pane }];
             }
             KeyCode::Char('p') => return self.ask_for_pr(current),
-            KeyCode::Char('b') => return self.open_slash("/btw"),
+            KeyCode::Char('z') => {
+                self.zen = !self.zen;
+                self.set_status(if self.zen {
+                    "Zen mode: the tabs are hidden, h/l still switch; z shows them again"
+                } else {
+                    "Zen mode off"
+                });
+            }
             KeyCode::Char('c') => return self.open_slash("/mcp"),
             KeyCode::Char('r') => return self.read_reply_fast(),
             KeyCode::Char('m') => self.open_model(current),
@@ -931,7 +968,6 @@ impl App {
                 }));
             }
             KeyCode::Char('a') => return self.send_prompt(current, APPROVE_MESSAGE.to_string()),
-            KeyCode::Char('d') => return self.send_prompt(current, DONE_MESSAGE.to_string()),
             KeyCode::Char('A') => {
                 let group = self.picked_agent().map(|a| a.row().to_string());
                 self.overlay = Some(Overlay::Prompt(PromptDraft {
@@ -1130,11 +1166,11 @@ impl App {
         let rows = self
             .screen
             .map_or(20, |s| {
-                let held = matches!(
-                    self.queue.current().map(|c| &c.kind),
-                    Some(CardKind::Permission(pc)) if pc.held.is_some()
-                );
-                crate::permission::body_size(s, held).1
+                let (held, gist_max) = match self.queue.current().map(|c| &c.kind) {
+                    Some(CardKind::Permission(pc)) => (pc.held.is_some(), pc.gist_max()),
+                    _ => (false, crate::permission::GIST_ROWS),
+                };
+                crate::permission::body_size(s, held, gist_max).1
             })
             .max(2);
         let n = if matches!(c, 'd' | 'u') {
@@ -1217,10 +1253,9 @@ impl App {
         }]
     }
 
-    /// `b` and `c` on the sessions view: the picked session in a popup over
-    /// aq, `command` typed in its box when the box is empty. `/btw` asks a
-    /// side question the session answers without adding it to the
-    /// conversation; `/mcp` manages its MCP servers.
+    /// `c` on the sessions view: the picked session in a popup over aq,
+    /// `command` typed in its box when the box is empty; `/mcp` manages
+    /// its MCP servers.
     fn open_slash(&mut self, command: &'static str) -> Vec<Effect> {
         if !self.practice_agents.is_empty() {
             self.set_status(format!(
@@ -1639,6 +1674,15 @@ impl App {
                 self.on_grep_done(ident, result);
                 Vec::new()
             }
+            Msg::Btw {
+                window,
+                index,
+                pane,
+                result,
+            } => {
+                self.on_btw_result(window, index, &pane, result);
+                Vec::new()
+            }
             Msg::Llm(ev) if matches!(ev.kind, crate::llm::JobKind::Ask { .. }) => {
                 self.on_ask_result(ev)
             }
@@ -1856,8 +1900,14 @@ impl App {
                 self.overlay = None;
                 Vec::new()
             }
-            KeyCode::Char('?') => {
-                self.open_ask();
+            // Not on a step card, where b moves back a word.
+            KeyCode::Char('b')
+                if !matches!(
+                    self.queue.current().map(|c| &c.kind),
+                    Some(CardKind::Step(_))
+                ) =>
+            {
+                self.open_btw();
                 Vec::new()
             }
             KeyCode::Char('W') => self.ask_where_are_we(),
@@ -2173,7 +2223,7 @@ impl App {
                 .and_then(|p| p.permission_mode);
         }
         self.note_typed_in(&agents);
-        self.note_menus(&agents);
+        let picks = self.note_menus(&agents);
         let reopen = self.note_open_sessions(&agents);
         let mut started: Vec<Agent> = became_waiting(&self.agents, &agents)
             .into_iter()
@@ -2219,6 +2269,7 @@ impl App {
             effects.extend(self.ensure_baseline(&checkout));
         }
         effects.extend(reopen);
+        effects.extend(picks);
         effects
     }
 
@@ -2994,11 +3045,11 @@ pub(crate) mod tests {
     #[test]
     fn ask_opens_overlay_and_q_closes_it() {
         let mut a = app();
-        a.update(key('?'));
+        a.update(key('W'));
         assert_eq!(a.overlay, None, "nothing to ask about without a card");
         a.queue
             .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
-        a.update(key('?'));
+        a.update(key('W'));
         assert!(matches!(a.overlay, Some(Overlay::Ask(_))));
         a.update(Msg::Key(KeyEvent::from(KeyCode::Esc), Instant::now()));
         assert_eq!(a.overlay, None);
@@ -3620,7 +3671,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn b_and_c_open_the_session_with_btw_or_mcp_typed_when_its_box_is_empty() {
+    fn c_opens_the_session_with_mcp_typed_when_its_box_is_empty() {
         let mut a = App::new(Config::default(), builtin_themes());
         let mut api = agent("%1", 3, "api", "/w/api", true);
         api.input = InputBox::Empty;
@@ -3633,13 +3684,11 @@ pub(crate) mod tests {
             command,
             type_it,
         };
-        assert_eq!(a.update(key('b')), vec![popup("/btw", true)]);
         assert_eq!(a.update(key('c')), vec![popup("/mcp", true)]);
         // Half a message typed: shown as it is, with nothing added to it.
         a.agents[0].input = InputBox::Holding("half".into());
-        assert_eq!(a.update(key('b')), vec![popup("/btw", false)]);
-        assert!(a.status_text().unwrap().contains("not typed"));
         assert_eq!(a.update(key('c')), vec![popup("/mcp", false)]);
+        assert!(a.status_text().unwrap().contains("not typed"));
     }
 
     #[test]
@@ -3846,7 +3895,8 @@ pub(crate) mod tests {
             _ => panic!("help is not open: {:?}", a.overlay),
         };
         a.screen = Some((80, 30));
-        let half = (crate::permission::body_size((80, 30), false).1 / 2) as u16;
+        let half = (crate::permission::body_size((80, 30), false, crate::permission::GIST_ROWS).1
+            / 2) as u16;
         a.update(press(KeyCode::F(1), KeyModifiers::NONE));
         assert_eq!(help(&a), 0);
         a.update(press(KeyCode::Char('d'), KeyModifiers::CONTROL));
@@ -3893,21 +3943,6 @@ pub(crate) mod tests {
             [Effect::Send {
                 agent: idle.id,
                 text: APPROVE_MESSAGE.into(),
-                card: None,
-            }]
-        );
-    }
-
-    #[test]
-    fn d_on_the_empty_screen_tells_the_picked_session_it_is_done() {
-        let mut a = App::new(Config::default(), builtin_themes());
-        let idle = agent("%1", 1, "api", "/w/api", true);
-        a.agents = vec![idle.clone()];
-        assert_eq!(
-            a.update(key('d')),
-            [Effect::Send {
-                agent: idle.id,
-                text: DONE_MESSAGE.into(),
                 card: None,
             }]
         );
@@ -4214,7 +4249,11 @@ pub(crate) mod tests {
         a.update(Msg::Agents(with(Some("plan"))));
         let screen = crate::ui::tests::render(&a, 100, 12);
         assert!(screen.contains("1 api ⏸ plan"), "{screen}");
-        assert!(screen.contains("2 web ⏵⏵ auto"), "{screen}");
+        // Auto, the usual mode, is left off.
+        assert!(
+            screen.contains("2 web") && !screen.contains("auto"),
+            "{screen}"
+        );
         // A menu hides the footer: the mode last seen stays.
         a.update(Msg::Agents(with(None)));
         assert_eq!(a.agents[0].permission_mode, Some("plan"));

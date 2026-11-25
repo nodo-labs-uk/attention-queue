@@ -375,15 +375,34 @@ pub fn card_header(app: &App, card: &Card) -> Vec<Line<'static>> {
     lines
 }
 
+/// Where a card of text goes in the body: a centred column as wide as a
+/// window, so lines stay short enough to read, with a row free above it.
+/// Narrower screens keep two columns each side.
+pub fn text_card_area(area: Rect) -> Rect {
+    let w = area
+        .width
+        .saturating_sub(4)
+        .min(window::WIDTH)
+        .max(area.width.min(20));
+    let top = u16::from(area.height > 12);
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + top,
+        w,
+        area.height - top,
+    )
+}
+
 fn render_card(frame: &mut Frame, area: Rect, app: &App, card: &Card, hl: &mut Highlighter) {
+    let text = text_card_area(area);
     match &card.kind {
         CardKind::Review(rc) => review::render(frame, area, app, card, rc, hl),
         CardKind::Step(sc) => step::render(frame, area, app, card, sc, hl),
         CardKind::ShellChange(sc) => shell::render(frame, area, app, card, sc, hl),
-        CardKind::Permission(pc) => permission::render(frame, area, app, pc),
-        CardKind::Question(qc) => question::render(frame, area, app, card, qc),
-        CardKind::Tell(tc) => question::render_tell(frame, area, app, card, tc),
-        CardKind::Menu(mc) => menu::render(frame, area, app, card, mc),
+        CardKind::Permission(pc) => permission::render(frame, text, app, pc),
+        CardKind::Question(qc) => question::render(frame, text, app, card, qc),
+        CardKind::Tell(tc) => question::render_tell(frame, text, app, card, tc),
+        CardKind::Menu(mc) => menu::render(frame, text, app, card, mc),
         CardKind::Choice(cc) => choice::render(frame, area, app, card, cc),
         CardKind::Quiz(qc) => quiz::render(frame, area, app, card, qc, hl),
     }
@@ -523,6 +542,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn zen_mode_hides_the_tabs_and_keeps_the_caption() {
+        let mut a = app();
+        a.agents = vec![
+            agent("%1", 1, "api", "/w/api", true),
+            agent("%2", 3, "web", "/w/web", true),
+        ];
+        a.picked = Some(a.agents[0].id.clone());
+        assert!(render(&a, 120, 20).contains("web"));
+        a.update(crate::app::tests::key('z'));
+        assert!(a.zen && a.saved_state().zen);
+        let screen = render(&a, 120, 20);
+        assert!(!screen.contains("web"), "{screen}");
+        assert!(screen.contains("api · window"), "{screen}");
+        a.update(crate::app::tests::key('z'));
+        assert!(!a.zen);
+    }
+
+    #[test]
     fn every_card_lists_the_keys_that_work_on_any_card() {
         let kinds = [
             CardKind::Review(ReviewCard::default()),
@@ -534,7 +571,7 @@ pub(crate) mod tests {
             a.queue.push(card(1, "/a", kind, 0));
             let screen = render(&a, 200, 40);
             for hint in [
-                "?  ask",
+                "b  /btw",
                 "W  where are we",
                 "T  sum up last turn",
                 "M  mode",

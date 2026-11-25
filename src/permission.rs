@@ -12,10 +12,10 @@ use serde_json::Value;
 use crate::app::{App, Effect, Overlay};
 use crate::flag::Flag;
 use crate::ipc::HookReply;
-use crate::llm::{GIST_PROMPT, JobKind, LlmEvent, LlmJob};
+use crate::llm::{GIST_PROMPT, JobKind, LlmEvent, LlmJob, PLAN_GIST_PROMPT};
 use crate::model::{AgentId, Card, CardKind, Checkout};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::visible::{push_visible, visible_lines, wrap, wrap_words};
+use crate::visible::{push_visible, visible_lines, wrap_words};
 
 /// What `n` sends when nothing is typed.
 pub const DENY_DEFAULT: &str = "Denied in aq.";
@@ -25,6 +25,11 @@ pub const FLAG_DENY_DEFAULT: &str = "The developer refused this in aq. Do not tr
 const SUMMARY_MAX: usize = 200;
 /// Rows the card keeps for Haiku's summary. A blank row follows them.
 pub const GIST_ROWS: u16 = 4;
+/// Agent polls (a second each) that a plan approved on its card waits for
+/// Claude Code's own plan menu.
+const PLAN_MENU_POLLS: u8 = 15;
+/// Rows a plan's card keeps for Haiku's key points.
+pub const PLAN_GIST_ROWS: u16 = 8;
 /// Body rows a card must keep for the summary to show.
 const BODY_MIN: u16 = 4;
 
@@ -74,10 +79,23 @@ pub enum LineKind {
 
 /// The body rows and marker row the card gets on a screen of this size:
 /// `(width, height)` of the body.
-pub fn body_size(screen: (u16, u16), held: bool) -> (usize, usize) {
-    let area = Rect::new(0, 1, screen.0, screen.1.saturating_sub(2));
-    let body = card_areas(area, held)[2];
+pub fn body_size(screen: (u16, u16), held: bool, gist_max: u16) -> (usize, usize) {
+    let body = screen_areas(screen, held, gist_max)[2];
     (body.width as usize, body.height as usize)
+}
+
+/// `card_areas` for the card as drawn on a screen of this size.
+fn screen_areas(screen: (u16, u16), held: bool, gist_max: u16) -> [Rect; 6] {
+    let area = Rect::new(0, 1, screen.0, screen.1.saturating_sub(2));
+    card_areas(crate::ui::text_card_area(area), held, gist_max)
+}
+
+/// Whether all of Haiku's key points on an unheld plan's card fit in the
+/// rows it keeps for them on a screen of this size.
+fn key_points_shown(screen: (u16, u16), pc: &PermissionCard) -> bool {
+    let [_, _, body, gist, ..] = screen_areas(screen, false, pc.gist_max());
+    gist.height > 0
+        && pc.gist_rows(body.width as usize, usize::MAX).len() <= usize::from(gist.height - 1)
 }
 
 /// Rows a held card's band takes at most: its rows and a blank row after.
@@ -88,10 +106,11 @@ const BAND_ROWS: u16 = GIST_ROWS + 2;
 /// The caption and body sit on a panel, inset a column each side. An
 /// unheld card keeps rows under the body for Haiku's summary, the same
 /// rows while it is awaited, so its arrival moves nothing; a screen too
-/// short for them and `BODY_MIN` body rows has none. A held card always
+/// short for them and `BODY_MIN` body rows has none. A plan keeps up to
+/// `gist_max` rows for its key points, and fewer on a short screen. A held card always
 /// has its band: on a short screen the band shrinks, and the body keeps at
 /// least one row unless the band would lose its first row.
-pub fn card_areas(area: Rect, held: bool) -> [Rect; 6] {
+pub fn card_areas(area: Rect, held: bool, gist_max: u16) -> [Rect; 6] {
     let inner = area.inner(Margin::new(1, 1));
     let [main, more, keys] = Layout::vertical([
         Constraint::Fill(1),
@@ -109,8 +128,9 @@ pub fn card_areas(area: Rect, held: bool) -> [Rect; 6] {
         (band, 1.min(h - band), 0)
     } else {
         let caption = h.min(1);
-        let gist = if h >= GIST_ROWS + 1 + caption + BODY_MIN {
-            GIST_ROWS + 1
+        let room = gist_max.min(h.saturating_sub(1 + caption + BODY_MIN));
+        let gist = if room >= GIST_ROWS.min(gist_max) {
+            room + 1
         } else {
             0
         };
@@ -139,20 +159,47 @@ pub fn areas(area: Rect) -> [Rect; 4] {
 }
 
 impl PermissionCard {
-    /// The summary as at most `GIST_ROWS` rows of `width` columns; a longer
-    /// one ends in "…".
-    pub fn gist_rows(&self, width: usize) -> Vec<String> {
-        let text = match &self.gist {
-            Gist::Pending => "Haiku: summarising…".to_string(),
-            Gist::Done(s) => format!("Haiku: {s}"),
-            Gist::Failed(why) => format!("Haiku: no summary ({why})"),
+    /// Whether the call asks to approve a plan.
+    pub fn is_plan(&self) -> bool {
+        self.tool_name == "ExitPlanMode"
+    }
+
+    /// The most rows Haiku's summary gets: more for a plan's key points.
+    pub fn gist_max(&self) -> u16 {
+        if self.is_plan() {
+            PLAN_GIST_ROWS
+        } else {
+            GIST_ROWS
+        }
+    }
+
+    /// The summary as at most `max` rows of `width` columns; a longer one
+    /// ends in "…". A plan's key points keep a line each.
+    pub fn gist_rows(&self, width: usize, max: usize) -> Vec<String> {
+        let text = match (&self.gist, self.is_plan()) {
+            (Gist::Pending, false) => "Haiku: summarising…".to_string(),
+            (Gist::Pending, true) => "Haiku: picking out the key points…".to_string(),
+            (Gist::Done(s), false) => format!("Haiku: {s}"),
+            (Gist::Done(s), true) => format!("Haiku's key points:\n{s}"),
+            (Gist::Failed(why), _) => format!("Haiku: no summary ({why})"),
         };
-        let line = visible_lines(&text).join(" ");
+        let lines = if self.is_plan() {
+            visible_lines(&text)
+                .into_iter()
+                .filter(|l| !l.trim().is_empty())
+                .collect()
+        } else {
+            vec![visible_lines(&text).join(" ")]
+        };
         let mut rows = Vec::new();
-        wrap_words(&line, width, &mut |row| rows.push(row));
-        if rows.len() > GIST_ROWS as usize {
-            rows.truncate(GIST_ROWS as usize);
-            let last = rows.last_mut().expect("GIST_ROWS is not zero");
+        for line in &lines {
+            wrap_words(line, width, &mut |row| rows.push(row));
+        }
+        if rows.len() > max {
+            rows.truncate(max);
+            let Some(last) = rows.last_mut() else {
+                return rows;
+            };
             while last.chars().map(crate::visible::cols).sum::<usize>() >= width.max(1) {
                 last.pop();
             }
@@ -189,7 +236,17 @@ impl PermissionCard {
         };
         let tool = self.tool_name.as_str();
         match tool {
-            "Bash" => show("command", LineKind::Plain, "", &mut put),
+            "Bash" => {
+                show("command", LineKind::Plain, "", &mut put);
+                // In the caption.
+                if str_of(input, "description").is_some() {
+                    shown.borrow_mut().push("description");
+                }
+                if bash_timeout(input).is_some() {
+                    shown.borrow_mut().push("timeout");
+                }
+            }
+            "ExitPlanMode" => show("plan", LineKind::Plain, "", &mut put),
             "Edit" => {
                 show("file_path", LineKind::Plain, "", &mut put);
                 show("old_string", LineKind::Del, "- ", &mut put);
@@ -259,14 +316,39 @@ impl PermissionCard {
         out
     }
 
-    /// `body_lines` cut into rows of at most `width` columns.
+    /// `body_lines` cut into rows of at most `width` columns, at spaces.
     pub fn body_rows(&self, width: usize) -> Vec<(LineKind, String)> {
         let mut rows = Vec::new();
         for (kind, line) in self.body_lines() {
-            wrap(&line, width, &mut |row| rows.push((kind, row)));
+            wrap_words(&line, width, &mut |row| rows.push((kind, row)));
         }
         rows
     }
+
+    /// The line above the body: the tool's name, then a command's
+    /// description and time limit.
+    pub fn caption(&self) -> String {
+        let mut out = self.tool_name.clone();
+        if self.tool_name != "Bash" {
+            return out;
+        }
+        // The time limit first: a long description runs off the row.
+        if let Some(ms) = bash_timeout(&self.tool_input) {
+            out += &match ms {
+                ms if ms % 60_000 == 0 => format!(" · up to {} min", ms / 60_000),
+                ms => format!(" · up to {} s", ms.div_ceil(1000)),
+            };
+        }
+        if let Some(d) = self.tool_input.get("description").and_then(Value::as_str) {
+            out += &format!(" · {}", visible_lines(d).join(" "));
+        }
+        out
+    }
+}
+
+/// A command's time limit in milliseconds, when it is a whole number.
+fn bash_timeout(input: &Value) -> Option<u64> {
+    input.get("timeout").and_then(Value::as_u64)
 }
 
 /// A key of the input on one line.
@@ -363,6 +445,7 @@ impl App {
         r: PermissionRequest,
     ) -> Vec<Effect> {
         let session_id = r.session_id.clone();
+        let card_is_plan = r.tool_name == "ExitPlanMode";
         let card = self.permission_card(req_id, at, r, None);
         let job = LlmJob {
             card: card.id,
@@ -371,7 +454,12 @@ impl App {
             },
             cwd: card.checkout.0.clone(),
             prompt: format!(
-                "{GIST_PROMPT}## The request (data)\n\n{}\n",
+                "{}## The request (data)\n\n{}\n",
+                if card_is_plan {
+                    PLAN_GIST_PROMPT
+                } else {
+                    GIST_PROMPT
+                },
                 crate::quiz::fenced(&crate::ask::context_for(&card), "")
             ),
         };
@@ -489,7 +577,9 @@ impl App {
     }
 
     /// Whether the whole body of the current permission card has been on
-    /// screen: it fits, or it was scrolled to the end.
+    /// screen: it fits, or it was scrolled to the end. A plan counts as
+    /// read once all of Haiku's key points are on screen; a held plan has
+    /// no room for them, so it is read in full.
     fn read_to_end(&self) -> bool {
         let Some(Card {
             kind: CardKind::Permission(pc),
@@ -498,7 +588,17 @@ impl App {
         else {
             return false;
         };
-        let Some((width, height)) = self.screen.map(|s| body_size(s, pc.held.is_some())) else {
+        if pc.is_plan()
+            && pc.held.is_none()
+            && matches!(pc.gist, Gist::Done(_))
+            && self.screen.is_some_and(|s| key_points_shown(s, pc))
+        {
+            return true;
+        }
+        let Some((width, height)) = self
+            .screen
+            .map(|s| body_size(s, pc.held.is_some(), pc.gist_max()))
+        else {
             return false;
         };
         let total = pc.body_rows(width).len();
@@ -514,7 +614,8 @@ impl App {
         else {
             return;
         };
-        let Some((width, height)) = screen.map(|s| body_size(s, pc.held.is_some())) else {
+        let Some((width, height)) = screen.map(|s| body_size(s, pc.held.is_some(), pc.gist_max()))
+        else {
             return;
         };
         let total = pc.body_rows(width).len();
@@ -570,11 +671,28 @@ impl App {
     fn decide_permission(&mut self, id: u64, decision: HookReply) -> Vec<Effect> {
         let Some(Card {
             kind: CardKind::Permission(pc),
+            agent,
             ..
         }) = self.queue.remove(id)
         else {
             return Vec::new();
         };
+        // Claude Code asks again in its own menu, which aq then answers.
+        if pc.is_plan() && decision == HookReply::Allow {
+            let pane = pc.pane.clone().unwrap_or(agent.pane);
+            // A card for that menu, made before this one found its session,
+            // goes: the next look at the screen answers the menu.
+            let menus: Vec<u64> = self
+                .queue
+                .iter()
+                .filter(|c| matches!(c.kind, CardKind::Menu(_)) && c.agent.pane == pane)
+                .map(|c| c.id)
+                .collect();
+            for id in menus {
+                self.queue.remove(id);
+            }
+            self.plans_approved.insert(pane, PLAN_MENU_POLLS);
+        }
         let verb = if decision == HookReply::Allow {
             "Allowed"
         } else {
@@ -994,25 +1112,59 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_asks_haiku_for_its_key_points_and_keeps_a_line_each() {
+        let mut a = app();
+        let fx = ipc(
+            &mut a,
+            1,
+            ask(
+                "ExitPlanMode",
+                json!({"plan": "# Plan\n\nDo it."}),
+                Some("%5"),
+                "s5",
+            ),
+        );
+        let [Effect::Llm(job)] = fx.as_slice() else {
+            panic!("{fx:?}");
+        };
+        assert!(job.prompt.starts_with(PLAN_GIST_PROMPT));
+        let mut pc = perm(&a).clone();
+        assert_eq!(pc.gist_max(), PLAN_GIST_ROWS);
+        assert_eq!(pc.gist_rows(40, 8), ["Haiku: picking out the key points…"]);
+        pc.gist = Gist::Done("- Adds a flag\n\n- Moves the config".into());
+        assert_eq!(
+            pc.gist_rows(40, 8),
+            ["Haiku's key points:", "- Adds a flag", "- Moves the config"]
+        );
+        let rows = pc.gist_rows(40, 2);
+        assert_eq!(rows, ["Haiku's key points:", "- Adds a flag…"]);
+        // On a short screen the key points get fewer rows, then none.
+        let area = |h| Rect::new(0, 1, 80, h);
+        assert_eq!(card_areas(area(30), false, PLAN_GIST_ROWS)[3].height, 9);
+        assert_eq!(card_areas(area(16), false, PLAN_GIST_ROWS)[3].height, 7);
+        assert_eq!(card_areas(area(13), false, PLAN_GIST_ROWS)[3].height, 0);
+    }
+
+    #[test]
     fn the_summary_keeps_its_rows_and_a_short_screen_has_none() {
         let area = |h| Rect::new(0, 1, 80, h);
-        let [_, _, body, gist, ..] = card_areas(area(22), false);
+        let [_, _, body, gist, ..] = card_areas(area(22), false, GIST_ROWS);
         assert_eq!((gist.height, body.height), (5, 12));
-        let [_, _, body, gist, ..] = card_areas(area(13), false);
+        let [_, _, body, gist, ..] = card_areas(area(13), false, GIST_ROWS);
         assert_eq!((gist.height, body.height), (0, 8));
         // A held card keeps its band's first row even with no body row.
-        let [band, _, body, ..] = card_areas(area(6), true);
+        let [band, _, body, ..] = card_areas(area(6), true, GIST_ROWS);
         assert_eq!((band.height, body.height), (1, 0));
-        let [band, _, body, ..] = card_areas(area(7), true);
+        let [band, _, body, ..] = card_areas(area(7), true, GIST_ROWS);
         assert_eq!((band.height, body.height), (1, 1));
-        let [band, caption, body, ..] = card_areas(area(22), true);
+        let [band, caption, body, ..] = card_areas(area(22), true, GIST_ROWS);
         assert_eq!((band.height, caption.height, body.height), (6, 1, 11));
         // The panel's text keeps a column clear each side.
         assert_eq!((caption.x, caption.width, body.width), (2, 76, 76));
         let mut pc = card_of("Bash", json!({"command": "ls"}));
-        assert_eq!(pc.gist_rows(40), ["Haiku: summarising…"]);
+        assert_eq!(pc.gist_rows(40, 4), ["Haiku: summarising…"]);
         pc.gist = Gist::Done("word ".repeat(40));
-        let rows = pc.gist_rows(20);
+        let rows = pc.gist_rows(20, 4);
         assert_eq!(rows.len(), 4);
         assert!(rows[3].ends_with('…') && rows[3].chars().count() <= 20);
     }
@@ -1038,8 +1190,33 @@ mod tests {
             std::slice::from_ref(&long)
         );
         let rows = card_of("Bash", json!({"command": long})).body_rows(80);
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5);
         assert_eq!(text(&card_of("WebFetch", json!({"url": "u"}))), ["url: u"]);
+    }
+
+    #[test]
+    fn a_plan_shows_as_text_and_a_command_s_description_in_the_caption() {
+        let plan = card_of("ExitPlanMode", json!({"plan": "## Plan\n\n- one step"}));
+        assert_eq!(text(&plan), ["## Plan", "", "- one step"]);
+        assert_eq!(plan.caption(), "ExitPlanMode");
+        let rows =
+            card_of("ExitPlanMode", json!({"plan": "send one clip to the chat"})).body_rows(12);
+        let rows: Vec<_> = rows.into_iter().map(|(_, r)| r).collect();
+        assert_eq!(rows, ["send one", "clip to the", "chat"]);
+        let bash = card_of(
+            "Bash",
+            json!({"command": "rm a.txt", "description": "Delete a.txt"}),
+        );
+        assert_eq!(text(&bash), ["rm a.txt"]);
+        assert_eq!(bash.caption(), "Bash · Delete a.txt");
+        let slow = card_of(
+            "Bash",
+            json!({"command": "pytest", "description": "Run tests", "timeout": 600000}),
+        );
+        assert_eq!(text(&slow), ["pytest"]);
+        assert_eq!(slow.caption(), "Bash · up to 10 min · Run tests");
+        let odd = card_of("Bash", json!({"command": "x", "timeout": 1500}));
+        assert_eq!(odd.caption(), "Bash · up to 2 s");
     }
 
     #[test]
@@ -1127,7 +1304,7 @@ mod tests {
     #[test]
     fn long_command_is_allowed_only_after_scrolling_to_the_end() {
         let (mut a, t) = long_command(5);
-        assert_eq!(body_size((80, 9), false), (76, 2));
+        assert_eq!(body_size((80, 9), false, GIST_ROWS), (72, 2));
         assert!(a.update(key('y', t)).is_empty());
         assert!(a.status_text().unwrap().contains("Scroll to the end"));
         a.update(key('j', t));
@@ -1141,6 +1318,75 @@ mod tests {
                 decision: HookReply::Allow
             }]
         );
+    }
+
+    #[test]
+    fn a_plan_with_haiku_s_key_points_is_allowed_without_scrolling() {
+        let mut a = app();
+        a.update(Msg::Resize {
+            width: 80,
+            height: 30,
+        });
+        let t0 = Instant::now();
+        let plan = (0..60)
+            .map(|i| format!("step {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fx = ipc(
+            &mut a,
+            1,
+            ask("ExitPlanMode", json!({"plan": plan}), Some("%5"), "s5"),
+        );
+        let [Effect::Llm(job)] = fx.as_slice() else {
+            panic!("{fx:?}");
+        };
+        a.update(Msg::Tick(t0));
+        let t = t0 + Duration::from_millis(400);
+        assert!(a.update(key('y', t)).is_empty(), "no key points yet");
+        assert!(a.status_text().unwrap().contains("Scroll to the end"));
+        a.update(Msg::Llm(LlmEvent {
+            card: job.card,
+            kind: job.kind.clone(),
+            result: Ok("- Adds a flag".into()),
+        }));
+        // On a screen too short to show the key points, the plan is read.
+        a.update(Msg::Resize {
+            width: 80,
+            height: 9,
+        });
+        assert!(a.update(key('y', t)).is_empty(), "key points not on screen");
+        a.update(Msg::Resize {
+            width: 80,
+            height: 30,
+        });
+        // Claude Code's own plan menu, carded before the plan found its
+        // session, goes with it.
+        let mut menu = crate::queue::tests::card(
+            9,
+            "/w/api",
+            CardKind::Menu(crate::menu::MenuCard {
+                menu: crate::agents::ScreenMenu {
+                    question: Vec::new(),
+                    options: vec!["1. Yes, and use auto mode".into()],
+                    cursor: 0,
+                },
+                sel: 0,
+                picked: false,
+            }),
+            0,
+        );
+        menu.agent.pane = "%5".into();
+        a.queue.push(menu);
+        assert_eq!(
+            a.update(key('y', t)),
+            [Effect::Reply {
+                req_id: 1,
+                decision: HookReply::Allow
+            }]
+        );
+        // Claude Code's own plan menu that follows is answered for you.
+        assert!(a.plans_approved.contains_key("%5"));
+        assert!(a.queue.is_empty());
     }
 
     #[test]
@@ -1294,7 +1540,10 @@ mod tests {
         assert_eq!(t, ["/f", "- a", "+ b", "", "sneaky: rm -rf /"]);
         assert!(!t.iter().any(|l| l.contains("old_string")));
         // A non-string value is not hidden either.
-        let pc = card_of("Bash", json!({"command": "ls", "timeout": 5}));
+        let pc = card_of("Bash", json!({"command": "ls", "run_in_background": true}));
+        assert_eq!(text(&pc), ["ls", "", "run_in_background: true"]);
+        // Nor is a time limit that is not a whole number.
+        let pc = card_of("Bash", json!({"command": "ls", "timeout": "5"}));
         assert_eq!(text(&pc), ["ls", "", "timeout: 5"]);
         // A MultiEdit with an extra field on an edit shows the edits as JSON.
         let pc = card_of(

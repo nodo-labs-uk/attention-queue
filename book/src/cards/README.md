@@ -6,7 +6,7 @@ Each kind of card has its own keys. These keys work on every card:
 |---|---|
 | `Space` | skip this card for now |
 | `B` | move it to the back of the queue |
-| `?` | ask the session a [side question](../tools.md#side-questions) |
+| `b` | ask the session a [side question](../tools.md#side-questions) with `/btw` (not on a step card) |
 | `W` | where are we: a short summary of what is done and what is left |
 | `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
 | `!` | a [shell](../tools.md#shell) in a popup, in this project |

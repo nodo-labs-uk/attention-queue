@@ -1,6 +1,8 @@
-//! Side questions: `?` asks the agent's conversation something about the card
-//! on screen. A fork of the live session answers, so the session itself never
-//! sees the question. Pure: no I/O.
+//! Side questions, in one window. `W` and `T` ask a fork of the live
+//! session where it is up to and what its latest turn did, so the session
+//! never sees them. `b` asks anything with Claude Code's own `/btw` in the
+//! session's window, which answers without adding to the conversation.
+//! Pure: no I/O.
 
 use std::ops::Range;
 
@@ -52,15 +54,21 @@ pub struct Entry {
     pub answer: Answer,
     /// Answered by a plain call because the session could not be resumed.
     pub fallback: bool,
+    /// Asked with `/btw` in the session's window.
+    pub btw: bool,
 }
 
 /// The ask overlay: the questions so far, newest last.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskState {
+    /// Which ask window this is; see `App::asks_opened`.
+    pub id: u64,
     pub card: u64,
     pub checkout: Checkout,
     /// The live session to fork; `None` asks a plain `claude -p` instead.
     pub session_id: Option<String>,
+    /// The session's tmux pane, where `/btw` is asked.
+    pub pane: Option<String>,
     /// The card as text, made once when the overlay opened.
     pub context: String,
     pub entries: Vec<Entry>,
@@ -100,14 +108,25 @@ impl AskState {
         let mut starts = Vec::new();
         for e in &self.entries {
             starts.push(out.len());
+            let question = if e.btw {
+                format!("/btw {}", e.question)
+            } else {
+                shown_question(&e.question).to_string()
+            };
             wrap_into(
                 &mut out,
                 LineKind::Question,
-                &visible_text(shown_question(&e.question)),
+                &visible_text(&question),
                 width,
             );
             out.push((LineKind::Answer, String::new()));
             match &e.answer {
+                Answer::Pending if e.btw => {
+                    out.push((
+                        LineKind::Pending,
+                        "Claude is answering in its window…".into(),
+                    ));
+                }
                 Answer::Pending => out.push((LineKind::Pending, "Asking…".into())),
                 Answer::Done(a) if e.question == SUMMARISE && labelled(a).is_some() => {
                     for (label, text) in labelled(a).unwrap_or_default() {
@@ -135,16 +154,33 @@ impl AskState {
         (out, starts)
     }
 
+    /// What asks entry `index` again: `/btw` in the window, or a fork.
+    fn ask(&mut self, index: usize) -> Vec<Effect> {
+        if !self.entries[index].btw {
+            return vec![Effect::Llm(self.job(index))];
+        }
+        let Some(pane) = self.pane.clone() else {
+            self.entries[index].answer = Answer::Failed("aq has no window for this session".into());
+            return Vec::new();
+        };
+        vec![Effect::Btw {
+            window: self.id,
+            index,
+            pane,
+            question: self.entries[index].question.clone(),
+        }]
+    }
+
     fn job(&self, index: usize) -> LlmJob {
         LlmJob {
             card: self.card,
             kind: JobKind::Ask {
                 index,
                 session_id: self.session_id.clone(),
-                speed: match self.entries[index].question.as_str() {
-                    SUMMARISE => Speed::Haiku,
-                    WHERE_ARE_WE => Speed::LowEffort,
-                    _ => Speed::Normal,
+                speed: if self.entries[index].question == SUMMARISE {
+                    Speed::Haiku
+                } else {
+                    Speed::LowEffort
                 },
             },
             cwd: self.checkout.0.clone(),
@@ -378,9 +414,9 @@ pub fn context_with_pr(card: &Card, pr: Option<&PrInfo>) -> String {
 }
 
 impl App {
-    /// `?`: open the overlay for the current card, or with no card for the
+    /// Opens the window for the current card, or with no card for the
     /// session picked on the session list.
-    pub(crate) fn open_ask(&mut self) {
+    fn open_ask(&mut self) {
         let Some(card) = self.queue.current() else {
             self.open_ask_picked();
             return;
@@ -395,16 +431,20 @@ impl App {
                 .map(|a| a.session_id.clone())
                 .filter(|s| valid_session_id(s))
         });
+        let pane = Some(card.agent.pane.clone()).filter(|p| p != "?");
+        self.asks_opened += 1;
         self.overlay = Some(Overlay::Ask(Box::new(AskState {
+            id: self.asks_opened,
             card: card.id,
             checkout: card.checkout.clone(),
             session_id,
+            pane,
             context: context_with_pr(
                 card,
                 self.pr_reviews.get(&card.checkout.0).map(|pr| &pr.info),
             ),
             entries: Vec::new(),
-            input: Some(TextInput::single_line()),
+            input: None,
             scroll: 0,
         })));
     }
@@ -418,20 +458,39 @@ impl App {
             .clone()
             .unwrap_or_else(|| Checkout(agent.cwd.clone()));
         let session_id = Some(agent.session_id.clone()).filter(|s| valid_session_id(s));
+        let pane = Some(agent.id.pane.clone());
+        self.asks_opened += 1;
         self.overlay = Some(Overlay::Ask(Box::new(AskState {
+            id: self.asks_opened,
             card: NO_CARD,
             checkout,
             session_id,
+            pane,
             context: "No card is open: the developer is looking at this session in the \
 session list."
                 .into(),
             entries: Vec::new(),
-            input: Some(TextInput::single_line()),
+            input: None,
             scroll: 0,
         })));
     }
 
-    /// `W`: ask where the work stands, as `?` with that question already sent.
+    /// `b`: a question to ask with `/btw`, typed in the window, which opens
+    /// for the card on screen or the picked session if it is not open.
+    pub(crate) fn open_btw(&mut self) {
+        if !self.practice_agents.is_empty() {
+            self.set_status("The tour's sessions are made up: /btw works on real ones");
+            return;
+        }
+        if !matches!(self.overlay, Some(Overlay::Ask(_))) {
+            self.open_ask();
+        }
+        if let Some(Overlay::Ask(ask)) = &mut self.overlay {
+            ask.input = Some(TextInput::single_line());
+        }
+    }
+
+    /// `W`: ask a fork of the session where the work stands.
     pub(crate) fn ask_where_are_we(&mut self) -> Vec<Effect> {
         self.ask_now(WHERE_ARE_WE)
     }
@@ -441,7 +500,7 @@ session list."
         self.ask_now(SUMMARISE)
     }
 
-    /// Opens the `?` window, if it is not open, with `question` already sent.
+    /// Opens the window, if it is not open, with `question` already sent.
     fn ask_now(&mut self, question: &str) -> Vec<Effect> {
         if !matches!(self.overlay, Some(Overlay::Ask(_))) {
             self.open_ask();
@@ -454,6 +513,7 @@ session list."
             question: question.into(),
             answer: Answer::Pending,
             fallback: false,
+            btw: false,
         });
         let index = ask.entries.len() - 1;
         let width = self.screen_text_size().0;
@@ -491,11 +551,13 @@ session list."
                         question: question.to_string(),
                         answer: Answer::Pending,
                         fallback: false,
+                        btw: true,
                     });
                     let index = ask.entries.len() - 1;
+                    let effects = ask.ask(index);
                     let (_, starts) = ask.lines(size.0);
                     ask.scroll = starts[index];
-                    return vec![Effect::Llm(ask.job(index))];
+                    return effects;
                 }
             }
             return Vec::new();
@@ -505,7 +567,7 @@ session list."
         let page = size.1.saturating_sub(1).max(1).min(PAGE.max(size.1 / 2));
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.overlay = None,
-            KeyCode::Char('?') => ask.input = Some(TextInput::single_line()),
+            KeyCode::Char('b') => self.open_btw(),
             KeyCode::Char('W') => return self.ask_where_are_we(),
             KeyCode::Char('T') => return self.summarise_turn(),
             KeyCode::Char('j') | KeyCode::Down => ask.scroll = (ask.scroll + 1).min(max),
@@ -519,12 +581,39 @@ session list."
                     .rposition(|e| matches!(e.answer, Answer::Failed(_)));
                 if let Some(i) = failed {
                     ask.entries[i].answer = Answer::Pending;
-                    return vec![Effect::Llm(ask.job(i))];
+                    return ask.ask(i);
                 }
             }
             _ => {}
         }
         Vec::new()
+    }
+
+    /// The `/btw` answer for entry `index` of window `window`; dropped if
+    /// that window is closed.
+    pub(crate) fn on_btw_result(
+        &mut self,
+        window: u64,
+        index: usize,
+        pane: &str,
+        result: Result<String, String>,
+    ) {
+        let Some(Overlay::Ask(ask)) = &mut self.overlay else {
+            return;
+        };
+        if ask.id != window || ask.pane.as_deref() != Some(pane) {
+            return;
+        }
+        if let Some(e) = ask
+            .entries
+            .get_mut(index)
+            .filter(|e| e.btw && e.answer == Answer::Pending)
+        {
+            e.answer = match result {
+                Ok(text) => Answer::Done(text.trim().to_string()),
+                Err(why) => Answer::Failed(format!("/btw failed: {why}")),
+            };
+        }
     }
 
     /// The model's answer to a side question; dropped if the overlay is gone.
@@ -624,10 +713,8 @@ mod tests {
         press(&mut a, KeyCode::Char('j'));
         let before = a.queue.current().unwrap().clone();
 
-        press(&mut a, KeyCode::Char('?'));
-        type_text(&mut a, "why?");
-        // j and k inside the overlay do not reach the card.
-        let effects = press(&mut a, KeyCode::Enter);
+        // j and k inside the window do not reach the card.
+        let effects = press(&mut a, KeyCode::Char('W'));
         assert!(matches!(&effects[..], [Effect::Llm(j)] if matches!(
             &j.kind, JobKind::Ask { index: 0, session_id: Some(s), .. } if s == "s1")));
         let Effect::Llm(job) = &effects[0] else {
@@ -661,23 +748,18 @@ mod tests {
         let mut c = review_with_cursor();
         c.agent = a.agents[0].id.clone();
         a.queue.push(c);
-        press(&mut a, KeyCode::Char('?'));
-        type_text(&mut a, "one");
-        let e1 = press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Char('?'));
-        type_text(&mut a, "two");
-        let e2 = press(&mut a, KeyCode::Enter);
-        for (e, i) in [(&e1, 0), (&e2, 1)] {
+        let e1 = press(&mut a, KeyCode::Char('W'));
+        let e2 = press(&mut a, KeyCode::Char('T'));
+        for (e, i, speed) in [(&e1, 0, Speed::LowEffort), (&e2, 1, Speed::Haiku)] {
             let Effect::Llm(j) = &e[0] else { panic!() };
             assert_eq!(
                 j.kind,
                 JobKind::Ask {
                     index: i,
                     session_id: Some("s1".into()),
-                    speed: Speed::Normal,
+                    speed,
                 }
             );
-            assert!(!j.prompt.contains("one") || i == 0);
         }
         let ev = |index, r: Result<String, String>| {
             Msg::Llm(LlmEvent {
@@ -685,7 +767,7 @@ mod tests {
                 kind: JobKind::Ask {
                     index,
                     session_id: Some("s1".into()),
-                    speed: Speed::Normal,
+                    speed: Speed::LowEffort,
                 },
                 result: r,
             })
@@ -704,7 +786,7 @@ mod tests {
         );
         // `r` asks the failed one again.
         let retry = press(&mut a, KeyCode::Char('r'));
-        assert!(matches!(&retry[..], [Effect::Llm(j)] if j.prompt.contains("one")));
+        assert!(matches!(&retry[..], [Effect::Llm(j)] if j.prompt.contains(WHERE_ARE_WE)));
         assert_eq!(ask_state(&a).entries[0].answer, Answer::Pending);
         let (rows, _) = ask_state(&a).lines(60);
         assert!(
@@ -714,18 +796,65 @@ mod tests {
     }
 
     #[test]
+    fn b_asks_with_btw_in_the_session_s_window_and_r_asks_again() {
+        let mut a = app();
+        a.agents = vec![agent("%1", 1, "api", "/a", true)];
+        assert!(press(&mut a, KeyCode::Char('b')).is_empty());
+        assert!(ask_state(&a).input.is_some());
+        type_text(&mut a, "why tokio?");
+        let asked = press(&mut a, KeyCode::Enter);
+        let btw = Effect::Btw {
+            window: 1,
+            index: 0,
+            pane: "%1".into(),
+            question: "why tokio?".into(),
+        };
+        assert_eq!(asked, std::slice::from_ref(&btw));
+        let (rows, _) = ask_state(&a).lines(60);
+        let text: Vec<&str> = rows.iter().map(|(_, l)| l.as_str()).collect();
+        assert!(text.contains(&"/btw why tokio?"), "{text:?}");
+        // An answer for an earlier window is dropped.
+        a.update(Msg::Btw {
+            window: 0,
+            index: 0,
+            pane: "%1".into(),
+            result: Ok("no".into()),
+        });
+        assert_eq!(ask_state(&a).entries[0].answer, Answer::Pending);
+        a.update(Msg::Btw {
+            window: 1,
+            index: 0,
+            pane: "%1".into(),
+            result: Err("its box is not empty".into()),
+        });
+        assert_eq!(
+            ask_state(&a).entries[0].answer,
+            Answer::Failed("/btw failed: its box is not empty".into())
+        );
+        assert_eq!(press(&mut a, KeyCode::Char('r')), [btw]);
+        a.update(Msg::Btw {
+            window: 1,
+            index: 0,
+            pane: "%1".into(),
+            result: Ok("For the runtime.\n".into()),
+        });
+        assert_eq!(
+            ask_state(&a).entries[0].answer,
+            Answer::Done("For the runtime.".into())
+        );
+    }
+
+    #[test]
     fn answer_text_is_made_visible() {
         let mut a = app();
         a.queue.push(review_with_cursor());
-        press(&mut a, KeyCode::Char('?'));
-        type_text(&mut a, "q");
-        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('W'));
         a.update(Msg::Llm(LlmEvent {
             card: 1,
             kind: JobKind::Ask {
                 index: 0,
                 session_id: None,
-                speed: Speed::Normal,
+                speed: Speed::LowEffort,
             },
             result: Ok("run \u{1b}[2J\u{202e}now".into()),
         }));
@@ -756,7 +885,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
-                speed: Speed::Normal,
+                speed: Speed::LowEffort,
             },
             result: Ok("api is half done".into()),
         }));
@@ -804,7 +933,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: Some("s1".into()),
-                speed: Speed::Normal,
+                speed: Speed::LowEffort,
             },
             result: Ok("half done".into()),
         }));
@@ -830,7 +959,7 @@ mod tests {
     fn card_without_a_session_is_asked_plainly() {
         let mut a = app();
         a.queue.push(review_with_cursor());
-        press(&mut a, KeyCode::Char('?'));
+        press(&mut a, KeyCode::Char('W'));
         assert_eq!(ask_state(&a).session_id, None);
     }
 
@@ -838,13 +967,11 @@ mod tests {
     fn esc_cancels_the_input_and_keeps_earlier_answers() {
         let mut a = app();
         a.queue.push(review_with_cursor());
-        press(&mut a, KeyCode::Char('?'));
+        press(&mut a, KeyCode::Char('b'));
         press(&mut a, KeyCode::Esc);
         assert_eq!(a.overlay, None);
-        press(&mut a, KeyCode::Char('?'));
-        type_text(&mut a, "q");
-        press(&mut a, KeyCode::Enter);
-        press(&mut a, KeyCode::Char('?'));
+        press(&mut a, KeyCode::Char('W'));
+        press(&mut a, KeyCode::Char('b'));
         press(&mut a, KeyCode::Esc);
         assert_eq!(ask_state(&a).entries.len(), 1);
         assert!(ask_state(&a).input.is_none());
@@ -856,7 +983,7 @@ mod tests {
             kind: JobKind::Ask {
                 index: 0,
                 session_id: session.map(Into::into),
-                speed: Speed::Normal,
+                speed: Speed::LowEffort,
             },
             cwd: "/".into(),
             prompt: "p".into(),
@@ -888,12 +1015,12 @@ mod tests {
                 JobKind::Ask {
                     index: 0,
                     session_id: Some("sid".into()),
-                    speed: Speed::Normal,
+                    speed: Speed::LowEffort,
                 },
                 JobKind::Ask {
                     index: 0,
                     session_id: None,
-                    speed: Speed::Normal,
+                    speed: Speed::LowEffort,
                 },
             ]
         );
@@ -945,16 +1072,14 @@ mod tests {
     fn fallback_answer_is_marked_in_the_overlay() {
         let mut a = app();
         a.queue.push(review_with_cursor());
-        press(&mut a, KeyCode::Char('?'));
-        type_text(&mut a, "q");
-        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('W'));
         let ev = |text: String| {
             Msg::Llm(LlmEvent {
                 card: 1,
                 kind: JobKind::Ask {
                     index: 0,
                     session_id: None,
-                    speed: Speed::Normal,
+                    speed: Speed::LowEffort,
                 },
                 result: Ok(text),
             })
@@ -980,7 +1105,7 @@ mod tests {
         let mut c = card(1, "/a", CardKind::Step(Box::new(sc)), 0);
         c.agent = a.agents[0].id.clone();
         a.queue.push(c);
-        press(&mut a, KeyCode::Char('?'));
+        press(&mut a, KeyCode::Char('W'));
         assert_eq!(
             ask_state(&a).session_id.as_deref(),
             Some("11111111-2222-3333-4444-555555555555")
@@ -992,7 +1117,7 @@ mod tests {
         let mut c = review_with_cursor();
         c.agent = b.agents[0].id.clone();
         b.queue.push(c);
-        press(&mut b, KeyCode::Char('?'));
+        press(&mut b, KeyCode::Char('W'));
         assert_eq!(ask_state(&b).session_id, None);
     }
 

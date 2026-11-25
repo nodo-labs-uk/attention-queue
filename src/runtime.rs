@@ -613,6 +613,17 @@ fn apply(
             },
             Effect::ReadCode(req) => Job::ReadCode(req),
             Effect::Llm(job) => Job::Llm(job),
+            Effect::Btw {
+                window,
+                index,
+                pane,
+                question,
+            } => Job::Btw {
+                window,
+                index,
+                pane,
+                question,
+            },
             Effect::FlagFacts { card, cwd, action } => Job::FlagFacts { card, cwd, action },
             Effect::LogFlag(entry) => Job::LogFlag(entry),
             Effect::ListPrs { dirs } => Job::ListPrs(dirs),
@@ -811,6 +822,12 @@ enum Job {
     ReadCode(CodeRequest),
     /// Started on its own thread: it can take minutes.
     Llm(LlmJob),
+    Btw {
+        window: u64,
+        index: usize,
+        pane: String,
+        question: String,
+    },
     /// Started on its own thread: `gh` can take a while.
     FlagFacts {
         card: u64,
@@ -1101,6 +1118,25 @@ fn spawn_effect_worker(
                                 "Could not open an editor: {e:#}"
                             )));
                         }
+                    });
+                    None
+                }
+                Job::Btw {
+                    window,
+                    index,
+                    pane,
+                    question,
+                } => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::agents::tmux::ask_btw(&pane, &question)
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Msg::Btw {
+                            window,
+                            index,
+                            pane,
+                            result,
+                        });
                     });
                     None
                 }

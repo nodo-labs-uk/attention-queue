@@ -1603,7 +1603,7 @@ comments below ask, run the tests, then commit and push to the PR's branch.\n\n"
     fn a_side_question_on_a_pr_includes_its_description() {
         let mut a = app();
         pr_card(&mut a, Path::new("/w"), false);
-        a.update(key('?'));
+        a.update(key('W'));
         let Some(Overlay::Ask(ask)) = &a.overlay else {
             panic!("no ask box: {:?}", a.overlay);
         };
