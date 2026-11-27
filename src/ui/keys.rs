@@ -267,6 +267,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
         ) => vec![
             ("y", "allow".into()),
             ("n", "deny".into()),
+            ("v", "show or hide request".into()),
             ("g", "go to window".into()),
             ("Space", "skip".into()),
             ("B", "move to back".into()),
@@ -288,7 +289,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             ("o", "own words".into()),
             ("u", "back".into()),
             ("x", "answer in the window".into()),
-            ("c", "copy link".into()),
+            ("c", "copy".into()),
             ("g", "go to window".into()),
         ],
         (
@@ -306,7 +307,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
                 ("Enter", "reply".into()),
                 ("x", "stash".into()),
                 ("r", "read fast".into()),
-                ("c", "copy link".into()),
+                ("c", "copy".into()),
                 ("g", "go to window".into()),
                 ("j/k", "scroll".into()),
                 ("Space", "skip".into()),
@@ -347,7 +348,8 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
             ("T", "sum up last turn".into()),
             ("r", "read reply fast".into()),
             ("b", "/btw".into()),
-            ("c", "/mcp".into()),
+            ("c", "copy".into()),
+            ("C", "/mcp".into()),
             ("g", "go to window".into()),
             ("p", "open PR".into()),
             ("m", "model".into()),
@@ -386,7 +388,7 @@ fn keys_here(app: &App) -> Vec<(&str, String)> {
                 ("↑↓ Enter", "move and pick".into()),
                 ("g", "go to window".into()),
                 ("x", "answer it there".into()),
-                ("c", "copy link".into()),
+                ("c", "copy".into()),
             ]
         }
         (None, None) => vec![

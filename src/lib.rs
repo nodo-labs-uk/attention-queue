@@ -3,6 +3,7 @@ pub mod app;
 pub mod ask;
 pub mod choice;
 pub mod config;
+pub mod copy;
 pub mod edit;
 pub mod flag;
 mod flagged;

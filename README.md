@@ -40,9 +40,9 @@ I run several Claude Code sessions in tmux and kept losing track of which one wa
 
 | Feature | What you get |
 |---|---|
-| [**Permission prompts**](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html) | A line from Claude Haiku says what the call does and why, or a plan's key points. `y` allows it, and approves a plan in Claude's own menu too. |
+| [**Permission prompts**](https://nodo-labs-uk.github.io/attention-queue/cards/permission.html) | A line from Claude Haiku says what the call does and why, or a plan's key points, and that is all the card shows: `v` brings up the whole request. `y` allows it, and approves a plan in Claude's own menu too. |
 | [**Flagged actions**](https://nodo-labs-uk.github.io/attention-queue/cards/flagged.html) | Merges, pushes to main, force pushes and comments posted as you wait for a yes, in every mode. |
-| [**Questions and your move**](https://nodo-labs-uk.github.io/attention-queue/cards/question.html) | Every finished turn becomes a card, so you never go hunting through tabs. `a` approves, `d` stops for now, `Enter` replies, `T` sums up the turn, `Space` leaves it for later. |
+| [**Questions and your move**](https://nodo-labs-uk.github.io/attention-queue/cards/question.html) | Every finished turn becomes a card, so you never go hunting through tabs. `a` approves, `d` stops for now, `Enter` replies, `T` sums up the turn, `c` copies a link or a command from it, `Space` leaves it for later. |
 | [**Side questions**](https://nodo-labs-uk.github.io/attention-queue/tools.html) | `W` asks where a session is up to and `T` has Haiku sum up its latest turn. `b` asks anything with Claude Code's own `/btw`, and only the answer shows. None of them adds to the session's conversation. |
 
 ### Run many sessions
@@ -111,7 +111,7 @@ Then run `aq` in a tmux window. The tour starts on its own.
 | `y` `n` | allow or refuse an edit or a permission prompt |
 | `c` `s` `a` | on a review: comment on a line, send the comments, approve |
 | `a` `d` `Enter` | on a question: approve, stop for now (closes the card, sends nothing), or reply |
-| `c` | on a question, message or permission card: copy its last web link |
+| `c` | on a question, message or permission card: copy its last link or code (a command, a one-time code); press again for the one before |
 | `Space` | skip this card for now |
 | `M` | switch this project's mode: review, step, quiz, vibe |
 
@@ -121,7 +121,7 @@ Then run `aq` in a tmux window. The tour starts on its own.
 |---|---|
 | `W` `T` `b` | where is the session up to, sum up its last turn, ask it anything with `/btw` |
 | `N` `R` | start a new Claude session, review a GitHub PR |
-| `!` `E` | a shell in a popup, or a quick throwaway Claude session for a small job |
+| `!` `E` | the project's shell in a popup, which stays alive between uses, or a quick throwaway Claude session for a small job |
 | `Ctrl-Q` | close any window or popup |
 | `F1` `F2` `F3` | every key, the tour again, the keys row along the bottom |
 
@@ -181,6 +181,8 @@ Moving around works as in vim. [Every key](https://nodo-labs-uk.github.io/attent
 <summary>Run a command Claude can't, in a shell popup</summary>
 
 ![Claude asks for a command that needs sudo; ! opens a shell with it typed in](docs/media/shell.svg)
+
+Each project has one shell. `Ctrl-Q` hides it and it keeps running, so `sudo` does not ask for your password on every use.
 </details>
 
 <details>

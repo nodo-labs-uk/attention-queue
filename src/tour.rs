@@ -167,7 +167,7 @@ pub const PAGES: &[Page] = &[
             "W and N work on a card too, for the card's session. So do:",
             "",
             "key:?\task the session a side question; a copy answers",
-            "key:!\ta shell in a popup, with Claude's last ! command typed in",
+            "key:!\ta shell in a popup, with Claude's last command typed in",
             "key:drag\tselect text; letting go copies it",
             "key:2 clicks\tcopy the word; a third click copies the line",
             "key:t\tnext theme",

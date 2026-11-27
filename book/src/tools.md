@@ -6,23 +6,17 @@
 
 `W` asks a copy of the session (`claude --resume --fork-session`) where it is up to: a short summary of what is done and what is left. It runs at low effort, so it answers in about half the time; the copy still uses the session's own model and its prompt cache, so it costs no more.
 
-`T` sums up the latest turn only: what you last asked for, what Claude did, and what it said at the end. It runs on Claude Haiku, through your own `claude` login, so it is quick and cheap. Haiku gets no tools: it reads the conversation and nothing else.
-
-The answer comes in a short window titled TL;DR, as three labelled lines:
-
-```text
-Asked  improve the layout of the T card.
-Did    read src/ui/ask.rs and src/ask.rs, and made no changes yet.
-Said   nothing yet; I was still looking at the code.
-```
+`T` sums up the latest turn only, in a short window titled TL;DR. The first line is the one thing you most need to know or decide. Up to four short lines follow with the facts you need to act on it: what changed, what Claude found, what is left, and the options if you must choose. It runs on Claude Haiku, through your own `claude` login, so it is quick and cheap. Haiku gets no tools: it reads the conversation and nothing else.
 
 `b` in that window asks a `/btw` question of the same session, and `W` and `T` ask again.
 
 ## Shell
 
-`!` opens a shell in a tmux popup, in the project's folder. Use it for things Claude cannot run itself: `sudo`, logins, or commands its permissions block.
+`!` opens the project's shell in a tmux popup, in the project's folder. Use it for things Claude cannot run itself: `sudo`, logins, or commands its permissions block.
 
-The last `! command` Claude suggested is copied and, in zsh, already typed in, so `Enter` runs it. `Ctrl-Q` closes the popup, as does leaving the shell.
+Each project has one shell, and it stays alive. `Ctrl-Q` hides the popup and the shell keeps running, with what you started in it; the next `!` shows the same shell. So `sudo` asks for your password only as often as it does in any one terminal (15 minutes after your last `sudo` command, unless your sudo settings say otherwise). Leaving the shell (`exit`) ends it, and the next `!` starts a new one. The shells are tmux sessions, so they also outlive aq.
+
+The command Claude last suggested is copied and typed in at the prompt, so `Enter` runs it. aq takes it from Claude's latest reply: a `! command`, or else a shell code block or a command that starts with `sudo`. If the latest reply has none, aq takes the last `! command` of an earlier reply. aq only copies the command, without typing it, when the shell is busy with another program (a root shell from `sudo -s` counts as one) or when the command has several lines in a shell that is already open.
 
 ![Claude asks for a command that needs sudo; ! opens a shell with it typed in](media/shell.svg)
 

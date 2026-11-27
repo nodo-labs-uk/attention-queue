@@ -39,9 +39,7 @@ pub fn render(
         Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(head), head_area.inner(Margin::new(1, 0)));
     let (tree_area, diff_area) = tree::split(body, app.config.hide_files);
-    if let Some(tree_area) = tree_area {
-        tree::render(frame, tree_area, rc, t);
-    }
+    tree::render(frame, tree_area, rc, t, app.config.hide_files);
     if rc.all_done() {
         let key = Style::new().fg(t.key).add_modifier(Modifier::BOLD);
         let dim = Style::new().fg(t.dim);
@@ -279,6 +277,16 @@ mod tests {
         let screen = render(&a, 100, 20);
         assert!(!screen.contains("http.rs"), "{screen}");
         assert!(screen.contains("src/limit.rs · before"), "{screen}");
+        // A mark per file stays: the file on screen, then one left.
+        let marks = |screen: &str| -> String {
+            screen.chars().filter(|c| "✓●○".contains(*c)).collect()
+        };
+        assert_eq!(marks(&screen), "●○", "{screen}");
+        a.update(Msg::Key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('d')),
+            std::time::Instant::now(),
+        ));
+        assert_eq!(marks(&render(&a, 100, 20)), "✓●");
         a.update(f());
         assert!(render(&a, 100, 20).contains("http.rs"));
     }

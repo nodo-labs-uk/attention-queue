@@ -57,6 +57,8 @@ pub struct PermissionCard {
     /// How far down the body the user has had on screen, in rows.
     pub seen: usize,
     pub gist: Gist,
+    /// `v`: the whole request is shown under Haiku's summary.
+    pub open: bool,
     /// Set when the call is a flagged action that waits for this card.
     pub held: Option<Held>,
 }
@@ -98,15 +100,21 @@ fn key_points_shown(screen: (u16, u16), pc: &PermissionCard) -> bool {
         && pc.gist_rows(body.width as usize, usize::MAX).len() <= usize::from(gist.height - 1)
 }
 
+/// Whether the card shows Haiku's summary alone, the request hidden, on a
+/// screen of this size.
+fn folded_on(screen: (u16, u16), pc: &PermissionCard) -> bool {
+    pc.folds() && screen_areas(screen, false, pc.gist_max())[3].height > 0
+}
+
 /// Rows a held card's band takes at most: its rows and a blank row after.
 const BAND_ROWS: u16 = GIST_ROWS + 2;
 
 /// The permission card's band, tool caption, body, summary, "more" marker
 /// and key strip. A held card opens with its band; the others have none.
 /// The caption and body sit on a panel, inset a column each side. An
-/// unheld card keeps rows under the body for Haiku's summary, the same
-/// rows while it is awaited, so its arrival moves nothing; a screen too
-/// short for them and `BODY_MIN` body rows has none. A plan keeps up to
+/// unheld card keeps rows above the caption for Haiku's summary, the same
+/// rows while it is awaited, so its arrival changes no height; a screen
+/// too short for them and `BODY_MIN` body rows has none. A plan keeps up to
 /// `gist_max` rows for its key points, and fewer on a short screen. A held card always
 /// has its band: on a short screen the band shrinks, and the body keeps at
 /// least one row unless the band would lose its first row.
@@ -136,11 +144,11 @@ pub fn card_areas(area: Rect, held: bool, gist_max: u16) -> [Rect; 6] {
         };
         (0, caption, gist)
     };
-    let [band, caption, body, gist] = Layout::vertical([
+    let [band, gist, caption, body] = Layout::vertical([
         Constraint::Length(band),
+        Constraint::Length(gist),
         Constraint::Length(caption),
         Constraint::Fill(1),
-        Constraint::Length(gist),
     ])
     .areas(main);
     let inset = |r: Rect| Rect::new(r.x + 1, r.y, r.width.saturating_sub(2), r.height);
@@ -162,6 +170,13 @@ impl PermissionCard {
     /// Whether the call asks to approve a plan.
     pub fn is_plan(&self) -> bool {
         self.tool_name == "ExitPlanMode"
+    }
+
+    /// Whether the request is hidden where there are rows for Haiku's
+    /// summary: on a card that is not held, until `v` shows it. A summary
+    /// that failed leaves the request to read.
+    pub fn folds(&self) -> bool {
+        self.held.is_none() && !self.open && !matches!(self.gist, Gist::Failed(_))
     }
 
     /// The most rows Haiku's summary gets: more for a plan's key points.
@@ -496,6 +511,7 @@ impl App {
                 scroll: 0,
                 seen: 0,
                 gist: Gist::Pending,
+                open: false,
                 held,
             }),
         }
@@ -544,10 +560,20 @@ impl App {
             KeyCode::Char('y' | 'n') if !self.looked_at(id) => {
                 self.too_quick("request");
             }
-            KeyCode::Char('y') if !self.read_to_end() => {
-                self.set_status("Scroll to the end before allowing");
+            KeyCode::Char('y') => match self.allow_blocked() {
+                Some(why) => self.set_status(why),
+                None => return self.decide_permission(id, HookReply::Allow),
+            },
+            KeyCode::Char('v') if pc.held.is_none() => {
+                if let Some(Card {
+                    kind: CardKind::Permission(pc),
+                    ..
+                }) = self.queue.current_mut()
+                {
+                    pc.open = !pc.open;
+                    pc.scroll = 0;
+                }
             }
-            KeyCode::Char('y') => return self.decide_permission(id, HookReply::Allow),
             KeyCode::Char('j' | 'k')
             | KeyCode::Down
             | KeyCode::Up
@@ -576,33 +602,44 @@ impl App {
         Vec::new()
     }
 
-    /// Whether the whole body of the current permission card has been on
-    /// screen: it fits, or it was scrolled to the end. A plan counts as
-    /// read once all of Haiku's key points are on screen; a held plan has
-    /// no room for them, so it is read in full.
-    fn read_to_end(&self) -> bool {
+    /// Why `y` may not allow the current permission card yet, if so. With
+    /// the request hidden, Haiku's summary is enough. With it shown, its
+    /// whole body must have been on screen: it fits, or it was scrolled to
+    /// the end. A plan also counts as read once all of Haiku's key points
+    /// are on screen; a held plan has no room for them, so it is read in
+    /// full.
+    fn allow_blocked(&self) -> Option<&'static str> {
+        const SCROLL: &str = "Scroll to the end before allowing";
         let Some(Card {
             kind: CardKind::Permission(pc),
             ..
         }) = self.queue.current()
         else {
-            return false;
+            return Some(SCROLL);
         };
+        if self.screen.is_some_and(|s| folded_on(s, pc)) {
+            return match pc.gist {
+                Gist::Done(_) => None,
+                _ => Some("Wait for Haiku's summary, or v shows the request"),
+            };
+        }
         if pc.is_plan()
             && pc.held.is_none()
             && matches!(pc.gist, Gist::Done(_))
             && self.screen.is_some_and(|s| key_points_shown(s, pc))
         {
-            return true;
+            return None;
         }
         let Some((width, height)) = self
             .screen
             .map(|s| body_size(s, pc.held.is_some(), pc.gist_max()))
         else {
-            return false;
+            return Some(SCROLL);
         };
         let total = pc.body_rows(width).len();
-        pc.seen.max((pc.scroll + height).min(total)) >= total && (height > 0 || total == 0)
+        let read =
+            pc.seen.max((pc.scroll + height).min(total)) >= total && (height > 0 || total == 0);
+        (!read).then_some(SCROLL)
     }
 
     fn scroll_permission(&mut self, code: KeyCode) {
@@ -614,6 +651,9 @@ impl App {
         else {
             return;
         };
+        if screen.is_some_and(|s| folded_on(s, pc)) {
+            return;
+        }
         let Some((width, height)) = screen.map(|s| body_size(s, pc.held.is_some(), pc.gist_max()))
         else {
             return;
@@ -825,6 +865,14 @@ mod tests {
         }
     }
 
+    /// Haiku's summary arrives on the card on screen.
+    fn summed(a: &mut App) {
+        match &mut a.queue.current_mut().unwrap().kind {
+            CardKind::Permission(p) => p.gist = Gist::Done("Lists the files.".into()),
+            k => panic!("{k:?}"),
+        }
+    }
+
     /// An app showing a Bash permission card that has been on screen long enough.
     fn seen() -> (App, Instant) {
         let mut a = app();
@@ -919,6 +967,7 @@ mod tests {
         ));
         // The permission comes up next, by the user's own key.
         assert_eq!(perm(&a).req_id, 2);
+        summed(&mut a);
         a.update(Msg::Tick(t1 + Duration::from_millis(200)));
         assert!(!a.preempted());
         assert_eq!(
@@ -985,8 +1034,54 @@ mod tests {
     }
 
     #[test]
+    fn the_request_is_hidden_under_the_summary_until_v_shows_it() {
+        let (mut a, t) = long_command(40);
+        a.update(Msg::Resize {
+            width: 80,
+            height: 24,
+        });
+        let allow = [Effect::Reply {
+            req_id: 1,
+            decision: HookReply::Allow,
+        }];
+        // No summary yet: nothing to go on, and scrolling moves nothing.
+        assert!(a.update(key('y', t)).is_empty());
+        assert!(a.status_text().unwrap().contains("Wait for Haiku"));
+        a.update(key('j', t));
+        assert_eq!(perm(&a).scroll, 0);
+        // Shown, the request is read to its end as before.
+        a.update(key('v', t));
+        assert!(perm(&a).open);
+        assert!(a.update(key('y', t)).is_empty());
+        assert!(a.status_text().unwrap().contains("Scroll to the end"));
+        // Hidden again, the summary is enough once it is there.
+        a.update(key('v', t));
+        summed(&mut a);
+        assert_eq!(a.update(key('y', t)), allow);
+    }
+
+    #[test]
+    fn a_failed_summary_leaves_the_request_to_read() {
+        let (mut a, t) = long_command(40);
+        a.update(Msg::Resize {
+            width: 80,
+            height: 24,
+        });
+        match &mut a.queue.current_mut().unwrap().kind {
+            CardKind::Permission(p) => p.gist = Gist::Failed("timed out".into()),
+            k => panic!("{k:?}"),
+        }
+        assert!(!perm(&a).folds());
+        assert!(a.update(key('y', t)).is_empty());
+        assert!(a.status_text().unwrap().contains("Scroll to the end"));
+        a.update(key('G', t));
+        assert!(!a.update(key('y', t)).is_empty());
+    }
+
+    #[test]
     fn y_allows_after_the_card_was_seen_and_not_before() {
         let (mut a, later) = seen();
+        summed(&mut a);
         // Too early: the card appeared at t0 and 100 ms is not enough.
         let early = later - Duration::from_millis(300);
         assert!(a.update(key('y', early)).is_empty());
@@ -1347,7 +1442,7 @@ mod tests {
         a.update(Msg::Tick(t0));
         let t = t0 + Duration::from_millis(400);
         assert!(a.update(key('y', t)).is_empty(), "no key points yet");
-        assert!(a.status_text().unwrap().contains("Scroll to the end"));
+        assert!(a.status_text().unwrap().contains("Wait for Haiku"));
         a.update(Msg::Llm(LlmEvent {
             card: job.card,
             kind: job.kind.clone(),
@@ -1576,7 +1671,7 @@ mod tests {
         };
         tmux(&["new-session", "-d", "-s", "t", "-x", "80", "-y", "24"]);
         let first = tmux(&["display-message", "-p", "-t", "t", "#{pane_id}"]);
-        tmux(&["new-window", "-t", "t"]);
+        tmux(&["new-window", "-t", "t:"]);
         let before = tmux(&["display-message", "-p", "-t", "t", "#{pane_id}"]);
         let result = go_to_window(&first, &["-L", &name]);
         let active = tmux(&["display-message", "-p", "-t", "t", "#{pane_id}"]);

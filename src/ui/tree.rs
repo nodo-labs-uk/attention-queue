@@ -1,5 +1,6 @@
 //! The review board's file list: files grouped by folder, with this round's
-//! comment count per file. Files marked done are dim and ticked.
+//! comment count per file. Files marked done are dim and ticked. Hidden,
+//! it is a strip of one mark per file.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -15,21 +16,52 @@ enum Row {
     File(usize),
 }
 
+/// Columns of the strip that stands in for the hidden list.
+const STRIP: u16 = 3;
+
 /// `body` cut into the file list, narrow at the left, and the diff. With
-/// the list hidden (`f`), the diff takes it all.
-pub fn split(body: Rect, hidden: bool) -> (Option<Rect>, Rect) {
-    if hidden {
-        return (None, body);
-    }
-    let width = (body.width / 6).clamp(14, 22);
+/// the list hidden (`f`), it is a strip of marks.
+pub fn split(body: Rect, hidden: bool) -> (Rect, Rect) {
+    let width = if hidden {
+        STRIP
+    } else {
+        (body.width / 6).clamp(14, 22)
+    };
     let [tree, diff] =
         Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(body);
-    (Some(tree), diff)
+    (tree, diff)
 }
 
-pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
+/// The hidden list: a mark per file, in the list's order. `✓` is a file
+/// marked done, `●` the file on screen and `○` a file still to review.
+fn render_strip(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme) {
     let buf = frame.buffer_mut();
-    buf.set_style(area, Style::new().bg(t.panel).fg(t.fg));
+    let h = area.height as usize;
+    let top = scroll_top(rc.cursor.file, rc.files.len(), h);
+    for (i, f) in rc.files.iter().enumerate().skip(top).take(h) {
+        let (mark, colour) = match f.status {
+            _ if rc.is_done(i) => ("✓", t.dim),
+            _ if i == rc.cursor.file => ("●", t.hi),
+            FileStatus::Added => ("○", t.add),
+            FileStatus::Deleted => ("○", t.del),
+            FileStatus::Modified | FileStatus::Renamed => ("○", t.fg),
+        };
+        let y = area.y + (i - top) as u16;
+        if i == rc.cursor.file {
+            buf.set_style(Rect::new(area.x, y, area.width, 1), Style::new().bg(t.sel));
+        }
+        buf.set_stringn(area.x + 1, y, mark, 1, Style::new().fg(colour));
+    }
+}
+
+pub fn render(frame: &mut Frame, area: Rect, rc: &ReviewCard, t: &Theme, hidden: bool) {
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().bg(t.panel).fg(t.fg));
+    if hidden {
+        return render_strip(frame, area, rc, t);
+    }
+    let buf = frame.buffer_mut();
     let mut rows = Vec::new();
     let mut last_dir = None;
     for (i, f) in rc.files.iter().enumerate() {

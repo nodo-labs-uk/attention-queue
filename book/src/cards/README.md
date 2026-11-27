@@ -8,7 +8,7 @@ Each kind of card has its own keys. These keys work on every card:
 | `B` | move it to the back of the queue |
 | `b` | ask the session a [side question](../tools.md#side-questions) with `/btw` (not on a step card) |
 | `W` | where are we: a short summary of what is done and what is left |
-| `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
+| `T` | Haiku sums up the latest turn, with what you most need to know or decide first |
 | `!` | a [shell](../tools.md#shell) in a popup, in this project |
 | `E` | a [quick session](../tools.md#quick-session): a throwaway Claude in a popup |
 | `N` | a [new Claude session](../new-sessions.md) in this project |

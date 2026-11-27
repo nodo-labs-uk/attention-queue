@@ -33,7 +33,7 @@ finished turn; the card on screen stays as it is.
        card moves back a word)            Space  skip this card
                                           B      move it to the back of the queue
   W    where are we: a short summary of what is done and what is left
-  T    Haiku sums up the latest turn: what you asked, what Claude did
+  T    TL;DR: Haiku sums up the latest turn, what matters most first
   N    a new Claude session in this project, in a tmux window of its own
        (with none open, in aq's folder); what you type is its first
        prompt, and Tab gives it a git worktree of its own (claude
@@ -47,9 +47,11 @@ finished turn; the card on screen stays as it is.
        Pick the folder, untick repos you don't want, Enter opens the rest;
        aq saves the set, and O lists it next time. Repos open already in
        that workspace are left as they are
-  !    a shell in a popup, in this project; for sudo, logins, or commands
-       Claude may not run. Claude's last suggested `! command` is copied
-       and, in zsh, typed in ready to run. Ctrl-Q or exit closes it
+  !    this project's shell in a popup; for sudo, logins, or commands
+       Claude may not run. The command Claude last suggested (a
+       `! command`, a shell code block or a `sudo` command) is copied and
+       typed in ready to run. Ctrl-Q hides the shell and it keeps
+       running, so sudo does not ask again each time; exit ends it
   E    a quick Claude session in a popup, for a small job such as an
        email, in a folder of its own (~/.local/share/aq/quick), with no
        tab or cards. Ctrl-Q ends it; the folder goes if it is empty, and
@@ -72,7 +74,8 @@ finished turn; the card on screen stays as it is.
   j/k line   V range   ]c/[c change   H/L or tab file
   v  split or unified view           r  whole branch or this round
   m  Markdown as written, or as read (the default)
-  f  hide or show the file list (remembered)
+  f  hide or show the file list (remembered); hidden, a mark per file
+     stays: ✓ done, ● on screen, ○ left
   e  open the file at this line in $VISUAL or $EDITOR, in a popup
 
 # PR review
@@ -110,11 +113,13 @@ Someone else's PR:
   j/k line   ]c/[c change   H/L or tab file   v view   f file list
 
 # Permission card
-  y  allow (once you have scrolled to the end; a plan only needs
-     Haiku's key points on screen, and y picks Yes, and use auto
-     mode in Claude's plan menu)   n  deny with a reason
+Haiku's summary is on top and the request is hidden under it.
+  y  allow, on the summary alone (on a plan, y also picks Yes, and
+     use auto mode in Claude's plan menu)   n  deny with a reason
+  v  show the whole request, or hide it again; shown, y needs you to
+     have scrolled to its end
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
-  c  copy the last web link on the card
+  c  copy the last link or code on the card; again for the one before
 
 # Flagged action card
 A risky action Claude runs (a push, a merge, a PR comment, a release) is
@@ -122,7 +127,7 @@ held in every mode on a permission card with a band: ▌▌ SOMEONE ELSE or
 AS YOU, or ▲ MAIN BRANCH, TAG, RELEASE, FORCE PUSH, DELETE BRANCH...
   y  allow (once you have scrolled to the end)   n  deny with a reason
   j/k scroll   PgUp/PgDn page   G end   g  go to the agent's window
-  c  copy the last web link on the card
+  c  copy the last link or code on the card; again for the one before
 A card whose band reads aq could not check this is held too.
 An unanswered call is refused, never allowed. The log is flags.jsonl
 in aq's state folder.
@@ -137,8 +142,9 @@ in vibe mode.
      a is there only when it asks for a go-ahead or names its pick
   d  done for now: closes the card and sends nothing
   x  stash the card      g  go to the session's window   j/k scroll
-  c  copy the last web link on the card, as on message, permission,
-     choice and menu cards
+  c  copy the last link or code on the card (a web link, a code block,
+     text in backticks), as on message, permission, choice and menu
+     cards; press it again for the one before
   S  the stashed questions: Enter brings one back, x drops it
   r  read it fast, a word at a time: Space pauses, ↑/↓ or a typed
      number and Enter set the words a minute, ←/→ go back or on
@@ -184,7 +190,9 @@ session is the one picked.
   r      read its last reply fast, as r on a question card
   b      /btw: type a side question; aq asks it with Claude Code's
          /btw in the session and shows only the answer
-  c      /mcp: the session's own window in a popup over aq, with /mcp
+  c      copy the last link or code in its last reply; again for the
+         one before
+  C      /mcp: the session's own window in a popup over aq, with /mcp
          typed in; Enter opens its MCP
          servers to connect, reconnect or turn off; Ctrl-Q closes it
   p      ask an idle session to open a PR (/create-pr) and go there

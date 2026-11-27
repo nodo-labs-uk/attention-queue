@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, Effect, Overlay};
+use crate::app::{App, Effect, Overlay, ReplyFor};
 use crate::model::{Card, CardKind};
 
 pub const MIN_WPM: u32 = 100;
@@ -121,25 +121,30 @@ impl App {
         self.read_fast(&text);
     }
 
-    /// `r` on the sessions view: the picked session's last reply, once its
-    /// conversation is read from the transcript.
-    pub(crate) fn read_reply_fast(&mut self) -> Vec<Effect> {
+    /// `r` or `c` on the sessions view: the picked session's last reply,
+    /// to read fast or to copy from, once its conversation is read from
+    /// the transcript.
+    pub(crate) fn want_reply(&mut self, what: ReplyFor) -> Vec<Effect> {
         if !self.practice_agents.is_empty() {
-            self.set_status("The tour's sessions have nothing to read");
+            self.set_status(match what {
+                ReplyFor::Reader => "The tour's sessions have nothing to read",
+                ReplyFor::Copy => "The tour's sessions have nothing to copy",
+            });
             return Vec::new();
         }
         let Some(session_id) = self.picked_agent().map(|a| a.session_id.clone()) else {
             return Vec::new();
         };
-        self.read_reply = Some(session_id);
+        self.read_reply = Some((session_id, what));
         // Read afresh: the reply may have grown since the last read.
         self.reading_conversation = false;
         self.read_conversation()
     }
 
-    /// A conversation came in: if `r` waits for it, read its last reply.
+    /// A conversation came in: if `r` or `c` waits for it, read its last
+    /// reply or copy from it.
     pub(crate) fn on_conversation_read(&mut self) -> Vec<Effect> {
-        let Some(want) = self.read_reply.clone() else {
+        let Some((want, what)) = self.read_reply.clone() else {
             return Vec::new();
         };
         if self.picked_agent().map(|a| &a.session_id) != Some(&want) {
@@ -153,10 +158,15 @@ impl App {
             None => return self.read_conversation(),
         };
         self.read_reply = None;
-        match reply {
-            Some(text) if self.overlay.is_none() => self.read_fast(&text),
-            Some(_) => {}
-            None => self.set_status("No reply from Claude to read yet"),
+        match (reply, what) {
+            (Some(text), ReplyFor::Copy) => {
+                let found = crate::copy::in_reply(&text);
+                return self.copy_one(crate::ask::NO_CARD, found, "in its last reply");
+            }
+            (Some(text), ReplyFor::Reader) if self.overlay.is_none() => self.read_fast(&text),
+            (Some(_), ReplyFor::Reader) => {}
+            (None, ReplyFor::Reader) => self.set_status("No reply from Claude to read yet"),
+            (None, ReplyFor::Copy) => self.set_status("No reply from Claude to copy from yet"),
         }
         Vec::new()
     }

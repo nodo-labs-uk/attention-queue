@@ -1075,7 +1075,7 @@ fn spawn_effect_worker(
                         let typed = session_id
                             .and_then(|s| crate::transcript::find(&s))
                             .and_then(|p| crate::transcript::conversation(&p).ok())
-                            .and_then(|said| crate::transcript::last_bang_command(&said));
+                            .and_then(|said| crate::transcript::last_command(&said));
                         let r = crate::agents::tmux::popup_shell(
                             &dir,
                             &title,

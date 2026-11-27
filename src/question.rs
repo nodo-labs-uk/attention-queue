@@ -605,25 +605,33 @@ mod tests {
     }
 
     #[test]
-    fn c_copies_the_last_link_in_the_card() {
+    fn c_copies_the_last_link_or_code_and_then_the_one_before() {
         let mut a = app();
         said(
             &mut a,
-            "The PR is open: [#12](https://github.com/o/r/pull/12). Docs are at \
-             <https://example.org/docs/limits>.",
+            "Open <https://github.com/login/device> and enter `AB12-CD34`.",
+        );
+        assert_eq!(a.update(key('c')), [Effect::CopyText("AB12-CD34".into())]);
+        assert_eq!(
+            a.status_text(),
+            Some("Copied AB12-CD34   1 of 2, c for the one before")
         );
         assert_eq!(
             a.update(key('c')),
-            [Effect::CopyText("https://example.org/docs/limits".into())]
+            [Effect::CopyText("https://github.com/login/device".into())]
         );
-        assert_eq!(
-            a.status_text(),
-            Some("Copied https://example.org/docs/limits")
-        );
+        // After the first it starts over, as it does after any other key.
+        assert_eq!(a.update(key('c')), [Effect::CopyText("AB12-CD34".into())]);
+        a.update(key('c'));
+        a.update(key('j'));
+        assert_eq!(a.update(key('c')), [Effect::CopyText("AB12-CD34".into())]);
         let mut b = app();
         said(&mut b, "All done, nothing to link.");
         assert!(b.update(key('c')).is_empty());
-        assert_eq!(b.status_text(), Some("No web link on this card"));
+        assert_eq!(
+            b.status_text(),
+            Some("Nothing to copy on this card: no link and no code")
+        );
     }
 
     #[test]
@@ -706,6 +714,23 @@ mod tests {
         a.update(Msg::Key(KeyEvent::from(KeyCode::Enter), Instant::now()));
         match &a.overlay {
             Some(Overlay::Prompt(d)) => assert_eq!(d.ghost(), Some("the README")),
+            other => panic!("no reply box: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_paste_on_the_card_goes_into_its_reply_box() {
+        let mut a = app();
+        said(&mut a, "README or API reference?");
+        // With no box open, the paste opens the reply box; nothing is sent.
+        assert!(
+            a.update(Msg::Paste("the README\nplease".into(), Instant::now()))
+                .is_empty()
+        );
+        // With the box open, it goes on where the cursor is.
+        a.update(Msg::Paste(", now".into(), Instant::now()));
+        match &a.overlay {
+            Some(Overlay::Prompt(d)) => assert_eq!(d.input.text(), "the README please, now"),
             other => panic!("no reply box: {other:?}"),
         }
     }
