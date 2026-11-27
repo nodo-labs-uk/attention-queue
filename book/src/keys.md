@@ -15,8 +15,8 @@ This is the same list as aq's help page (`F1`).
 | `Q` | quit aq |
 | `b` | ask the session a side question with `/btw`; only the answer shows (on a step card, `b` moves back a word) |
 | `W` | where are we: a short summary of what is done and what is left |
-| `T` | Haiku sums up the latest turn: what you asked, what Claude did and said |
-| `!` | a shell in a popup, in this project |
+| `T` | Haiku sums up the latest turn, with what you most need to know or decide first |
+| `!` | this project's shell in a popup; it stays alive when the popup closes |
 | `E` | a quick, throwaway Claude session in a popup |
 | `N` | a new Claude session in this project |
 | `O` | open a workspace |
@@ -97,8 +97,9 @@ This is the same list as aq's help page (`F1`).
 
 | Key | What it does |
 |---|---|
-| `y` | allow (once you have scrolled to the end) |
+| `y` | allow, on Haiku's summary (with the request shown, once you have scrolled to its end) |
 | `n` | deny with a reason |
+| `v` | show the whole request, or hide it again |
 | `PgUp` `PgDn` | page |
 | `G` | end |
 | `g` | go to the session's window |
@@ -111,7 +112,7 @@ This is the same list as aq's help page (`F1`).
 | `d` | done for now: closes the card and sends nothing, so the session waits |
 | `Enter` | reply in your own words |
 | `x` | stash the card |
-| `c` | copy the last web link on the card (also on message, permission, choice and menu cards) |
+| `c` | copy the last link or code on the card: a web link, a code block, or text in backticks. Press it again for the one before. Also on message, permission, choice and menu cards |
 | `S` | the stashed questions: `Enter` brings one back, `x` drops it |
 | `r` | read it fast |
 | `g` | go to the session's window |
@@ -188,7 +189,8 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `m` | switch its model |
 | `P` | switch its permission mode |
 | `r` | read its last reply fast |
-| `c` | the session in a popup, with `/mcp` typed, to manage its MCP servers |
+| `c` | copy the last link or code in its last reply; press it again for the one before |
+| `C` | the session in a popup, with `/mcp` typed, to manage its MCP servers |
 | `x` | close its pane |
 | `Esc Esc` | stop it |
 | `Ctrl-U` `Ctrl-D`, `PgUp` `PgDn`, wheel | scroll its screen back |
@@ -206,4 +208,4 @@ A menu Claude Code draws itself, such as whether to trust a folder.
 | `Ctrl-A` `Ctrl-E` | line start or end |
 | `Alt-B` `Alt-F` | word back or forward |
 
-Pasting puts the text into the box. In a one-line box, line breaks become spaces, so a paste never sends the message. With no box open, aq ignores a paste, so pasted text never acts as keys.
+Pasting puts the text into the box. In a one-line box, line breaks become spaces, so a paste never sends the message. On a question card with no box open, a paste opens the reply box with the text in it. Anywhere else with no box open, aq ignores a paste, so pasted text never acts as keys.

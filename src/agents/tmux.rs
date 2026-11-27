@@ -444,10 +444,30 @@ pub fn kill_pane(pane: &str, server: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// A shell in `dir`, in a popup over aq's own pane; returns when it closes.
-/// `typed` is copied (to the tmux buffer, and so the clipboard), and with
-/// zsh it is also typed in at the prompt, not run. `zsh_dir` holds the
-/// startup files that do the typing.
+/// The tmux session that holds the `!` shell of the project in `dir`.
+fn shell_session(dir: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    dir.hash(&mut hasher);
+    format!("{POPUP_PREFIX}shell-{:016x}", hasher.finish())
+}
+
+/// `typed` on one line if it is one command: a line ending in `\` is
+/// joined to the next. `None` for several lines, which typed as keys
+/// would run all but the last.
+fn one_line(typed: &str) -> Option<String> {
+    let joined = typed.replace("\\\n", "");
+    (!joined.contains('\n')).then_some(joined)
+}
+
+/// The project's shell in `dir`, in a popup over aq's own pane; returns
+/// when the popup closes. The shell is one per project and outlives the
+/// popup: Ctrl-Q hides it, and it ends when you leave it. So what runs in
+/// it keeps running, and `sudo` asks for a password only as often as it
+/// does in any one terminal. `typed` is copied (to the tmux buffer, and so
+/// the clipboard) and typed in at the prompt, not run: by a new zsh from
+/// the startup files in `zsh_dir`, and else as keys, if it is one line and
+/// the shell is at its prompt.
 pub fn popup_shell(
     dir: &Path,
     title: &str,
@@ -456,13 +476,17 @@ pub fn popup_shell(
     look: &PopupLook,
 ) -> Result<()> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+    let view = shell_session(dir);
+    let pane = format!("={view}:");
+    let running = tmux_ok(&["has-session", "-t", &format!("={view}")]).is_ok();
     let mut title = title.to_string();
     let mut command = None;
+    let mut typed_in = false;
     if let Some(typed) = typed {
         let _ = Command::new("tmux")
             .args(["set-buffer", "-w", "--", typed])
             .output();
-        if shell.ends_with("/zsh") && write_zsh_files(zsh_dir, typed).is_ok() {
+        if !running && shell.ends_with("/zsh") && write_zsh_files(zsh_dir, typed).is_ok() {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
             let real = std::env::var("ZDOTDIR").unwrap_or(home);
             command = Some(format!(
@@ -471,12 +495,30 @@ pub fn popup_shell(
                 shell_quote(&real),
                 shell_quote(&shell)
             ));
-            title.push_str("· Claude's last ! command is typed in, Enter runs it ");
-        } else {
-            title.push_str("· Claude's last ! command is copied ");
+            typed_in = true;
         }
     }
-    popup(dir, &title, command.as_deref(), look)
+    if !running {
+        new_view(&view, dir, command.as_deref(), look)?;
+    }
+    // A shell at its prompt runs itself; anything else would read the keys.
+    let at_prompt = || {
+        let name = shell.rsplit('/').next().unwrap_or(&shell);
+        !running || display(&pane, "#{pane_current_command}").as_deref() == Some(name)
+    };
+    if let Some(line) = typed.filter(|_| !typed_in).and_then(one_line)
+        && at_prompt()
+    {
+        typed_in = tmux_ok(&["send-keys", "-t", &pane, "-l", "--", &line]).is_ok();
+    }
+    if typed.is_some() {
+        title.push_str(if typed_in {
+            "· Claude's last command is typed in, Enter runs it "
+        } else {
+            "· Claude's last command is copied "
+        });
+    }
+    show_session(&view, &title, look)
 }
 
 /// `path` (under `dir`) opened at `line` in $VISUAL or $EDITOR, else vi,
@@ -908,6 +950,15 @@ fn popup(dir: &Path, title: &str, command: Option<&str>, look: &PopupLook) -> Re
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let view = format!("{POPUP_PREFIX}{}-{n}", std::process::id());
+    new_view(&view, dir, command, look)?;
+    let shown = show_session(&view, title, look);
+    let _ = tmux_ok(&["kill-session", "-t", &format!("={view}")]);
+    shown
+}
+
+/// A detached tmux session `view` in `dir`, the size of the popup that
+/// will show it, running `command` or else your shell.
+fn new_view(view: &str, dir: &Path, command: Option<&str>, look: &PopupLook) -> Result<()> {
     // tmux expands formats in the start directory, and a folder name is not
     // ours to trust. The command is run as written.
     let dir = format_literal(&dir.to_string_lossy());
@@ -919,7 +970,7 @@ fn popup(dir: &Path, title: &str, command: Option<&str>, look: &PopupLook) -> Re
         "new-session",
         "-d",
         "-s",
-        &view,
+        view,
         "-c",
         &dir,
         "-x",
@@ -928,10 +979,7 @@ fn popup(dir: &Path, title: &str, command: Option<&str>, look: &PopupLook) -> Re
         &h,
     ];
     args.extend(command);
-    tmux_ok(&args)?;
-    let shown = show_session(&view, title, look);
-    let _ = tmux_ok(&["kill-session", "-t", &format!("={view}")]);
-    shown
+    tmux_ok(&args)
 }
 
 /// Startup files for the popup's zsh: they load the user's own, then put
@@ -1553,6 +1601,24 @@ mod tests {
         assert!(screen.contains("touch ran && echo 'it''s'"), "{screen}");
         assert!(!root.path().join("ran").exists(), "it ran");
         assert!(!dir.join("typed").exists(), "typed once only");
+    }
+
+    #[test]
+    fn a_project_has_one_shell_and_only_one_command_is_typed_as_keys() {
+        use std::path::Path;
+        let api = super::shell_session(Path::new("/w/api"));
+        assert_eq!(api, super::shell_session(Path::new("/w/api")));
+        assert_ne!(api, super::shell_session(Path::new("/w/web")));
+        assert!(
+            api.starts_with(super::POPUP_PREFIX),
+            "kept off the sessions list"
+        );
+        assert!(!api.contains(['.', ':']), "a name tmux takes: {api}");
+        assert_eq!(
+            super::one_line("sudo apt install \\\n    jq").as_deref(),
+            Some("sudo apt install     jq")
+        );
+        assert_eq!(super::one_line("make\nsudo make install"), None);
     }
 
     #[test]

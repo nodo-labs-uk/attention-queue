@@ -446,7 +446,7 @@ pub enum Effect {
     Shell {
         dir: PathBuf,
         title: String,
-        /// Whose last `! command` to have typed in, if any.
+        /// Whose last suggested command to have typed in, if any.
         session_id: Option<String>,
     },
     /// List the open PRs of the repos `dirs` are checkouts of.
@@ -567,6 +567,15 @@ pub struct CommentDraft {
     pub input: TextInput,
 }
 
+/// What the picked session's last reply is wanted for, once it is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplyFor {
+    /// `r`: to read fast.
+    Reader,
+    /// `c`: to copy a link or code from.
+    Copy,
+}
+
 pub struct App {
     pub queue: Queue,
     pub agents: Vec<Agent>,
@@ -575,6 +584,9 @@ pub struct App {
     pub theme_idx: usize,
     pub overlay: Option<Overlay>,
     pub status_msg: Option<Status>,
+    /// The card `c` last copied from, and how many texts back from its last.
+    /// Any other key forgets it, so the next `c` starts at the last again.
+    copy_step: Option<(u64, usize)>,
     pub quit: bool,
     /// Last sent review round per checkout root.
     pub rounds: BTreeMap<PathBuf, LastRound>,
@@ -673,7 +685,7 @@ pub struct App {
     pub(crate) reading_conversation: bool,
     /// The session whose last reply `r` reads fast, once its conversation
     /// is read.
-    pub(crate) read_reply: Option<String>,
+    pub(crate) read_reply: Option<(String, ReplyFor)>,
     /// The PRs under review, by the folder each is checked out in.
     pub(crate) pr_reviews: BTreeMap<PathBuf, crate::pr::app::PrReview>,
     /// `D` on a PR card: the card whose review is asked about closing.
@@ -765,6 +777,7 @@ impl App {
             theme_idx,
             overlay: None,
             status_msg: None,
+            copy_step: None,
             quit: false,
             rounds: BTreeMap::new(),
             sending: BTreeMap::new(),
@@ -956,8 +969,9 @@ impl App {
                     "Zen mode off"
                 });
             }
-            KeyCode::Char('c') => return self.open_slash("/mcp"),
-            KeyCode::Char('r') => return self.read_reply_fast(),
+            KeyCode::Char('C') => return self.open_slash("/mcp"),
+            KeyCode::Char('c') => return self.want_reply(ReplyFor::Copy),
+            KeyCode::Char('r') => return self.want_reply(ReplyFor::Reader),
             KeyCode::Char('m') => self.open_model(current),
             KeyCode::Char('P') => self.overlay = Some(Overlay::PermissionMode(current)),
             KeyCode::Esc => return self.on_empty_esc(current),
@@ -1298,21 +1312,45 @@ impl App {
             .map(|(_, said)| said)
     }
 
-    /// `c` on a card: copies the last web link in it.
-    fn copy_last_link(&mut self) -> Vec<Effect> {
+    /// `c` on a card: copies the last link or code on it.
+    fn copy_from_card(&mut self) -> Vec<Effect> {
         let Some(card) = self.queue.current() else {
             return Vec::new();
         };
-        match last_link(&crate::ask::context_for(card)) {
-            Some(link) => {
-                self.set_status(format!("Copied {link}"));
-                vec![Effect::CopyText(link)]
-            }
-            None => {
-                self.set_status("No web link on this card");
-                Vec::new()
-            }
+        let (id, found) = (card.id, crate::copy::candidates(card));
+        self.copy_one(id, found, "on this card")
+    }
+
+    /// Copies the last text of `found`, which came from card `id` (or
+    /// `NO_CARD`: a session's reply). Asked again, it copies the one
+    /// before, and after the first it starts over. `place` says where
+    /// nothing was found.
+    pub(crate) fn copy_one(&mut self, id: u64, found: Vec<String>, place: &str) -> Vec<Effect> {
+        if found.is_empty() {
+            self.set_status(format!("Nothing to copy {place}: no link and no code"));
+            return Vec::new();
         }
+        let back = match self.copy_step {
+            Some((card, back)) if card == id => (back + 1) % found.len(),
+            _ => 0,
+        };
+        self.copy_step = Some((id, back));
+        let text = found[found.len() - 1 - back].clone();
+        let line = text.lines().next().unwrap_or_default();
+        let mut shown: String = line.chars().take(60).collect();
+        if shown.len() < text.len() {
+            shown.push('…');
+        }
+        self.set_status(if found.len() == 1 {
+            format!("Copied {shown}")
+        } else {
+            format!(
+                "Copied {shown}   {} of {}, c for the one before",
+                back + 1,
+                found.len()
+            )
+        });
+        vec![Effect::CopyText(text)]
     }
 
     /// The text box being typed in, if any.
@@ -1338,9 +1376,19 @@ impl App {
     }
 
     /// A paste goes into the box being typed in, as if typed: a line break
-    /// is a space in a one-line box, so the paste never sends it. With no
-    /// box open it is ignored, so pasted text never acts as keys.
+    /// is a space in a one-line box, so the paste never sends it. On a
+    /// question card with no box open, it opens the reply box and goes in
+    /// there. Elsewhere with no box open it is ignored, so pasted text
+    /// never acts as keys.
     fn on_paste(&mut self, text: &str, at: Instant) -> Vec<Effect> {
+        if self.overlay.is_none()
+            && matches!(
+                self.queue.current().map(|c| &c.kind),
+                Some(CardKind::Question(_))
+            )
+        {
+            self.update(Msg::Key(KeyEvent::from(KeyCode::Enter), at));
+        }
         let Some(multi) = self.typing_in().map(TextInput::is_multi_line) else {
             self.set_status("Paste into a text box: nothing here takes text");
             return Vec::new();
@@ -1860,6 +1908,9 @@ impl App {
             return Vec::new();
         }
         self.selection = None;
+        if key.code != KeyCode::Char('c') {
+            self.copy_step = None;
+        }
         if key.code == KeyCode::Char('q')
             && key.modifiers == KeyModifiers::CONTROL
             && self.overlay.is_some()
@@ -1982,7 +2033,7 @@ impl App {
                     )
                 ) =>
             {
-                self.copy_last_link()
+                self.copy_from_card()
             }
             // Not on a step card, where b moves back a word.
             KeyCode::Char('b')
@@ -2138,10 +2189,10 @@ impl App {
         }
     }
 
-    /// `!`: a shell in a popup, in the current card's checkout or the picked
-    /// session's, for what the agent may not run itself (sudo, a login, a
-    /// command its permissions block). The session's last suggested
-    /// `! command` comes typed in.
+    /// `!`: the shell of the current card's checkout or the picked
+    /// session's, in a popup, for what the agent may not run itself (sudo,
+    /// a login, a command its permissions block). The shell outlives the
+    /// popup. The command the session last suggested comes typed in.
     fn open_shell(&mut self) -> Vec<Effect> {
         let Some((dir, name, agent)) = self.here() else {
             return Vec::new();
@@ -2918,20 +2969,6 @@ pub fn mode_label(mode: Mode) -> &'static str {
         Mode::Quiz => "quiz",
         Mode::Vibe => "vibe: nothing checked",
     }
-}
-
-/// The last `http://` or `https://` link in `text`, without the brackets,
-/// quotes or full stop around it.
-fn last_link(text: &str) -> Option<String> {
-    let start = text.rfind("https://").max(text.rfind("http://"))?;
-    let link: String = text[start..]
-        .chars()
-        .take_while(|c| {
-            !c.is_whitespace() && !matches!(c, '<' | '>' | '"' | '\'' | '`' | ')' | ']')
-        })
-        .collect();
-    let link = link.trim_end_matches(['.', ',', ';', ':', '!', '?']);
-    (link.len() > "https://".len()).then(|| link.to_string())
 }
 
 #[cfg(test)]
@@ -3782,11 +3819,42 @@ pub(crate) mod tests {
             command,
             type_it,
         };
-        assert_eq!(a.update(key('c')), vec![popup("/mcp", true)]);
+        assert_eq!(a.update(key('C')), vec![popup("/mcp", true)]);
         // Half a message typed: shown as it is, with nothing added to it.
         a.agents[0].input = InputBox::Holding("half".into());
-        assert_eq!(a.update(key('c')), vec![popup("/mcp", false)]);
+        assert_eq!(a.update(key('C')), vec![popup("/mcp", false)]);
         assert!(a.status_text().unwrap().contains("not typed"));
+    }
+
+    #[test]
+    fn c_copies_from_the_picked_sessions_last_reply() {
+        let mut a = App::new(Config::default(), builtin_themes());
+        a.agents = vec![agent("%1", 1, "api", "/w/api", true)];
+        let said = |a: &mut App, text: &str| {
+            let effects = a.update(key('c'));
+            assert!(
+                matches!(&effects[..], [Effect::ReadConversation { session_id }] if session_id == "s1")
+            );
+            a.update(Msg::Conversation {
+                session_id: "s1".into(),
+                said: Ok(vec![
+                    Said::Claude("Old: https://old.io/x".into()),
+                    Said::User("Next?".into()),
+                    Said::Claude(text.into()),
+                ]),
+            })
+        };
+        let reply = "The PR is at https://github.com/o/r/pull/7. Run `cargo doc`.";
+        assert_eq!(said(&mut a, reply), [Effect::CopyText("cargo doc".into())]);
+        assert_eq!(
+            said(&mut a, reply),
+            [Effect::CopyText("https://github.com/o/r/pull/7".into())]
+        );
+        assert!(said(&mut a, "Nothing here.").is_empty());
+        assert_eq!(
+            a.status_text(),
+            Some("Nothing to copy in its last reply: no link and no code")
+        );
     }
 
     #[test]
@@ -4044,17 +4112,6 @@ pub(crate) mod tests {
                 card: None,
             }]
         );
-    }
-
-    #[test]
-    fn the_last_link_is_found_without_what_surrounds_it() {
-        assert_eq!(
-            last_link("see http://a.io/x, then (https://b.io/y?z=1)."),
-            Some("https://b.io/y?z=1".into())
-        );
-        assert_eq!(last_link("`https://c.io/p`"), Some("https://c.io/p".into()));
-        assert_eq!(last_link("no link, only https://"), None);
-        assert_eq!(last_link("plain text"), None);
     }
 
     #[test]

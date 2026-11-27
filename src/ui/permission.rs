@@ -278,20 +278,38 @@ pub fn flag_band(frame: &mut Frame, body: Rect, app: &App, state: &FlagState) ->
     rest
 }
 
-/// The card: a held card's band, then the call on a panel (the tool's
-/// name, then what it would do), Haiku's summary under it, and the keys.
+/// The card: a held card's band or Haiku's summary, then the call on a
+/// panel (the tool's name, then what it would do), and the keys. Under a
+/// summary the panel holds the tool's name alone until `v` shows the rest.
 pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
     let t = app.theme();
     let [band, caption, body, gist, more, keys] =
         crate::permission::card_areas(area, pc.held.is_some(), pc.gist_max());
-    // The panel starts under the band's rows; rows the band leaves unused
-    // go below the body, which keeps the height the scrolling counts on.
+    // The panel starts under the band's or the summary's rows and a blank
+    // row; rows they leave unused go below the body, which keeps the
+    // height the scrolling counts on.
     let mut lift = 0;
     if let Some(held) = &pc.held {
         let room = if band.height >= 2 { band.height - 1 } else { 1 };
         let rows = band_rows(held, band.width as usize, room as usize);
         let n = draw_band(frame, band, (area.x, area.width), rows, t);
         lift = band.height.saturating_sub(n + 1);
+    } else if gist.height > 0 {
+        let style = match pc.gist {
+            Gist::Done(_) => Style::new().fg(t.fg).add_modifier(Modifier::ITALIC),
+            Gist::Pending | Gist::Failed(_) => Style::new().fg(t.dim),
+        };
+        let gist_rows: Vec<Line> = pc
+            .gist_rows(body.width as usize, usize::from(gist.height - 1))
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        let n = gist_rows.len() as u16;
+        lift = gist.height - 1 - n;
+        frame.render_widget(
+            Paragraph::new(gist_rows).style(style),
+            Rect::new(body.x, gist.y, body.width, n),
+        );
     }
     let caption = Rect {
         y: caption.y - lift,
@@ -301,7 +319,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         y: body.y - lift,
         ..body
     };
-    let rows = pc.body_rows(body.width as usize);
+    let folded = pc.folds() && gist.height > 0;
+    let rows = if folded {
+        Vec::new()
+    } else {
+        pc.body_rows(body.width as usize)
+    };
     let top = pc
         .scroll
         .min(rows.len().saturating_sub(body.height as usize));
@@ -335,26 +358,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         })
         .collect();
     frame.render_widget(Paragraph::new(shown), body);
-    if pc.held.is_none() && gist.height > 0 {
-        // Straight under the panel, after a blank row.
-        let y = body.y + shown_rows + 1;
-        let height = (gist.height - 1).min(gist.bottom().saturating_sub(y));
-        let style = match pc.gist {
-            Gist::Done(_) => Style::new().fg(t.fg).add_modifier(Modifier::ITALIC),
-            Gist::Pending | Gist::Failed(_) => Style::new().fg(t.dim),
-        };
-        let gist_rows: Vec<Line> = pc
-            .gist_rows(body.width as usize, usize::from(height))
-            .into_iter()
-            .map(Line::from)
-            .collect();
-        frame.render_widget(
-            Paragraph::new(gist_rows).style(style),
-            Rect::new(body.x, y, body.width, height),
-        );
-    }
     let hidden = rows.len().saturating_sub(top + body.height as usize);
-    if hidden > 0 {
+    if folded {
+        frame.render_widget(
+            Paragraph::new("▸ the request is hidden (v shows it)").style(Style::new().fg(t.dim)),
+            more,
+        );
+    } else if hidden > 0 {
         let s = if hidden == 1 { "" } else { "s" };
         frame.render_widget(
             Paragraph::new(format!("▾ {hidden} more line{s} (j to scroll)"))
@@ -363,13 +373,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, pc: &PermissionCard) {
         );
     }
     let mut spans = Vec::new();
-    for (k, label) in [
-        ("y", "allow"),
-        ("n", "deny"),
-        ("g", "go to window"),
-        ("c", "copy link"),
-        ("b", "/btw"),
-    ] {
+    // A held card always shows its request.
+    let request = pc.held.is_none().then_some(("v", "request"));
+    for (k, label) in [("y", "allow"), ("n", "deny")]
+        .into_iter()
+        .chain(request)
+        .chain([("g", "go to window"), ("c", "copy"), ("b", "/btw")])
+    {
         spans.extend(super::keys::cap(k, label, t));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), keys);
@@ -530,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unheld_card_puts_haiku_under_the_command() {
+    fn an_unheld_card_shows_haiku_and_hides_the_command_until_v() {
         let mut a = app();
         a.queue.push(card(
             1,
@@ -545,15 +555,29 @@ mod tests {
             10,
         ));
         let screen = render(&a, 80, 24);
-        let lines: Vec<&str> = screen.lines().collect();
-        let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap();
-        assert_eq!(at("cargo test"), at("Bash") + 1, "{screen}");
+        let at = |screen: &str, text: &str| screen.lines().position(|l| l.contains(text)).unwrap();
         assert_eq!(
-            at("Haiku: Runs the tests."),
-            at("cargo test") + 2,
+            at(&screen, "Bash"),
+            at(&screen, "Haiku: Runs the tests.") + 2,
             "{screen}"
         );
         assert!(!screen.contains("Permission:"), "the bar says what it is");
+        // The request is hidden until v shows it under its tool's name.
+        assert!(!screen.contains("cargo test"), "{screen}");
+        assert!(
+            screen.contains("the request is hidden (v shows it)"),
+            "{screen}"
+        );
+        a.update(crate::app::Msg::Key(
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('v')),
+            std::time::Instant::now(),
+        ));
+        let screen = render(&a, 80, 24);
+        assert_eq!(
+            at(&screen, "cargo test"),
+            at(&screen, "Bash") + 1,
+            "{screen}"
+        );
     }
 
     #[test]

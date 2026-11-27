@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 
 use super::input;
 use super::window::{self, Height};
-use crate::ask::{AskState, LABEL_WIDTH, LineKind, SUMMARISE};
+use crate::ask::{AskState, LineKind, SUMMARISE};
 use crate::theme::Theme;
 
 /// The questions and answers in a panel over the card, with the question
@@ -61,22 +61,6 @@ pub fn render(frame: &mut Frame, area: Rect, ask: &AskState, t: &Theme) {
             LineKind::Answer => with_code(&text, Style::new().fg(t.fg), t),
             LineKind::Pending => Line::styled(text, Style::new().fg(t.dim)),
             LineKind::Error => Line::styled(text, Style::new().fg(t.hi)),
-            LineKind::Labelled => {
-                let (label, rest) = text.split_at(
-                    text.char_indices()
-                        .nth(LABEL_WIDTH)
-                        .map_or(text.len(), |(i, _)| i),
-                );
-                let mut line = with_code(rest, Style::new().fg(t.fg), t);
-                line.spans.insert(
-                    0,
-                    Span::styled(
-                        label.to_string(),
-                        Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
-                    ),
-                );
-                line
-            }
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), text);
@@ -169,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tldr_shows_its_labelled_lines_in_a_short_window() {
+    fn a_tldr_shows_as_it_came_in_a_short_window() {
         let mut a = app();
         a.queue
             .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
@@ -178,36 +162,18 @@ mod tests {
             panic!()
         };
         ask.entries[0].answer = Answer::Done(
-            "Asked: tidy the T window.\nDid: changed `src/ui/ask.rs`.\nSaid: it is done.".into(),
+            "Pick the rate limit: 10 or 100 a minute.\nThe store in `src/limit.rs` is done.".into(),
         );
         let screen = render(&a, 120, 30);
         for want in [
             "TL;DR",
-            "Asked  tidy the T window.",
-            "Did    changed src/ui/ask.rs.",
-            "Said   it is done.",
+            "Pick the rate limit: 10 or 100 a minute.",
+            "The store in src/limit.rs is done.",
         ] {
             assert!(screen.contains(want), "{want} in\n{screen}");
         }
         let rows = screen.lines().filter(|l| l.contains('│')).count();
         assert!(rows <= 12, "a short window, not a tall one:\n{screen}");
-    }
-
-    #[test]
-    fn a_tldr_in_another_shape_is_shown_as_it_came() {
-        let mut a = app();
-        a.queue
-            .push(card(1, "/a", CardKind::Review(ReviewCard::default()), 0));
-        a.update(key('T'));
-        let Some(Overlay::Ask(ask)) = &mut a.overlay else {
-            panic!()
-        };
-        ask.entries[0].answer = Answer::Done("You asked for a fix and I made it.".into());
-        let screen = render(&a, 120, 30);
-        assert!(
-            screen.contains("You asked for a fix and I made it."),
-            "{screen}"
-        );
     }
 
     fn key(c: char) -> Msg {

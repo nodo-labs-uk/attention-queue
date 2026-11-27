@@ -762,7 +762,7 @@ def scene_shell():
         w.tmux("resize-window", "-t", "demo:popup", "-x", str(POP_W - 2), "-y", str(POP_H - 2))
         pane = w.tmux("display-message", "-p", "-t", "demo:popup", "#{pane_id}").strip()
         w.wait_for("the typed command", lambda: "restart api" in w.tmux("capture-pane", "-p", "-t", pane))
-        w.overlay = (pane, " shell in api · exit or Ctrl-D closes it · Claude's last ! command is "
+        w.overlay = (pane, " shell in api · exit or Ctrl-D closes it · Claude's last command is "
                            "typed in, Enter runs it ")
         time.sleep(5)
     return w, rec
@@ -981,7 +981,7 @@ def scene_hero():
             "tool_input": {"command": "npm run db:migrate -- --env dev",
                            "description": "Apply the pending migration to the dev database"},
             "permission_suggestions": []})
-        w.see("db:migrate")
+        w.see("Apply the pending migration")
         w.caption = "web asks to run a command. It comes to you as a card, wherever web's window is."
         time.sleep(3.5)
         # The api session finishes while the card is up: its review waits behind it.

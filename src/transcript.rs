@@ -250,11 +250,70 @@ pub fn last_reply(said: &[Said]) -> Option<String> {
     (!text.is_empty()).then(|| text.join("\n\n"))
 }
 
+/// The command to type into the `!` shell: the last one Claude's latest
+/// reply suggests you run yourself, as a `! command` or else as a plain
+/// command; with neither, the last `! command` of an earlier reply.
+pub fn last_command(said: &[Said]) -> Option<String> {
+    let reply = last_reply(said);
+    let reply = reply.as_deref();
+    reply
+        .and_then(last_bang_in)
+        .or_else(|| reply.and_then(last_plain_in))
+        .or_else(|| last_bang_command(said))
+}
+
+/// Languages of a code block that mark it as shell commands.
+const SHELL_LANGS: [&str; 6] = ["sh", "bash", "zsh", "shell", "console", "fish"];
+
+/// The last plain command in `text`: a code block marked as shell, or one
+/// that starts with `sudo ` or a `$ ` prompt, or inline code that starts
+/// with `sudo `. Of a block with `$ ` prompts, only the prompted lines.
+fn last_plain_in(text: &str) -> Option<String> {
+    let mut last = None;
+    // The language and lines of the block being read.
+    let mut block: Option<(&str, Vec<&str>)> = None;
+    for line in text.lines() {
+        if let Some(lang) = line.trim_start().strip_prefix("```") {
+            match block.take() {
+                Some((lang, lines)) => {
+                    let first = lines.iter().find(|l| !l.trim().is_empty()).copied();
+                    let prompted = lines.iter().any(|l| l.trim_start().starts_with("$ "));
+                    let shell = SHELL_LANGS.contains(&lang)
+                        || prompted
+                        || first.is_some_and(|l| l.trim_start().starts_with("sudo "));
+                    let command = if prompted {
+                        lines
+                            .iter()
+                            .filter_map(|l| l.trim_start().strip_prefix("$ "))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        lines.join("\n")
+                    };
+                    if shell && !command.trim().is_empty() {
+                        last = Some(command.trim().to_string());
+                    }
+                }
+                None => block = Some((lang.trim(), Vec::new())),
+            }
+        } else if let Some((_, lines)) = &mut block {
+            lines.push(line);
+        } else {
+            for (i, piece) in line.split('`').enumerate() {
+                if i % 2 == 1 && piece.trim_start().starts_with("sudo ") {
+                    last = Some(piece.trim().to_string());
+                }
+            }
+        }
+    }
+    last
+}
+
 /// The last command Claude suggested you run yourself with Claude Code's
 /// `!` prefix: inline as `` `! cmd` ``, or a line `! cmd` (a line ending in
 /// `\` takes the next one with it). Without the `! `. Placeholders such as
 /// `! <command>` are skipped.
-pub fn last_bang_command(said: &[Said]) -> Option<String> {
+fn last_bang_command(said: &[Said]) -> Option<String> {
     said.iter().rev().find_map(|s| match s {
         Said::Claude(text) => last_bang_in(text),
         _ => None,
@@ -334,6 +393,37 @@ mod tests {
         assert_eq!(
             last_bang_command(&[Said::Claude("no `!` here".into())]),
             None
+        );
+    }
+
+    #[test]
+    fn a_plain_command_in_the_latest_reply_is_typed_in_when_it_has_no_bang() {
+        use super::{Said, last_command};
+        let old = Said::Claude("Run `! aws sso login` first.".into());
+        let asked = Said::User("done".into());
+        let command =
+            |text: &str| last_command(&[old.clone(), asked.clone(), Said::Claude(text.into())]);
+        assert_eq!(
+            command("Please run `sudo apt install jq` and tell me.").as_deref(),
+            Some("sudo apt install jq")
+        );
+        assert_eq!(
+            command("Run this:\n\n```bash\ngh auth login\n```\nthen `ls`.").as_deref(),
+            Some("gh auth login")
+        );
+        assert_eq!(
+            command("```\n$ sudo systemctl restart aq\nok\n```").as_deref(),
+            Some("sudo systemctl restart aq")
+        );
+        // A `! command` in the same reply comes first.
+        assert_eq!(
+            command("`! make login`, or `sudo make install`.").as_deref(),
+            Some("make login")
+        );
+        // Code that is no command leaves the earlier `! command`.
+        assert_eq!(
+            command("I changed `src/main.rs`:\n```rust\nfn main() {}\n```").as_deref(),
+            Some("aws sso login")
         );
     }
 

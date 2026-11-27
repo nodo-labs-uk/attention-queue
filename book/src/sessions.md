@@ -33,7 +33,8 @@ While aq's window is showing, tmux's own status line is hidden, since the tabs l
 | `T` | Haiku sums up its latest turn |
 | `b` | ask it a [side question](tools.md#side-questions) with `/btw`; only the answer shows |
 | `r` | [read its last reply fast](tools.md#fast-reading) |
-| `c` | the session's own window in a popup over aq, with `/mcp ` typed in; Enter shows the session's MCP servers, to connect, reconnect or turn one off. Ctrl-Q closes it, and the menu in the session with it |
+| `c` | copy the last link or code in its last reply: a web link, a code block, or text in backticks. Press it again for the one before |
+| `C` | the session's own window in a popup over aq, with `/mcp ` typed in; Enter shows the session's MCP servers, to connect, reconnect or turn one off. Ctrl-Q closes it, and the menu in the session with it |
 | `p` | ask an idle session to open a PR (`/create-pr`) and go there |
 | `m` | switch its model: `f` fable, `o` opus, `s` sonnet, `h` haiku |
 | `P` | switch its permission mode: `a` auto, `m` manual, `e` accept edits, `p` plan |
